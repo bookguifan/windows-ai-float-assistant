@@ -1,0 +1,28 @@
+name: 缺陷报告
+description: 使用合成数据描述可复现的问题；安全漏洞请先阅读 SECURITY.md。
+body:
+  - type: markdown
+    attributes:
+      value: 请勿上传 Cookie、Token、API Key、签名材料、真实聊天、个人截图或未脱敏日志。安全细节请通过 SECURITY.md 所述私密渠道提交。
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本或提交 SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows / WebView2 版本及显示缩放
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、预期和实际结果
+      description: 请使用合成文本；说明是否为 dev 或绿色版，不需要提供登录凭据。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 可选的脱敏证据
+      description: 不确定是否含敏感内容时请不要上传。

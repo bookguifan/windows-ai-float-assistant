@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek 划词工具条</title>
+    <style>
+      /*
+       * 窗宽由 Rust 侧按内容动态 set_size；高也是动态的：收起=42，点击「⋮ 更多」后
+       * 由 Rust 侧扩高（42 + 自定义行数×FLY_ROW_H）以容纳下方浮层。
+       * html/body 高度取 100%（=窗口当前 set_size 高度），首行 .bar 固定 42px，
+       * #more-box（浮层）display:none，展开时 visible 增为 flex。
+       */
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        user-select: none;
+      }
+      body { display: flex; flex-direction: column; }
+      .bar {
+        flex: 0 0 auto;
+        width: 100%;
+        height: 42px; /* 首行固定 42px，胶囊垂直居中（radius 21 = 高度一半） */
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 3px; /* 与 popup.rs 的 BTN_GAP 一致，宽度估算才准确 */
+        padding: 0 4px;
+        background: #ffffff;
+        border-radius: 21px;
+        box-shadow: inset 0 0 0 1px rgba(43, 92, 255, 0.26),
+                    inset 0 -1px 4px rgba(43, 92, 255, 0.07);
+        /* 整体不再横向滚动：复制 / ⋯ 两端固定，中间 #prompts 内部滚动 */
+        overflow: hidden;
+      }
+      button {
+        flex: 0 0 auto;
+        height: 30px;
+        padding: 0 6px; /* 12px 左右内边距，与 popup.rs::button_px 的估算一致 */
+        border: 0;
+        border-radius: 15px;
+        background: transparent;
+        color: #2b2b2b;
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 1;
+        white-space: nowrap;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px; /* 图标与文字的间距，与 popup.rs::button_px 的估算一致 */
+      }
+      /*button:hover { background: rgba(43, 92, 255, 0.10); color: #2b5cff; }*/
+      button:active { background: rgba(43, 92, 255, 0.20); }
+      /* 复制 / ⋯ 是固定动作按钮，视觉与提示词按钮一致，但 ⋯ 只放图标 */
+      button[data-preset="open-settings"] { padding: 0 8px; }
+      svg { width: 14px; height: 14px; flex-shrink: 0; }
+      /* 中间提示词区（仅内置 4 项）：占据剩余空间并内部横向滚动，复制/⋯ 因此始终固定可见 */
+      #prompts {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none; /* Firefox */
+      }
+      #prompts::-webkit-scrollbar { display: none; } /* Chrome/Edge */
+      /* ★ 豆包式「更多」下拉：点击 ⋯ 后**顶栏保持可见**，在右下方浮出一个窄的独立面板。
+       * 用绝对定位右对齐到「⋯」下方，宽度按内容(窄)，与顶栏同窗但互不遮挡。 */
+      #more-box {
+        position: absolute;
+        top: 44px; /* 顶栏下方 */
+        right: 6px;
+        width: max-content;
+        min-width: 168px;
+        max-width: 280px;
+        display: none;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 2px;
+        padding: 6px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.16);
+        z-index: 10;
+      }
+      #more-box.visible { display: flex; }
+      #more-box button {
+        height: 30px;
+        border-radius: 8px;
+        font-size: 13px;
+        justify-content: flex-start;
+        text-align: left;
+        width: 100%;
+        padding: 0 8px;
+      }
+      #more-box button:hover { background: rgba(43, 92, 255, 0.10); color: #2b5cff; }
+      #more-box button span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      #more-box .sep { height: 1px; background: rgba(43, 92, 255, 0.15); margin: 3px 6px; flex: 0 0 auto; }
+    </style>
+  </head>
+  <body>
+    <div class="bar" id="bar">
+      <button type="button" data-preset="copy" aria-label="复制到剪贴板">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+        </svg>
+        <span>复制</span>
+      </button>
+      <span id="prompts"></span>
+      <button type="button" data-preset="open-more" aria-label="更多提示词">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.8"></circle>
+          <circle cx="12" cy="12" r="1.8"></circle>
+          <circle cx="19" cy="12" r="1.8"></circle>
+        </svg>
+      </button>
+    </div>
+    <!-- 「⋮ 更多」浮层：自定义提示词 + 设置入口。默认隐藏，Rust 扩高后显示。 -->
+    <div id="more-box"></div>
+
+    <script>
+      // withGlobalTauri=false 时 __TAURI__ 不再自动注入；这里从始终存在的
+      // __TAURI_INTERNALS__（核心 IPC 通道）构造本地窗口所需的最小 API（core.invoke）。
+      if (!window.__TAURI__) {
+        // ★ R17-P2 自检：`__TAURI_INTERNALS__` 是 Tauri 的**内部**契约（不是公开 API）。
+        //   它一旦改名/改签名，本页会「加载成功、但所有按钮静默失效」—— 真机上只表现为
+        //   「点了没反应」，定位成本极高。故建桥前先探测：失败时给一个**明确报错**的桩，
+        //   而不是让后续每次 invoke 抛一个看不见的 TypeError。
+        //   升级 Tauri 后若看到这条报错 → 需回归全部 5 个页面（见 docs/upgrade-notes.md）。
+        const internals = window.__TAURI_INTERNALS__;
+        const ok = !!internals && typeof internals.invoke === 'function';
+        if (!ok) {
+          console.error(
+            '[deepseek-float] Tauri IPC 桥不可用：__TAURI_INTERNALS__.invoke 缺失 → 本页按钮将全部失效'
+          );
+        }
+        window.__TAURI__ = {
+          core: {
+            invoke: ok
+              ? (cmd, args) => internals.invoke(cmd, args || {})
+              : () => Promise.reject(new Error('tauri-ipc-bridge-unavailable')),
+          },
+        };
+      }
+      const tauri = window.__TAURI__;
+      let fired = false;
+
+      const ICONS = {
+        explain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4Z"></path><path d="M4 4v16"></path><path d="M9 9h6"></path><path d="M9 13h4"></path></svg>',
+        translate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h7"></path><path d="M6 3v2"></path><path d="M4 11c0 4 4 7 7 7"></path><path d="M11 11c0 4-4 7-7 7"></path><path d="M14 21l5-12 5 12"></path><path d="M15.5 17h7"></path></svg>',
+        summarize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10"></path><path d="M4 12h16"></path><path d="M4 18h10"></path></svg>',
+        ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3"></path><path d="M12 18v3"></path><path d="M3 12h3"></path><path d="M18 12h3"></path><path d="M5.6 5.6l2.1 2.1"></path><path d="M16.3 16.3l2.1 2.1"></path><path d="M5.6 18.4l2.1-2.1"></path><path d="M16.3 7.7l2.1-2.1"></path><circle cx="12" cy="12" r="4"></circle></svg>',
+      };
+      // 自定义提示词图标池：与内置同「线性 stroke」风格，按 id 稳定分配 → 不再全是 ❤️ 占位、
+      // 不再语义错配（❤️ 语义是「收藏/喜欢」，硬套给「解释/拆解/人名」看着不协调）。
+      const CUSTOM_ICONS = [
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 2z"></path></svg>', // 星芒
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="5"></circle><circle cx="12" cy="12" r="1"></circle></svg>', // 靶心
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><path d="M3.3 7 12 12l8.7-5"></path><path d="M12 22V12"></path></svg>', // 立方体
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>', // 标签
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>', // 闪电
+      ];
+      // 内置用 ICONS[id]；自定义按 id 稳定哈希 → 取图标池中某一项（同 id 恒同一枚，刷新不跳）。
+      function iconFor(id) {
+        if (ICONS[id]) return ICONS[id];
+        let h = 0;
+        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+        return CUSTOM_ICONS[h % CUSTOM_ICONS.length];
+      }
+
+      function escapeHtml(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+        });
+      }
+
+      // 首行常驻：复制 + 前 ≤4 项提示词（共 5 个按钮），第 5 项起并入「⋮ 更多」浮层。
+      // （Rust 已按设置里的列表顺序传入，内置/自定义由用户排序决定先后。）
+      const INLINE_MAX = 4;
+
+      // 由 Rust 侧 show_at_cursor 推入统一提示词列表（已排序：内置优先、再自定义）。
+      // 渲染：前 INLINE_MAX 项 → 首行；其余 → 「⋮ 更多」浮层。
+      window.__dsfSetPrompts = (prompts) => {
+        const box = document.getElementById("prompts");
+        const more = document.getElementById("more-box");
+        box.innerHTML = "";
+        more.innerHTML = "";
+        const list = Array.isArray(prompts) ? prompts : [];
+        // ★ 顺序 = 设置里的列表顺序（用户 ↑↓ 排序即工具条顺序），前 ≤4 项进首行、其余进「⋮ 更多」。
+        const inline = list.slice(0, INLINE_MAX);
+        const rest = list.slice(INLINE_MAX);
+        inline.forEach((p) => {
+          const id = String(p.id || "");
+          const b = document.createElement("button");
+          b.type = "button";
+          b.dataset.preset = id;
+          b.innerHTML = iconFor(id) + "<span>" + escapeHtml(p.label) + "</span>";
+          box.appendChild(b);
+        });
+        rest.forEach((p) => {
+          const id = String(p.id || "");
+          const b = document.createElement("button");
+          b.type = "button";
+          b.dataset.preset = id;
+          b.innerHTML = iconFor(id) + "<span>" + escapeHtml(p.label) + "</span>";
+          more.appendChild(b);
+        });
+        // 有浮层项时：一条分隔线 + 「设置」入口（保留 ⋮ 的设置路径）。
+        if (rest.length > 0) {
+          const sep = document.createElement("div");
+          sep.className = "sep";
+          more.appendChild(sep);
+        }
+        const settingsBtn = document.createElement("button");
+        settingsBtn.type = "button";
+        settingsBtn.dataset.preset = "open-settings";
+        settingsBtn.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.06a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path></svg><span>设置</span>';
+        more.appendChild(settingsBtn);
+        window.__dsfHideMore();
+      };
+
+      // 浮层显隐由 Rust 侧控制：__dsfShowMore 切入「menu-mode」（隐藏顶栏、只留窄下拉，
+      // 豆包式），__dsfHideMore 切回顶栏形态。每次 show_at_cursor 重置时都会调用后者。
+      window.__dsfShowMore = () => {
+        document.body.classList.add("menu-mode");
+        document.getElementById("more-box").classList.add("visible");
+      };
+      window.__dsfHideMore = () => {
+        document.body.classList.remove("menu-mode");
+        document.getElementById("more-box").classList.remove("visible");
+      };
+
+      // 复位一次性锁的确定性入口：由 Rust 侧 show_at_cursor 每次弹窗 show 成功后
+      // 通过 win.eval("__dsfResetFired()") 复位。
+      window.__dsfResetFired = () => { fired = false; };
+
+      function fire(preset) {
+        if (fired) return;
+        fired = true;
+        try {
+          tauri.core.invoke("popup_action", { preset }).catch((e) => console.error("[popup] popup_action:", e));
+          // 「⋮ 更多」只负责扩高、不关闭：尽快解锁，让用户能接着点浮层里的项。
+          if (preset === "open-more") setTimeout(() => { fired = false; }, 250);
+          else setTimeout(() => { fired = false; }, 400); // 兜底解锁
+        } catch (e) {
+          console.error("[popup] invoke popup_action failed:", e);
+          fired = false;
+        }
+      }
+
+      // 事件委托：首行（.bar）+ 浮层（#more-box）共用一个 document 级监听。
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-preset]");
+        if (!btn) return;
+        e.preventDefault();
+        fire(btn.dataset.preset);
+      });
+    </script>
+  </body>
+</html>

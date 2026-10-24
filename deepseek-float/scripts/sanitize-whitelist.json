@@ -1,0 +1,17 @@
+{
+  "_comment": "净化契约单一可信源（M1）。本文件是页面侧 dsfloat_init.js::SAFE_TAGS 与卡片侧 result.html::SAFE_HTML_TAGS 的权威副本。scripts/check-sanitize-whitelist.mjs 会比对两份源码嵌入的常量是否与此一致；任一 drift 即测试失败。未来可演进为构建期从本 JSON 生成两侧常量（见审计报告 §5 第1批 M1 的后续步骤），本期仅加一致性保障，不改生产行为。",
+  "tags": [
+    "P", "DIV", "SPAN", "BR", "H1", "H2", "H3", "H4", "H5", "H6",
+    "UL", "OL", "LI", "BLOCKQUOTE", "PRE", "CODE", "STRONG", "B", "EM", "I",
+    "U", "S", "SUB", "SUP", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TD",
+    "TH", "HR", "MARK", "SMALL", "DEL", "KBD", "FIGURE", "FIGCAPTION"
+  ],
+  "voidTags": ["BR", "HR", "IMG"],
+  "classRegexCombined": "^(hljs(-[a-z0-9_-]+)?|language-[\\w+#.-]+)$",
+  "classRegexPageHljs": "^hljs(-[a-z0-9_-]+)?$",
+  "classRegexPageLang": "^language-[\\w+#.-]+$",
+  "urlSchemes": {
+    "href": ["https:", "http:", "mailto:", "#", "/"],
+    "imgSrc": ["https:", "http:", "data:image/"]
+  }
+}

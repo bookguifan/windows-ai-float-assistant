@@ -1,0 +1,13 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- src/canonicalize_and_process.rs ---
+// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+
+
+--- src/lib.rs ---
+// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+//! rust-urlpattern is an implementation of the
+//! [URLPattern standard](https://wicg.github.io/urlpattern) for the Rust
+//! programming language.
+//!
+//! For a usage example, see the [UrlPattern] documentation.

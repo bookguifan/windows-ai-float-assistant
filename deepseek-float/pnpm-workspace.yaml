@@ -1,0 +1,32 @@
+# pnpm 9 要求 workspace 显式声明 packages；本仓库只有根项目。
+packages:
+  - '.'
+
+# 以下配置供较新 pnpm 读取；pnpm 9 的布局设置见 .npmrc。
+#
+# nodeLinker: 本机 Windows 未开启「开发者模式」，默认 isolated(符号链接) 布局
+#   在 linkDirectDeps 阶段创建真实目录符号链接会失败，因此改用 hoisted 扁平布局。
+#
+# supportedArchitectures: 只解析当前机器 (win32/x64) 需要的可选二进制包。
+#   若不限制，pnpm 会尝试下载 esbuild / rollup 全平台产物，本机网络对这些
+#   并发大文件请求频繁报 UND_ERR_DESTROYED，导致安装不稳定。
+#
+# allowBuilds: 允许 esbuild 执行 postinstall（vite 依赖它）。
+#
+# trustLockfile: pnpm 11 默认在安装前对 lockfile 做「供应链策略校验」：为每个条目
+#   逐个拉取全量 metadata。本机网络下该步骤必然在 ~4 分钟后超时
+#   （ERR_PNPM_BROKEN_METADATA_JSON），导致 pnpm install 永远无法成功。
+#   本仓库依赖仅 vite / @tauri-apps/cli 两个公开主流包且 lockfile 由本仓库
+#   自行生成，故开启 trustLockfile 跳过该校验。
+nodeLinker: hoisted
+
+supportedArchitectures:
+  os:
+    - win32
+  cpu:
+    - x64
+
+allowBuilds:
+  esbuild: true
+
+trustLockfile: true

@@ -1,0 +1,70 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- lib.rs ---
+// Copyright 2016 The Servo Project Developers. See the COPYRIGHT
+// file at the top-level directory of this distribution.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+//! A crate to create static string caches at compiletime.
+//!
+//! # Examples
+//!
+//! With static atoms:
+//!
+//! In `Cargo.toml`:
+//!
+//! ```toml
+//! [package]
+//! build = "build.rs"
+//!
+//! [dependencies]
+//! string_cache = "0.9"
+//!
+//! [build-dependencies]
+//! string_cache_codegen = "0.6"
+//! ```
+//!
+//! In `build.rs`:
+//!
+//! ```no_run
+//! extern crate string_cache_codegen;
+//!
+//! use std::env;
+//! use std::path::Path;
+//!
+//! fn main() {
+//!     string_cache_codegen::AtomType::new("foo::FooAtom", "foo_atom!")
+//!         .atoms(&["foo", "bar"])
+//!         .write_to_file(&Path::new(&env::var("OUT_DIR").unwrap()).join("foo_atom.rs"))
+//!         .unwrap()
+//! }
+//! ```
+//!
+//! In `lib.rs`:
+//!
+//! ```ignore
+//! extern crate string_cache;
+//!
+//! mod foo {
+//!     include!(concat!(env!("OUT_DIR"), "/foo_atom.rs"));
+//! }
+//! ```
+//!
+//! The generated code will define a `FooAtom` type and a `foo_atom!` macro.
+//! The macro can be used in expression or patterns, with strings listed in `build.rs`.
+//! For example:
+//!
+//! ```ignore
+//! fn compute_something(input: &foo::FooAtom) -> u32 {
+//!     match *input {
+//!         foo_atom!("foo") => 1,
+//!         foo_atom!("bar") => 2,
+//!         _ => 3,
+//!     }
+//! }
+//! ```
+//!

@@ -1,0 +1,37 @@
+* -text
+licenses/** -text
+sources/** -text
+native/** -text
+toolchain/** -text
+LICENSE -text
+
+# Exact verified upstream legal originals only: preserve spaces/CRLF/EOF without editing their bytes.
+licenses/cargo_toml-0.22.3/LICENSE.txt whitespace=-blank-at-eof
+licenses/chrono-0.4.45/LICENSE.txt.txt whitespace=-blank-at-eof
+licenses/crc32fast-1.5.1/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/cssparser-0.36.0/LICENSE.txt whitespace=-blank-at-eol
+licenses/cssparser-macros-0.6.1/LICENSE.txt whitespace=-blank-at-eol
+licenses/dom_query-0.27.0/LICENSE.txt whitespace=-blank-at-eol
+licenses/generic-array-0.14.7/LICENSE.txt whitespace=-blank-at-eol,cr-at-eol
+licenses/hex-0.4.3/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/mime-0.3.17/LICENSE-MIT.txt whitespace=-blank-at-eof
+licenses/option-ext-0.2.0/LICENSE.txt.txt whitespace=-blank-at-eol
+licenses/serde_spanned-1.1.1/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/softbuffer-0.4.8/LICENSE-MIT.txt whitespace=-blank-at-eof
+licenses/tinyvec_macros-0.1.1/LICENSE-APACHE.md.txt whitespace=-blank-at-eof
+licenses/tinyvec_macros-0.1.1/LICENSE-ZLIB.md.txt whitespace=-blank-at-eof
+licenses/toml-0.9.12+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/toml-1.1.6+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/toml_datetime-0.7.5+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/toml_datetime-1.1.1+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/toml_parser-1.1.3+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/toml_writer-1.1.2+spec-1.1.0/LICENSE-APACHE.txt whitespace=-blank-at-eof
+licenses/vswhom-0.1.0/LICENSE.txt whitespace=-blank-at-eof
+licenses/vswhom-sys-0.1.3/LICENSE.txt whitespace=-blank-at-eof
+licenses/zlib-rs-0.6.7/LICENSE.txt whitespace=-blank-at-eol
+native/WebView2-SDK-1.0.3650.58/LICENSE.txt whitespace=-blank-at-eol
+native/WebView2-SDK-1.0.3650.58/Microsoft.Web.WebView2.nuspec whitespace=-blank-at-eol,cr-at-eol
+toolchain/rust-1.98.1/COPYRIGHT-library.html whitespace=-blank-at-eol
+toolchain/rust-1.98.1/licenses/BSD-2-Clause.txt whitespace=-blank-at-eol
+toolchain/rust-1.98.1/licenses/GPL-2.0-only.txt whitespace=-blank-at-eol
+toolchain/rust-1.98.1/licenses/NCSA.txt whitespace=-blank-at-eof

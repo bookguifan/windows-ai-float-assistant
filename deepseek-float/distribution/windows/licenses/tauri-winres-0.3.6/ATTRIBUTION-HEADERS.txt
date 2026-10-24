@@ -1,0 +1,71 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- src/lib.rs ---
+    /// Create a new resource with version info struct
+    ///
+    ///
+    /// We initialize the resource file with values provided by cargo
+    ///
+    /// | Field                | Cargo / Values               |
+    /// |----------------------|------------------------------|
+    /// | `"FileVersion"`      | `package.version`            |
+    /// | `"ProductVersion"`   | `package.version`            |
+    /// | `"ProductName"`      | `package.name`               |
+    /// | `"FileDescription"`  | `package.description`        |
+    ///
+    /// Furthermore if a section `package.metadata.tauri-winres` exists
+    /// in `Cargo.toml` it will be parsed. Values in this section take precedence
+    /// over the values provided natively by cargo. Only the string table
+    /// of the version struct can be set this way.
+    /// Additionally, the language field is set to neutral (i.e. `0`)
+    /// and no icon is set. These settings have to be done programmatically.
+    ///
+    /// `Cargo.toml` files have to be written in UTF-8, so we support all valid UTF-8 strings
+    /// provided.
+    ///
+    /// ```,toml
+    /// #Cargo.toml
+    /// [package.metadata.tauri-winres]
+    /// OriginalFilename = "testing.exe"
+    /// FileDescription = "⛄❤☕"
+    /// LegalCopyright = "Copyright © 2016"
+    /// ```
+    ///
+    /// The version info struct is set to some values
+    /// sensible for creating an executable file.
+    ///
+    /// | Property             | Cargo / Values               |
+    /// |----------------------|------------------------------|
+    /// | `FILEVERSION`        | `package.version`            |
+    /// | `PRODUCTVERSION`     | `package.version`            |
+    /// | `FILEOS`             | `VOS_NT_WINDOWS32 (0x40004)` |
+    /// | `FILETYPE`           | `VFT_APP (0x1)`              |
+    /// | `FILESUBTYPE`        | `VFT2_UNKNOWN (0x0)`         |
+    /// | `FILEFLAGSMASK`      | `VS_FFI_FILEFLAGSMASK (0x3F)`|
+    /// | `FILEFLAGS`          | `0x0`                        |
+    ///
+
+
+--- src/lib.rs ---
+    /// Set string properties of the version info struct.
+    ///
+    /// Possible field names are:
+    ///
+    ///  - `"FileVersion"`
+    ///  - `"FileDescription"`
+    ///  - `"ProductVersion"`
+    ///  - `"ProductName"`
+    ///  - `"OriginalFilename"`
+    ///  - `"LegalCopyright"`
+    ///  - `"LegalTrademark"`
+    ///  - `"CompanyName"`
+    ///  - `"Comments"`
+    ///  - `"InternalName"`
+    ///
+    /// Additionally there exists
+    /// `"PrivateBuild"`, `"SpecialBuild"`
+    /// which should only be set, when the `FILEFLAGS` property is set to
+    /// `VS_FF_PRIVATEBUILD(0x08)` or `VS_FF_SPECIALBUILD(0x20)`
+    ///
+    /// It is possible to use arbirtrary field names but Windows Explorer and other
+    /// tools might not show them.

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+src-tauri/target/
+
+# 测试产物：Playwright 每次运行都会写 test-results/.last-run.json。
+# 未忽略时，每跑一次 `pnpm test:js` 都会给工作区新增一个未跟踪文件 —— 会反复破坏
+# 「干净冻结树」这个不变量（2026-09-26 由 QA 冻结态回归实测发现）。
+test-results/
+# 现用 list reporter（不产出该目录）；若日后启用 html reporter 会产出，一并忽略。
+playwright-report/
+
+# 新构建的绿色版产物不进入源码提交。既有已跟踪产物不会被此规则删除或脱离跟踪。
+/release/
+
+*.local
+.DS_Store
+
+# Isolated local workflow integration data
+.test-artifacts/
+# Curated local raw evidence and disposable isolated test profiles
+.acceptance-evidence/
+.test-profile-*/

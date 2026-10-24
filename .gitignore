@@ -1,0 +1,40 @@
+# Build / tool artifacts
+target/
+node_modules/
+*.log
+_build_*.txt
+_inv.log
+.verify-dist/
+
+# pnpm 本地 store（大体积缓存，不入库）
+.pnpm-store/
+
+# 可分发产物（绿色版 release exe，体积约 6MB，不入库）
+/release/
+
+# Local credentials and signing material (examples remain reviewable).
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pfx
+*.p12
+*.private.pem
+id_rsa
+id_ed25519
+
+# Accidental copies of runtime profiles, portable backups and exports.
+*.WebView2/
+/com.deepseekfloat.desktop/
+/deepseek-float/com.deepseekfloat.desktop/
+/deepseek-float/exports/
+deepseek-float-backup-*.json
+
+# IDE
+.idea/
+
+# WorkBuddy internal scratch (memory, temp probes)
+.workbuddy/
+
+# Accidental Windows shell redirection artifact (reserved device name)
+/nul

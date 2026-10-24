@@ -1,0 +1,14 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- src/libm.rs ---
+// Copyright (c) 2018 Jorge Aparicio
+// Copyright © 2005-2020 Rich Felker, et al.
+// Copyright © 1993,2004 Sun Microsystems or
+// Copyright © 2003-2011 David Schultz or
+// Copyright © 2003-2009 Steven G. Kargl or
+// Copyright © 2003-2009 Bruce D. Evans or
+// Copyright © 2008 Stephen L. Moshier or
+// Copyright © 2017-2018 Arm Limited
+// SPDX-License-Identifier: MIT
+// This file is licensed solely under the terms discussed in LICENSE-LIBM-MIT at the crate root.
+// See the package-level README for full details.

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>快捷操作</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #18223c; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 200px; height: 200px; overflow: hidden; background: transparent; user-select: none; }
+    body { padding: 10px; }
+    .menu { padding: 8px; border: 1px solid #e9edf5; border-radius: 16px; background: #fff;
+      box-shadow: 0 4px 12px rgba(24,34,60,.13); }
+    header { height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 8px 5px; }
+    .brand { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 9px;
+      background: #edf1ff; color: #244ee8; }
+    header strong { display: block; font-size: 12px; font-weight: 650; letter-spacing: .1px; }
+    header small { display: block; color: #78829a; font-size: 10px; margin-top: 2px; }
+    button { border: 0; background: transparent; color: inherit; font: inherit; font-size: 12px;
+      display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 10px;
+      border-radius: 8px; text-align: left; cursor: pointer; transition: background .12s, color .12s; }
+    button svg { width: 16px; height: 16px; flex-shrink: 0; color: #76819b; }
+    svg { fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+    .brand svg { width: 19px; height: 19px; }
+    button:hover, button:focus-visible { outline: 0; background: #edf2ff; color: #244ee8; }
+    button:hover svg, button:focus-visible svg { color: #244ee8; }
+    button:disabled { opacity: .38; cursor: default; background: transparent; color: #78829a; }
+    button:disabled svg { color: #78829a; }
+    kbd { margin-left: auto; font-family: "Segoe UI", sans-serif; font-size: 9px; font-weight: 400; color: #8b94a8; white-space: nowrap; }
+    .separator { height: 9px; position: relative; }
+    .separator::after { content: ""; position: absolute; top: 4px; left: 9px; right: 9px; border-top: 1px solid #edf0f6; }
+    .danger { color: #9e5158; }
+    .danger svg { color: #b1757b; }
+    .danger:hover, .danger:focus-visible { background: #fff1f1; color: #c44c50; }
+    .danger:hover svg, .danger:focus-visible svg { color: #c44c50; }
+    footer { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 5px 9px 0;
+      font-size: 9px; color: #929bad; }
+    footer span:last-child { display: flex; align-items: center; gap: 4px; }
+    footer kbd { border: 1px solid #e9edf5; border-radius: 3px; padding: 0 3px; font-size: 8px; }
+    @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+    /* 紧凑菜单：保留文字与全部动作，减少装饰占用。 */
+    body { padding: 5px; }
+    .menu { padding: 4px; border-radius: 10px; box-shadow: 0 2px 5px rgba(24,34,60,.12); }
+    header, footer { display: none; }
+    button { height: 19px; padding: 0 6px; gap: 7px; border-radius: 5px; font-size: 11px; }
+    button svg { width: 13px; height: 13px; }
+    kbd { font-size: 8px; }
+    .separator { height: 4px; }
+    .separator::after { top: 1px; left: 6px; right: 6px; }
+    [hidden] { display: none !important; }
+    #siteList button { justify-content: space-between; flex-shrink: 0; } #siteList span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    #siteList { max-height: 114px; overflow-y: auto; overscroll-behavior: contain; }
+    #siteError { color: #b34444; font-size: 10px; line-height: 12px; max-height: 24px; overflow: hidden; overflow-wrap: anywhere; padding: 0 6px; }
+  </style>
+</head>
+<body>
+  <main class="menu" role="menu" aria-label="悬浮助手快捷操作">
+    <header>
+      <span class="brand" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9c3-4 10-4 13 0l3-2v5c0 5-4 8-9 8-4 0-7-3-7-7Z"/><path d="M7 6 5 3M11 5V2M15 6l2-3M7 14c2 2 5 2 7 0"/><circle cx="9" cy="10" r=".6"/></svg></span>
+      <div><strong>DeepSeek 悬浮助手</strong><small>快捷操作</small></div>
+    </header>
+    <section id="mainView">
+    <button id="ball" type="button" role="menuitem" data-action="hide_ball"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M9 12h6"/></svg><span id="ballLabel">隐藏悬浮球</span></button>
+    <button id="panel" type="button" role="menuitem" data-action="show_panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v12H9l-4 4Z"/><path d="M9 8h6M9 12h4"/></svg><span id="panelLabel">打开对话面板</span></button>
+    <button id="switchSite" type="button" role="menuitem"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c4 5 4 11 0 16-4-5-4-11 0-16"/></svg><span>切换站点</span><kbd>›</kbd></button>
+    <div class="separator" role="separator"></div>
+    <button id="screenshot" type="button" role="menuitem" data-action="screenshot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4v4M16 3h4v4M4 17v4h4M20 17v4h-4"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg><span>截图提问</span><kbd id="hotkey"></kbd></button>
+    <button id="ocr" type="button" role="menuitem" data-action="ocr"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M4 16v4h4M20 16v4h-4M9 8h6M12 8v8M10 16h4"/></svg><span>截图识字</span></button>
+
+    <div class="separator" role="separator"></div>
+    <button id="favorites" type="button" role="menuitem" data-action="favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z"/></svg><span>收藏夹</span></button>
+    <button id="settings" type="button" role="menuitem" data-action="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5" fill="white"/><circle cx="15" cy="17" r="2.5" fill="white"/></svg><span>提示词与设置</span></button>
+    <button id="relogin" type="button" role="menuitem" data-action="relogin"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg><span>刷新登录页面</span></button>
+    <button id="quit" class="danger" type="button" role="menuitem" data-action="quit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M7 6a8 8 0 1 0 10 0"/></svg><span>退出助手</span></button>
+    </section><section id="siteView" hidden><button id="siteBack" type="button">‹ 返回快捷操作</button><div id="siteList"></div><div id="siteError" role="status"></div></section>
+    <footer><span>右键 · 随手打开</span><span><kbd>Esc</kbd> 关闭</span></footer>
+  </main>
+  <script>
+    (() => {
+      let generation = null;
+      let fired = false;
+      const rows = Array.from(document.querySelectorAll('button[data-action]'));
+      const mainView = document.getElementById('mainView');
+      const siteView = document.getElementById('siteView');
+      const back = () => { siteView.hidden = true; mainView.hidden = false; document.getElementById('switchSite').focus(); };
+      document.getElementById('switchSite').onclick = () => {
+        if (generation === null || fired) return;
+        mainView.hidden = true; siteView.hidden = false;
+        document.getElementById('siteBack').focus();
+      };
+      document.getElementById('siteBack').onclick = back;
+      const invoke = (command, args = {}) => {
+        const bridge = window.__TAURI_INTERNALS__;
+        return bridge && typeof bridge.invoke === 'function'
+          ? bridge.invoke(command, args) : Promise.reject(new Error('菜单连接不可用'));
+      };
+      window.__dsfMenuSet = (data) => {
+        if (!data || !Number.isSafeInteger(data.generation) || data.generation <= 0) return false;
+        if (generation !== null && data.generation <= generation) return data.generation === generation;
+        generation = data.generation;
+        fired = false;
+        mainView.hidden = false; siteView.hidden = true;
+        document.getElementById('siteError').textContent = '';
+        const list = document.getElementById('siteList'); list.replaceChildren();
+        (data.sites || []).forEach(site => {
+          const button = document.createElement('button'); button.type = 'button';
+          button.dataset.site = site.url; button.title = site.url;
+          button.setAttribute('role','menuitemradio');
+          button.setAttribute('aria-checked',String(site.url === data.panelUrl));
+          const label = document.createElement('span'); label.textContent = site.label;
+          const check = document.createElement('span'); check.textContent = site.url === data.panelUrl ? '✓' : '';
+          button.append(label,check);
+          button.onclick = () => {
+            if (fired || generation === null) return;
+            fired = true; const sentGeneration = generation;
+            invoke('context_menu_switch_site',{generation,url:site.url}).catch(error => {
+              if (generation !== sentGeneration) return;
+              fired = false;
+              const message = document.getElementById('siteError');
+              message.textContent = String(error); message.title = String(error);
+            });
+          };
+          list.append(button);
+        });
+        document.getElementById('ballLabel').textContent = data.ballVisible ? '隐藏悬浮球' : '显示悬浮球';
+        document.getElementById('ball').dataset.action = data.ballVisible ? 'hide_ball' : 'show_ball';
+        document.getElementById('panelLabel').textContent = data.panelVisible ? '收起对话面板' : '打开对话面板';
+        document.getElementById('panel').dataset.action = data.panelVisible ? 'hide_panel' : 'show_panel';
+        document.getElementById('hotkey').textContent = data.hotkey || '';
+        document.getElementById('screenshot').disabled = !!data.shotBusy;
+        document.getElementById('ocr').disabled = !!data.shotBusy;
+        document.getElementById('ball').focus();
+        return true;
+      };
+      const close = () => {
+        if (generation === null || fired) return;
+        fired = true;
+        invoke('context_menu_close', { generation }).catch(console.error);
+      };
+      rows.forEach(row => row.addEventListener('click', () => {
+        if (row.disabled || fired || generation === null) return;
+        fired = true;
+        invoke('context_menu_action', { generation, action: row.dataset.action }).catch(console.error);
+      }));
+      window.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { e.preventDefault(); if (!siteView.hidden && !fired) back(); else close(); return; }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Tab'].includes(e.key)) return;
+        e.preventDefault();
+        const enabled = Array.from((siteView.hidden ? mainView : siteView).querySelectorAll('button')).filter(row => !row.disabled);
+        const index = enabled.indexOf(document.activeElement);
+        const backwards = e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey);
+        const next = e.key === 'Home' ? 0 : e.key === 'End' ? enabled.length - 1
+          : (index + (backwards ? -1 : 1) + enabled.length) % enabled.length;
+        enabled[next].focus();
+      });
+      document.addEventListener('contextmenu', e => e.preventDefault());
+      document.body.addEventListener('mousedown', e => { if (e.target === document.body) close(); });
+      invoke('context_menu_ready').catch(console.error);
+    })();
+  </script>
+</body>
+</html>

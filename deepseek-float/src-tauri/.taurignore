@@ -1,0 +1,13 @@
+# Tauri dev 文件监听忽略清单（gitignore 语法）
+# 作用域：src-tauri/ 目录
+#
+# 背景 / 根因：
+#   Tauri CLI 的 dev 监听器默认只硬编码忽略 `target/`，不会忽略别的编译产物目录。
+#   此前若把 CARGO_TARGET_DIR 指向 src-tauri 下的自定义目录（如 target-check / target-ver），
+#   构建产物就落在被监听的目录树里 → 一边编译一边监听到自己的产物 → 自激重建死循环。
+#
+# 防御措施（双保险）：
+#   1) 取消 CARGO_TARGET_DIR（在用户终端执行 $env:CARGO_TARGET_DIR=$null），让 cargo 回到默认 target/；
+#   2) 本文件显式忽略所有 target* 变体目录，即使将来误设也不会再触发重建循环。
+target*/
+target-*/

@@ -1,0 +1,34 @@
+{
+  "name": "deepseek-float",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": "^24.15.0"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check:inline-js": "node scripts/check-inline-js.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "check:csp": "node scripts/check-csp.mjs",
+    "check": "npm run check:csp && npm run check:inline-js && npm run check:version && npm run check:sanitize-whitelist",
+    "check:sanitize-whitelist": "node scripts/check-sanitize-whitelist.mjs",
+    "test:rs": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:unit": "node tests/sanitize.test.mjs && node tests/business-logic.test.mjs && node tests/screenshot-ui.test.mjs && node tests/context-menu.test.mjs && node tests/ball-interaction.test.mjs && node tests/send-feedback.test.mjs && node tests/new-session.test.mjs && node tests/favorites-export.test.mjs && node tests/settings-workflows.test.mjs && node tests/backup-ui.test.mjs && node tests/site-compatibility.test.mjs && node tests/ocr-score.test.mjs && node tests/release-security.test.mjs",
+    "test:js": "playwright test",
+    "e2e:shell": "node scripts/e2e-shell.mjs",
+    "e2e:diag": "node scripts/e2e-diag.mjs",
+    "build:release": "cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml",
+    "release": "node scripts/build-release.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "jsdom": "^30.1.1",
+    "vite": "^6.0.1"
+  }
+}

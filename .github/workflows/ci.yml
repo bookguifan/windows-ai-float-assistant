@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# 同一分支 / PR 上新的提交会取消仍在运行的旧任务。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Build, lint & test (Windows)
+    # 本项目仅面向 Windows，且 `windows` crate 无 target 门控，
+    # 因此必须在 Windows 上编译与测试。
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: deepseek-float
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # 与 package.json 固定的 pnpm 基线一致；保留冻结安装。
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: deepseek-float/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 前端产物会被 `tauri::generate_context!` 在编译期内嵌，
+      # 故必须先构建前端，随后的 cargo check / clippy / test 才能通过。
+      - name: Build frontend
+        run: pnpm build
+
+      - name: JavaScript unit tests
+        run: pnpm test:unit
+
+      - name: Install test browser
+        run: pnpm exec playwright install chromium
+
+      - name: Browser regression
+        run: pnpm test:js
+
+      - name: Sanitizer whitelist consistency
+        run: pnpm check:sanitize-whitelist
+
+      # R17-P2：`poc/*.html` 的 JS 全部内联，没有 eslint/tsconfig 兜底 —— 一个手滑的括号
+      # 会让页面「加载成功但按钮全失效」，真机上只表现为「点了没反应」。这里做纯语法编译。
+      - name: Inline script syntax check
+        run: pnpm check:inline-js
+
+      # R17-P2：版本号散在 package.json / tauri.conf.json / Cargo.toml / Cargo.lock **四处**，
+      # 发版时极易只改一处 ⇒ 安装包名与 exe 版本资源对不上，事后无法追溯。
+      - name: Version consistency
+        run: pnpm check:version
+
+      # R19：CSP 只在**构建产物**里下发（dev 走 vite dev server，Tauri 的资产协议不参与），
+      # 所以「CSP 打死页面」在 dev 永远复现不出来 —— 必须在这里挡。
+      # ★ 依赖上一步的 `pnpm build`（读的是 dist/），不可前置。
+      - name: CSP vs pages consistency
+        run: pnpm check:csp
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: deepseek-float/src-tauri -> target
+
+      - name: rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # R17-P2：`#[cfg(debug_assertions)]` 门控的探针在 release 下会变成 dead_code ——
+      # 这类告警只有 release 才会暴露（R16 曾漏掉 7 处）。故 release 也进门禁。
+      # R20：必须带上 `--features custom-protocol` —— 这是**交付用的那份特性组合**
+      # （不带它产物是 dev 模式空壳，见 docs/release-checklist.md §2.5）。顺带兜住
+      # 「Cargo.toml 里这个 features 条目被误删」的情况：删了这里会直接失败。
+      - name: cargo check (release, production features)
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol
+
+      - name: test
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+
+      # ★ 注意：`pnpm e2e:shell`（脱离 dev server 验证产物能独立运行）**不在 CI 里** ——
+      # 它要拉起 GUI + WebView2 + CDP 调试端口，需要真实桌面会话。请把它留给本机
+      # 发布前的 `docs/release-checklist.md` §0/§2.5（那是当前唯一的守门人）。

@@ -1,0 +1,5 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- build.rs ---
+// Copyright (c) The camino Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0

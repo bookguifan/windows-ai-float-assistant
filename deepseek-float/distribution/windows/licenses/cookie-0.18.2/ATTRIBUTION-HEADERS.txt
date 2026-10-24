@@ -1,0 +1,5 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- src/secure/macros.rs ---
+// This is courtesty of `static_assertions`. That library is Copyright (c) 2017
+// Nikolai Vazquez. See https://github.com/nvzqz/static-assertions-rs for more.

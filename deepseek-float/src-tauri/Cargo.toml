@@ -1,0 +1,152 @@
+[package]
+name = "deepseek-float"
+version = "0.1.0"
+description = "DeepSeek floating window desktop shell"
+# 发布前需补齐的元数据（当前为占位，非真实身份，请勿编造后提交）：
+#   · authors      —— 待维护者确认真实署名，不擅自替换占位作者。
+# license 正文见仓库根 /LICENSE；如需更换请同步两处。
+authors = ["TODO: 维护者 <maintainer@example.com>"]
+license = "MIT"
+repository = "https://github.com/bookguifan/windows-ai-float-assistant"
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "deepseek_float_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# ★★ 生产构建开关（2026-09-15 R20 真机事故后补上，**不要删**）。
+#
+# 不开启它时，`tauri::generate_context!` 会认为自己在 dev 模式：
+#   ① 窗口 URL 变成 `build.devUrl`（http://localhost:5173/poc/*.html），
+#   ② **前端资源完全不内嵌** —— 于是脱离 vite dev server 的 exe 打开就是空白页
+#      （真机表现：悬浮球 / 工具条「显示出错」，球窗实测整片空白）。
+#
+# ⚠️ `cargo build --release` **不会**自动开启它。必须二选一：
+#   · `cargo build --release --features custom-protocol`（本仓库脚本用这条）
+#   · `pnpm tauri build` / `tauri build --no-bundle`（Tauri CLI 会自动加）
+#
+# 判定依据（Tauri 源码，非推测）：
+#   tauri-macros-2.6.3/src/context.rs:155   dev: cfg!(not(feature = "custom-protocol"))
+#   tauri-2.11.5/src/lib.rs:23              custom-protocol: …Tauri assumes a production environment…
+# 注意该 cfg 是在 **tauri-macros 这个 proc-macro crate 编译时**求值的，所以
+# 真正要打开的是映射目标 `tauri/custom-protocol`（下面这一行就是干这个的）。
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+# ★★ 构建环境修复（2026-09-28）：**必须在 build-dependencies 里再声明一次** indexmap/std。
+#
+# ⚠️ 这条与下面 [dependencies] 里那条是**两套独立解析**，缺一不可：
+#   Cargo 的 feature 统一（feature unification）**只在同类依赖内生效** ——
+#   `[dependencies]` 与 `[build-dependencies]` 各自独立解析依赖图。
+#
+# 而本次失败的 `schemars` 走的正是 **build-dep 链**：
+#   deepseek-float --[build-dependencies]--> tauri-build --> tauri-utils --> schemars --> indexmap
+#   （实测 `cargo tree -i schemars --edges normal,build` 确认主链是 tauri-build）
+# ⇒ 只在 [dependencies] 里加，编译 build script 那条链时 `CARGO_FEATURE_STD` 仍不会设置，
+#   `indexmap/build.rs` 依旧走 autocfg 探测 → 依旧失败。
+#
+# 铁证（第一轮修复尝试的失败现场）：
+#   · `cargo tree` 显示 `indexmap feature "std" ← deepseek-float` 已挂上；
+#   · 但 `target/debug/build/indexmap-*/output` 仍**没有** `rustc-cfg=has_std`；
+#   · 且 build script 的 `stderr` 明确打出：`warning: autocfg could not probe for `std``
+#   ⇒ 证明 build-dep 链上的那个 indexmap 实例没拿到 std feature。
+#
+# 为什么版本写 "1.9"：与 Cargo.lock 既有条目（1.9.3）同 major.minor，**不引入新下载**。
+indexmap = { version = "1.9", features = ["std"] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = ["tray-icon"] }
+tauri-plugin-log = "2"
+
+# 截图提问 S2：PNG 编码。★ 零新增下载 —— 0.17.16 已在 Cargo.lock 内（tauri 传递依赖带入
+# 且已缓存），显式声明只是把它提到直接依赖（见 docs/screenshot-qa-design.md §5.4 F11）。
+png = "0.17"
+
+# ★★ 构建环境修复（2026-09-28）：显式开启 indexmap 的 `std` feature。
+#
+# 症状：`cargo build` / `cargo run` 在 `schemars 0.8.22` 处硬失败：
+#   error[E0107]: struct takes 3 generic arguments but 2 generic arguments were supplied
+#     --> schemars-0.8.22/src/lib.rs:12:32
+#    12 | pub type Map<K, V> = indexmap::IndexMap<K, V>;
+#
+# 根因（已实测确证，逐环有据）：
+#   1. `indexmap 1.9.3` 的 `IndexMap<K,V,S>` **只在 `#[cfg(has_std)]`** 下才有
+#      `S = RandomState` 默认值（map.rs:70-76 两个 cfg 分支）。
+#   2. `has_std` 由 `indexmap/build.rs` 产生：
+#        match std::env::var_os("CARGO_FEATURE_STD") {
+#            Some(_) => autocfg::emit("has_std"),            // ← 路径 A：声明即生效
+#            None    => autocfg::new().emit_sysroot_crate("std"), // ← 路径 B：依赖探测
+#        }
+#   3. `indexmap 1.9.3` 的 `[features] default` **不含 `std`**（Cargo.toml:104-107），
+#      而依赖树中无人显式开启它（`schemars` 只声明 `features= ["serde-1"]`）
+#      ⇒ 走路径 B ⇒ **本机 `autocfg` 探测失败**。
+#   4. 铁证：`target/debug/build/indexmap-*/output` 只有
+#      `cargo:rustc-check-cfg=cfg(has_std)`，**从未 emit `cargo:rustc-cfg=has_std`**。
+#      ⇒ `has_std` 不成立 ⇒ `IndexMap` 退化为 3 泛型（无默认 S）⇒ schemars 报 E0107。
+#
+# 修法：显式声明依赖并开启 `std`，让 build.rs 走**路径 A**（`Some(_)` 分支直接 emit，
+#       不做任何环境探测）⇒ 确定性成立，与 rustc/autocfg/宿主环境无关。
+#
+# 为什么不是「加 RUSTFLAGS=--cfg has_std」：那是全局注入，会污染所有 crate；
+#   本修法作用域精确到 indexmap 自身，且是 upstream 明确设计的开关。
+# 为什么版本写 "1.9"：与 Cargo.lock 既有条目（1.9.3）同 major.minor，
+#   **不引入新下载**，只是把传递依赖提为直接依赖并加一个 feature。
+# 为什么 default-features 保持 true：`serde-1` 由 schemars 侧开启，此处无需重复；
+#   保持默认可避免意外关闭 schemars 依赖的其他特性。
+indexmap = { version = "1.9", features = ["std"] }
+
+# D1 划词管线需要直接调用 Win32：SendInput 合成 Ctrl+C、剪贴板读/写与序列号、鼠标钩子、UIA。
+# 0.61.3 已在 Cargo.lock 里（tauri 传递依赖带入且已缓存），显式声明不会触发新的下载。
+# 本项目目标平台仅 Windows（tauri.conf.json / 图标 / 交互均按 Windows 设计），故不做 target 门控。
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  # CreateMutexW / CreateEventW 在 windows 0.61.3 里是 #[cfg(feature = "Win32_Security")]
+  # （签名含 *const SECURITY_ATTRIBUTES，见 crate 源码 Win32/System/Threading/mod.rs:249/299）。
+  # 这是同一 crate 的特性开关，不新增任何第三方依赖 —— §11 单实例互斥需要它。
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
+  "Win32_System_Registry",
+  "Win32_System_Com",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_UI_Controls_Dialogs",
+  "Win32_UI_HiDpi",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_Accessibility",
+] }
+
+# release 优化：减小二进制体积、提升启动速度（悬浮窗对体积与冷启动敏感）。
+# opt-level="s" 以体积优先；lto + codegen-units=1 额外缩减并内联跨模块；
+# strip 剥离符号表。panic 保持默认 unwind，避免 worker 线程 panic 直接 abort 拖垮宿主。
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# ★ release 关增量（**声明意图**）。⚠️ 实测（cargo 1.98.1）：**本行单独不足以**关掉 release 增量 ——
+#   用户全局 `~/.cargo/config.toml` 的 `[build] incremental = true` **会压过**本行（`[build]` 的优先级
+#   **高于** `[profile.*]`），`-C incremental` 仍被传给 rustc（`target/release/incremental` 涨到数百 MB，
+#   并产生 `error deleting lock file for incremental compilation session directory … (os error 5)` 告警，
+#   以及「同源码两次构建产物 sha256 不同」的非确定源）。
+#
+#   ⇒ **真正生效的强制点**在 `scripts/build-release.mjs`（❙② cargo 步骤显式 `CARGO_INCREMENTAL=0`）与
+#     `release.ps1` Step 5（同款）—— 两条发版入口配方一致。此处保留本行：① 声明期望的 release 配方；
+#     ② 若日后用户移除全局泄漏，本行即为唯一所需。
+#   ✗ 不要改用项目级 `.cargo/config.toml` 的 `[build] incremental = false`：它会**连 dev 增量一起关**，
+#     违背用户「加速 dev 编译」的原意；环境变量方案只作用于 release 调用，不伤 dev。
+#   ✗ **不要**去改用户的 `~/.cargo/config.toml`（全局个人配置，不属本仓库）。详见 docs/distribution-plan.md §八之二。
+incremental = false

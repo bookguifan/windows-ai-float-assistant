@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepSeek 截图遮罩</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        cursor: crosshair;
+        user-select: none;
+        -webkit-user-select: none;
+        font: 13px/1.4 "Microsoft YaHei", system-ui, sans-serif;
+      }
+      /* 全屏暗色蒙层；框选开始后由选区自身巨大的 box-shadow 替代（等效「挖洞」） */
+      #mask {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        background: rgba(0, 0, 0, 0.35);
+      }
+      #mask.off {
+        display: none;
+      }
+      /* 选区：box-shadow 向外铺满，等效于「只在选区外压暗」 */
+      #sel {
+        position: fixed;
+        display: none;
+        z-index: 2;
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+        outline: 1px solid #4c9aff;
+      }
+      #sel.on {
+        display: block;
+      }
+      /* 选区尺寸提示 */
+      #size {
+        position: fixed;
+        display: none;
+        z-index: 3;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(20, 22, 28, 0.9);
+        color: #fff;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      #size.on {
+        display: block;
+      }
+      /* 顶部操作提示 */
+      #hint {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        z-index: 4;
+        transform: translateX(-50%);
+        padding: 6px 12px;
+        border-radius: 6px;
+        background: rgba(20, 22, 28, 0.9);
+        color: #eee;
+        pointer-events: none;
+      }
+      #preview { position:fixed; inset:0; z-index:10; background:#171b24; color:#eee; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; padding:24px; box-sizing:border-box; cursor:default; }
+      #preview[hidden] { display:none; }
+      #preview-status { margin:0; }
+      #actions { display:flex; gap:10px; }
+      #actions button { border:1px solid #596273; border-radius:6px; background:#2b3444; color:#fff; padding:9px 18px; cursor:pointer; font:inherit; }
+    </style>
+  </head>
+  <body>
+    <div id="mask"></div>
+    <div id="sel"></div>
+    <div id="size"></div>
+    <div id="hint">拖动框选 · Esc 或右键取消</div>
+
+    <section id="preview" hidden aria-label="截图投递失败">
+      <p id="preview-status" role="status"></p>
+      <div id="actions"><button id="reselect">重新框选</button><button id="cancel">取消</button></div>
+    </section>
+    <script>
+      (function () {
+        'use strict';
+
+        // withGlobalTauri=false 时 __TAURI__ 不再自动注入；这里从始终存在的
+        // __TAURI_INTERNALS__（核心 IPC 通道）构造本地窗口所需的最小 API（core.invoke）。
+        // 本页只调自定义命令，不触碰任何 plugin:*（硬约束 §3）。
+        if (!window.__TAURI__) {
+          // ★ R17-P2 自检：`__TAURI_INTERNALS__` 是 Tauri 的**内部**契约（不是公开 API）。
+          //   它一旦改名/改签名，本页会「加载成功、但所有按钮静默失效」—— 真机上只表现为
+          //   「点了没反应」，定位成本极高。故建桥前先探测：失败时给一个**明确报错**的桩，
+          //   而不是让后续每次 invoke 抛一个看不见的 TypeError。
+          //   升级 Tauri 后若看到这条报错 → 需回归全部 5 个页面（见 docs/upgrade-notes.md）。
+          const internals = window.__TAURI_INTERNALS__;
+          const ok = !!internals && typeof internals.invoke === 'function';
+          if (!ok) {
+            console.error(
+              '[deepseek-float] Tauri IPC 桥不可用：__TAURI_INTERNALS__.invoke 缺失 → 本页按钮将全部失效'
+            );
+          }
+          window.__TAURI__ = {
+            core: {
+              invoke: ok
+                ? (cmd, args) => internals.invoke(cmd, args || {})
+                : () => Promise.reject(new Error('tauri-ipc-bridge-unavailable')),
+            },
+          };
+        }
+        const tauri = window.__TAURI__;
+
+        const mask = document.getElementById('mask');
+        const sel = document.getElementById('sel');
+        const sizeEl = document.getElementById('size');
+        const hint = document.getElementById('hint');
+
+        let dragging = false;
+        let sx = 0;
+        let sy = 0;
+        let ex = 0;
+        let ey = 0;
+        let done = false; // 一次框选只允许提交 / 取消一次
+        let captureId = null;
+        let revision = 1;
+        let phase = 'selecting';
+        const preview = document.getElementById('preview');
+        const status = document.getElementById('preview-status');
+        const reselect = document.getElementById('reselect');
+        const same = (id, rev) => captureId === id && revision === rev;
+        function resetSelection() {
+          dragging = false; done = false; phase = 'selecting';
+          preview.hidden = true; status.textContent = ''; reselect.disabled = false;
+          mask.classList.remove('off'); sel.classList.remove('on'); sizeEl.classList.remove('on'); hint.style.display = '';
+        }
+        function invoke(action, args) {
+          try { return Promise.resolve(tauri.core.invoke(action,args)); }
+          catch(error) { return Promise.reject(error); }
+        }
+        function showError(id, rev, error) {
+          if (!same(id,rev) || phase === 'done') return;
+          phase = 'error'; done = true; preview.hidden = false;
+          status.textContent = '截图未能自动贴入：' + String(error || '请重新框选');
+          reselect.disabled = false;
+          invoke('shot_preview_ready',{captureId:id, revision:rev, failed:true}).catch(e => {
+            if (same(id,rev)) status.textContent = '截图投递失败：' + String(e);
+          });
+        }
+        window.__dsfShotReselect = function(id, rev) {
+          if (id !== captureId || phase === 'done' || !Number.isSafeInteger(rev) || rev <= revision) return false;
+          revision = rev; resetSelection(); return true;
+        };
+        window.__dsfShotInvalidate = function(id) {
+          if (id !== captureId) return false;
+          phase='done'; done=true; dragging=false; preview.hidden=true;
+          return true;
+        };
+        window.__dsfShotDeliveryError = function(id, rev, error) {
+          if (same(id,rev) && phase === 'delivering') showError(id,rev,error);
+        };
+        reselect.addEventListener('click', function() {
+          if (phase !== 'error') return;
+          const id=captureId, rev=revision; phase='reselecting'; reselect.disabled=true;
+          invoke('shot_reselect',{captureId:id,revision:rev}).then(next => {
+            if (same(id,rev) && phase === 'reselecting') window.__dsfShotReselect(id,next);
+          }).catch(e => { if (same(id,rev) && phase === 'reselecting') showError(id,rev,e); });
+        });
+        document.getElementById('cancel').addEventListener('click', () => conclude('shot_cancel'));
+        // Error actions must not begin a new desktop selection.
+        preview.addEventListener('mousedown', e => e.stopPropagation());
+
+        // 复位到「刚显示」的初始态。Rust 每次 begin() 都会 eval 调用本钩子 ——
+        // 窗口只 show/hide 不重建，页内状态会跨次保留（同 popup 的 __dsfResetFired 思路）。
+        window.__dsfShotReset = function (id, rev = 1) {
+          const nextId = Number.isSafeInteger(id) && id > 0 ? id : null;
+          // 同编号重试不抹掉正在拖动的选区；旧 eval 不覆盖新截图。
+          if (captureId !== null && (nextId === null || nextId <= captureId)) {
+            return nextId === captureId;
+          }
+          captureId = nextId;
+          revision = Number.isSafeInteger(rev) && rev > 0 ? rev : 1;
+          resetSelection();
+          return captureId !== null;
+        };
+        window.__dsfShotReset();
+
+        function clamp(v, lo, hi) {
+          return v < lo ? lo : v > hi ? hi : v;
+        }
+
+        function rect() {
+          return {
+            x: Math.min(sx, ex),
+            y: Math.min(sy, ey),
+            w: Math.abs(ex - sx),
+            h: Math.abs(ey - sy),
+          };
+        }
+
+        function render() {
+          const r = rect();
+          sel.style.left = r.x + 'px';
+          sel.style.top = r.y + 'px';
+          sel.style.width = r.w + 'px';
+          sel.style.height = r.h + 'px';
+          // 硬约束 §13：禁用 innerHTML，文本只走 textContent
+          sizeEl.textContent = Math.round(r.w) + ' × ' + Math.round(r.h);
+          const vw = window.innerWidth || 0;
+          const vh = window.innerHeight || 0;
+          const tx = clamp(r.x + r.w + 8, 4, Math.max(4, vw - 72));
+          let ty = r.y + r.h + 8;
+          if (ty > vh - 26) ty = Math.max(4, r.y - 26);
+          sizeEl.style.left = tx + 'px';
+          sizeEl.style.top = ty + 'px';
+        }
+
+        function conclude(action, payload = {}) {
+          if (captureId === null || phase === 'done' || phase === 'delivering') return;
+          if (action === 'shot_commit' && done) return;
+          const id=captureId, rev=revision;
+          done = true; dragging = false;
+          mask.classList.add('off'); sel.classList.remove('on'); sizeEl.classList.remove('on'); hint.style.display='none';
+          if (action === 'shot_cancel') {
+            phase='done'; preview.hidden=true;
+            // Dispatch cancellation immediately; no Promise microtask allows a second click.
+            try { Promise.resolve(tauri.core.invoke(action,{captureId:id,revision:rev})).catch(console.error); } catch(e) {console.error(e);}
+            return;
+          }
+          phase='capturing';
+          try {
+            Promise.resolve(tauri.core.invoke(action,{...payload,captureId:id,revision:rev})).then(data => {
+              if (!same(id,rev) || phase !== 'capturing') return;
+              if (!data || data.captureId !== id || data.revision !== rev) return;
+              phase='loading';
+              invoke('shot_preview_ready',{captureId:id,revision:rev,failed:false}).then(ready => {
+                if (!same(id,rev) || phase !== 'loading') return;
+                if (!ready) throw new Error('截图状态已改变');
+                phase='delivering';
+                return invoke('shot_confirm',{captureId:id,revision:rev});
+              }).catch(e => showError(id,rev,e));
+            }).catch(e => showError(id,rev,e));
+          } catch(e) { showError(id,rev,e); }
+        }
+
+        window.addEventListener(
+          'mousedown',
+          function (e) {
+            if (e.button !== 0 || done || captureId === null) return; // 只响应当前截图的左键
+            e.preventDefault();
+            dragging = true;
+            sx = ex = e.clientX;
+            sy = ey = e.clientY;
+            mask.classList.add('off');
+            sel.classList.add('on');
+            sizeEl.classList.add('on');
+            render();
+          },
+          true
+        );
+
+        window.addEventListener(
+          'mousemove',
+          function (e) {
+            if (!dragging) return;
+            ex = e.clientX;
+            ey = e.clientY;
+            render();
+          },
+          true
+        );
+
+        window.addEventListener(
+          'mouseup',
+          function (e) {
+            if (!dragging) return;
+            ex = e.clientX;
+            ey = e.clientY;
+            const r = rect();
+            if (r.w < 4 || r.h < 4) {
+              conclude('shot_cancel'); // 过小视为误触
+              return;
+            }
+            // 回报窗口内 CSS 坐标 + DPR + 视口尺寸（S1 用于核对 DPI 换算；S2 起用于换算抓取矩形）
+            // 载荷打包成 rect 对象，对应 Rust 侧 screenshot::ShotRect
+            conclude('shot_commit', {
+              rect: {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                dpr: window.devicePixelRatio || 1,
+                vw: window.innerWidth || 0,
+                vh: window.innerHeight || 0,
+              },
+            });
+          },
+          true
+        );
+
+        window.addEventListener(
+          'keydown',
+          function (e) {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              conclude('shot_cancel');
+            }
+          },
+          true
+        );
+
+        // 右键取消（同时抑制原生上下文菜单）
+        window.addEventListener(
+          'contextmenu',
+          function (e) {
+            e.preventDefault();
+            conclude('shot_cancel');
+          },
+          true
+        );
+
+        // 防止拖拽选中 / 原生拖放干扰框选
+        window.addEventListener(
+          'dragstart',
+          function (e) {
+            e.preventDefault();
+          },
+          true
+        );
+        document.addEventListener(
+          'selectstart',
+          function (e) {
+            e.preventDefault();
+          },
+          true
+        );
+      })();
+    </script>
+  </body>
+</html>

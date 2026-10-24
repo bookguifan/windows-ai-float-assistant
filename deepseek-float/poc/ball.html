@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek 悬浮球</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 64px;
+        height: 64px;
+        /* ★ 2026-09-26（方案 A-2）：球窗已由 tao 的 blur-behind 透明改为**不透明窗**
+           （tauri.conf.json `transparent:false`）+ `SetWindowRgn` 椭圆裁剪成圆。
+           故页面底色改为不透明白 —— 与白圆 `.ball` 同色，作为「圆内绝不透出桌面」的双保险
+           （即便 WebView2 掉帧，不透明窗只会保留自身上一帧，不会露出背后窗口）。 */
+        background: #ffffff;
+        overflow: hidden;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        user-select: none;
+        /* 兜底：即便页面里残留任何文本节点（正常不应有），也一律透明、不渲染成可见文字，
+           杜绝「悬浮球背景出现不明文字」一类回归（R6 真机反馈）。 */
+        color: transparent;
+      }
+      /* 拖动由脚本手动接管（位移超阈值才调 startDragging），
+         不使用 data-tauri-drag-region —— 该属性会在 mousedown 阶段吞掉后续 click 事件。 */
+      .ball {
+        width: 64px;
+        height: 64px;
+        box-sizing: border-box; /* 描边/内阴影都算在 64×64 内，避免元素被撑大后遭窗口裁切 */
+        border-radius: 50%;
+        background: #ffffff; /* 用户要求：圆型白底 */
+        /* 白底上原来的外发光（0 0 14px …）有两个问题：一是全部落在 64×64 窗口之外被 overflow 裁掉，
+           二是叠在白底上会糊成一团。改为「内侧细描边 + 极淡内阴影」，完全落在窗口内，轮廓清晰。 */
+        box-shadow: inset 0 0 0 1.5px rgba(43, 92, 255, 0.22),
+                    inset 0 -2px 6px rgba(43, 92, 255, 0.10);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: grab;
+        transition: box-shadow 0.12s ease;
+      }
+      /* 球心品牌标记：40px 内联 SVG（DeepSeek 官方鲸鱼造型）。
+         白底上不再需要白色描边，只留一层极淡投影让 logo 略有浮起感。 */
+      .ball .logo {
+        width: 40px;
+        height: 40px;
+        display: block;
+        pointer-events: none; /* 让 mousedown 始终落在 .ball 自身，行为更确定 */
+        filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.18));
+      }
+      .ball:hover {
+        /* 原来是 transform: scale(1.08)：64×1.08≈69px，超出 64×64 窗口后被 overflow:hidden 裁掉，
+           被裁掉的发光边缘看起来就像球外多了一圈方形阴影。改为只加强内侧描边，尺寸不变、绝不溢出。 */
+        box-shadow: inset 0 0 0 2.5px rgba(43, 92, 255, 0.45),
+                    inset 0 -2px 7px rgba(43, 92, 255, 0.16);
+      }
+      .ball:active { cursor: grabbing; }
+    </style>
+  </head>
+  <body>
+    <div class="ball" id="ball">
+      <!-- DeepSeek 官方品牌标记（鲸鱼）。路径数据取自 Simple Icons 的 deepseek 条目：
+           https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/deepseek.svg （viewBox 0 0 24 24）
+           品牌蓝 #4D6BFE。Simple Icons 的图形源自动官方品牌资产，此处仅内联复用，未做形状改动。 -->
+      <svg class="logo" viewBox="0 0 24 24" role="img" aria-label="DeepSeek" xmlns="http://www.w3.org/2000/svg">
+        <path fill="#4D6BFE" d="M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45"/>
+      </svg>
+    </div>
+
+    <script>
+      // withGlobalTauri=false 时 __TAURI__ 不再自动注入；这里从始终存在的
+      // __TAURI_INTERNALS__（核心 IPC 通道）构造本地窗口所需的最小 API：
+      //   core.invoke（自定义命令）+ window.getCurrentWindow().startDragging（拖动）。
+      // 远端 DeepSeek 页面（panel）不经过此桥接，拿不到任何 Tauri 全局 API。
+      if (!window.__TAURI__) {
+        // ★ R17-P2 自检：`__TAURI_INTERNALS__` 是 Tauri 的**内部**契约（不是公开 API）。
+        //   它一旦改名/改签名，本页会「加载成功、但按钮与拖动全部静默失效」—— 真机上只
+        //   表现为「点了没反应」。故建桥前先探测：失败时给一个**明确报错**的桩。
+        //   升级 Tauri 后若看到这条报错 → 需回归全部 5 个页面（见 docs/upgrade-notes.md）。
+        //   `startDragging` 依旧直呼 internals（它外面已有 try/catch 兜底，见下方拖动逻辑）。
+        const internals = window.__TAURI_INTERNALS__;
+        const ok = !!internals && typeof internals.invoke === 'function';
+        if (!ok) {
+          console.error(
+            '[deepseek-float] Tauri IPC 桥不可用：__TAURI_INTERNALS__.invoke 缺失 → 本页按钮与拖动将全部失效'
+          );
+        }
+        window.__TAURI__ = {
+          core: {
+            invoke: ok
+              ? (cmd, args) => internals.invoke(cmd, args || {})
+              : () => Promise.reject(new Error('tauri-ipc-bridge-unavailable')),
+          },
+          window: {
+            getCurrentWindow: () => ({
+              startDragging: () => internals.invoke('plugin:window|start_dragging'),
+            }),
+          },
+        };
+      }
+      const tauri = window.__TAURI__;
+      const ball = document.getElementById("ball");
+
+      // ---- ★ #7：启动期「首帧就绪」握手 ----
+      // 启动时球窗被 Rust（windows::gate_ball_show）维持为「零面积空区域」（整窗不可见），
+      // 并在后台等待本信号（≤3s 兜底超时），收到后（或超时）才套椭圆区域显形。
+      // 目的：让球「一露面即已绘制完成」，消除「启动瞬间球空白」。
+      //
+      // 触发时机 = 「首个渲染帧之后」：
+      //   · 首选**双 requestAnimationFrame**（一次 rAF 只保证回调在下一帧前执行、两次才确保
+      //     至少一次真实绘制已发生）；
+      //   · 但窗口若被浏览器判定为不可见时 rAF 会被暂停 —— 故并列两个兜底：`load` 事件
+      //     （隐藏页也会触发）与 4s 定时器。Rust 侧 3s 超时是最后防线；
+      //     本页任何一条路径先到，都会令球立即显形。
+      // 幂等：仅首发达意（`ballReadySent` 守卫）。
+      let ballReadySent = false;
+      function notifyBallReady() {
+        if (ballReadySent) return;
+        ballReadySent = true;
+        try {
+          tauri.core.invoke("ball_ready").catch((e) => console.error("[ball] ball_ready:", e));
+        } catch (e) {
+          console.error("[ball] invoke ball_ready failed:", e);
+        }
+      }
+      requestAnimationFrame(() => requestAnimationFrame(notifyBallReady));
+      window.addEventListener("load", () => setTimeout(notifyBallReady, 0));
+      setTimeout(notifyBallReady, 4000);
+
+      function togglePanel() {
+        try {
+          tauri.core.invoke("toggle_panel").catch((e) => console.error("[ball] toggle_panel:", e));
+        } catch (e) {
+          console.error("[ball] invoke toggle_panel failed:", e);
+        }
+      }
+
+      // ---- 左键：区分「单击」与「拖动」----
+      // 不能用 data-tauri-drag-region：Tauri 注入的 drag.js 在 **mousedown** 阶段就执行
+      //   e.preventDefault(); e.stopImmediatePropagation(); invoke('plugin:window|start_dragging')
+      // 从而进入 Windows 模态拖动循环，webview 再也收不到 mouseup/click
+      //   → addEventListener("click", ...) 永远不触发 → 「左键点击无任何反应」。
+      // 改为手动实现：按下记录 → 位移超阈值才 startDragging() → 未位移的抬起判定为单击。
+      const DRAG_THRESHOLD = 4; // px：位移小于该值视为点击
+      const CLICK_DEBOUNCE = 300; // ms：双击防抖窗口
+      let down = null;          // { x, y, t }
+      let dragging = false;
+      let lastClickAt = 0;      // 上次响应单击的时间戳（双击防抖）
+
+      function startDrag() {
+        try {
+          if (tauri.window && tauri.window.getCurrentWindow) {
+            tauri.window.getCurrentWindow().startDragging();
+          } else {
+            // 兜底：与 Tauri 内置 drag.js 等价的原生命令（需 core:window:allow-start-dragging）
+            window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging");
+          }
+        } catch (err) {
+          console.error("[ball] startDragging failed:", err);
+        }
+      }
+
+      ball.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return; // 仅左键
+        down = { x: e.clientX, y: e.clientY, t: Date.now() };
+        dragging = false;
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (!down || dragging) return;
+        if (
+          Math.abs(e.clientX - down.x) > DRAG_THRESHOLD ||
+          Math.abs(e.clientY - down.y) > DRAG_THRESHOLD
+        ) {
+          dragging = true;
+          down = null;
+          startDrag();
+        }
+      });
+
+      window.addEventListener("mouseup", (e) => {
+        if (e.button !== 0) return;
+        const d = down;
+        down = null;
+        const isClick = !!d && !dragging && Date.now() - d.t < 500;
+        dragging = false;
+        if (!isClick) return;
+        // 双击防抖：只响应「距上次响应 >300ms」的单击。
+        // 双击会在 300ms 内产生第二次 mouseup，不处理就会 toggle 两次（面板打开后立刻收起）。
+        const now = Date.now();
+        if (now - lastClickAt < CLICK_DEBOUNCE) return;
+        lastClickAt = now;
+        togglePanel();
+      });
+
+      // 拖动进入系统模态循环时 mouseup 会被吞掉，失焦时兜底复位
+      window.addEventListener("blur", () => { down = null; dragging = false; });
+
+      // 右键 → Rust 打开懒建的自绘圆角菜单。
+      ball.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        try {
+          tauri.core.invoke("ball_contextmenu", { x: e.clientX, y: e.clientY }).catch(() => {});
+        } catch (_) {}
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,34 @@
+# 统一文本换行：仓库按 LF 存储，检出亦保持 LF（避免 Windows 上的 CRLF 抖动与 diff 噪音）
+* text=auto eol=lf
+
+# ★ 已知且**有意为之**的差异（勿当 bug 修）：
+#   交付校验值 `deepseek-float/release/HASH.txt` 由工具产出为「64 位大写 hex + CRLF = 66 字节」
+#   （`build-release.mjs` 的 `deliverArtifacts()` 与 `release.ps1` 均如此），但本仓库统一 `eol=lf`
+#   ⇒ **仓库/检出副本为 65 字节 LF**。校验内容（64 位 hex）不受影响，`git status` 亦不会因此变脏
+#   （提交时 CRLF→LF 归一，与索引一致）。若日后确需逐字节固定，须用 `-text -eol` 同时关掉两者
+#   （只写 `-text` 无效 —— `eol` 属性会独立强制转换）。
+
+# Windows 专用脚本保留 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制资源：不做换行转换与文本差分
+# EXE 是构建产物，不进入本源码仓库；binary 规则仅避免本地意外文本转换。
+*.exe   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.woff  binary
+*.woff2 binary
+
+# 锁文件 diff 噪音大，折叠显示
+Cargo.lock     -diff linguist-generated=true
+pnpm-lock.yaml -diff linguist-generated=true
+
+# 构建产物不计入语言统计
+dist/**           linguist-generated=true
+src-tauri/target/** linguist-generated=true

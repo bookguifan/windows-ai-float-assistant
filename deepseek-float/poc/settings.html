@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek 划词设置</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #f3f4f6;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        color: #1f2937;
+        font-size: 13px;
+        user-select: none;
+      }
+      body { overflow-y: auto; }
+      .container { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+      h1 { margin: 0; font-size: 17px; font-weight: 600; color: #111827; }
+      h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: #374151; }
+      .card { background: #fff; border-radius: 10px; border: 1px solid #e5e7eb; padding: 12px; }
+      .hint { font-size: 12px; color: #6b7280; line-height: 1.55; }
+      .hint code { background: #f3f4f6; border-radius: 3px; padding: 1px 4px; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+      .preview {
+        background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;
+        padding: 8px 10px; font-size: 12px; line-height: 1.55; color: #1f2937;
+        max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word; user-select: text;
+      }
+      .preview-empty { color: #9ca3af; font-style: italic; }
+      .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+      .row:last-child { border-bottom: 0; }
+      /* meta 不强制收缩（不加 min-width:0）→ 标题/说明完整显示；按钮放不下时由 .row 折行到下一行，不挤掉标题。 */
+      .row .meta { flex: 1 1 auto; }
+      .row .label { font-size: 13px; font-weight: 500; color: #111827; }
+      .row .instr { display: none; }
+      .row .actions { display: flex; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
+      .badge {
+        display: inline-block; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+        background: rgba(43, 92, 255, 0.10); color: #2b5cff; margin-left: 6px; vertical-align: 1px;
+      }
+      button {
+        font-family: inherit; font-size: 12px; border-radius: 6px;
+        border: 1px solid #d1d5db; background: #fff; color: #1f2937; padding: 4px 10px; cursor: pointer;
+      }
+      button:hover { background: #f3f4f6; }
+      button.primary { background: #2b5cff; color: #fff; border-color: #2b5cff; }
+      button.primary:hover { background: #244fdf; }
+      button.danger { color: #dc2626; border-color: #fecaca; }
+      button.danger:hover { background: #fef2f2; }
+      .empty-list { padding: 18px 8px; text-align: center; font-size: 12px; color: #9ca3af; }
+      .form { display: flex; flex-direction: column; gap: 8px; }
+      .form label { font-size: 11px; color: #6b7280; display: flex; flex-direction: column; gap: 4px; }
+      .form input, .form textarea {
+        font-family: inherit; font-size: 13px; padding: 6px 8px; border-radius: 6px;
+        border: 1px solid #d1d5db; background: #fff; color: #1f2937; resize: vertical;
+      }
+      .form textarea { min-height: 64px; max-height: 180px; }
+      .form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .counter { font-size: 11px; color: #9ca3af; text-align: right; }
+      /* 产品功能开关 */
+      .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
+      .toggle-row + .toggle-row { border-top: 1px solid #f3f4f6; }
+      .toggle-row .meta { display: flex; flex-direction: column; gap: 2px; }
+      .toggle-row .t-label { font-size: 13px; font-weight: 500; color: #111827; }
+      .toggle-row .t-hint { font-size: 11px; color: #6b7280; line-height: 1.4; }
+      .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+      .switch input { opacity: 0; width: 0; height: 0; }
+      .switch .slider { position: absolute; inset: 0; background: #d1d5db; border-radius: 999px; transition: background .15s; cursor: pointer; }
+      .switch .slider::before { content: ""; position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+      .switch input:checked + .slider { background: #2b5cff; }
+      .switch input:checked + .slider::before { transform: translateX(18px); }
+      /* 截图热键录制框（R13-S4b）：点击进入「录制」，按下组合键即保存。 */
+      .hotkey-box {
+        width: 136px;
+        flex-shrink: 0;
+        text-align: center;
+        font-size: 12px;
+        font-family: inherit;
+        color: #111827;
+        padding: 6px 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #fff;
+        cursor: pointer;
+        outline: none;
+      }
+      .hotkey-box.recording { border-color: #2b5cff; color: #2b5cff; background: #eef2ff; }
+      .hotkey-box.error { border-color: #dc2626; color: #dc2626; background: #fef2f2; }
+      [hidden] { display: none !important; }
+      .save-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 24px; margin-top: 8px; font-size: 12px; color: #6b7280; }
+      .save-feedback [data-state="error"] { color: #b91c1c; overflow-wrap: anywhere; }
+      .save-feedback [data-state="saved"] { color: #047857; }
+      .site-meta { flex: 1 1 160px; min-width: 0; }
+      .site-meta strong, .site-meta small { display: block; overflow-wrap: anywhere; }
+      .site-meta small { color: #6b7280; margin-top: 3px; user-select: text; }
+      button:disabled { opacity: .5; cursor: default; }
+      .url-field { max-width: 100%; }
+
+/* 面板网址区：下拉预置 + 手输，统一圆角/内边距，聚焦主题色高亮 */
+.url-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.url-box {
+  padding: 6px 10px; border: 1px solid #e3e6ec; border-radius: 7px;
+  font-size: 13px; background: #fff; color: #1f2329; outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.url-box:focus { border-color: #2b5cff; box-shadow: 0 0 0 2px rgba(43,92,255,.12); }
+select.url-box { width: 100%; padding: 6px 8px; cursor: pointer; }
+input.url-box { width: 100%; box-sizing: border-box; }
+.url-hint {
+  margin-top: 4px; font-size: 12px; color: #8a919f; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.backup-actions, .backup-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.backup-status { min-height: 20px; overflow-wrap: anywhere; user-select: text; }
+.backup-preview { margin-top: 12px; padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; }
+.backup-preview h3 { margin: 0 0 6px; font-size: 13px; }
+.backup-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin: 8px 0; }
+.backup-conflicts { margin: 6px 0 0; padding-left: 18px; max-height: 112px; overflow: auto; color: #92400e; }
+.backup-modes { display: grid; gap: 7px; margin-top: 10px; }
+.backup-modes label { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.45; }
+.backup-modes input { margin: 2px 0 0; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>DeepSeek 划词设置</h1>
+
+      <section class="card">
+        <h2>产品功能</h2>
+        <div id="features">
+          <div class="toggle-row">
+            <div class="meta">
+              <span class="t-label">开机自启</span>
+              <span class="t-hint" id="autostart-hint">登录系统后自动运行本助手</span>
+            </div>
+            <label class="switch"><input type="checkbox" data-key="autostart" /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="meta">
+              <span class="t-label">全屏隐藏</span>
+              <span class="t-hint">看视频 / 游戏全屏时自动收起悬浮球</span>
+            </div>
+            <label class="switch"><input type="checkbox" data-key="fullscreen" /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="meta">
+              <span class="t-label">提权划词</span>
+              <span class="t-hint">用 UI Automation 直读选区，突破部分受保护控件</span>
+            </div>
+            <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="meta">
+              <span class="t-label">自动复制回退（本公开构建已禁用）</span>
+              <span class="t-hint">旧配置和备份不能开启此功能。自动抓词需开启“提权划词”且目标支持 UIA；用户主动复制不受影响。</span>
+            </div>
+            <label class="switch"><input type="checkbox" data-key="clipboard-fallback" aria-label="自动复制回退：本构建已禁用" disabled /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div class="meta">
+              <span class="t-label">截图热键</span>
+              <span class="t-hint" id="hotkey-hint">点右侧框后按组合键（如 Ctrl+Alt+1）；留空 = 关闭</span>
+            </div>
+            <input id="hotkey-input" class="hotkey-box" type="text" readonly placeholder="未设置" />
+          </div>
+          <div class="toggle-row" style="align-items:flex-start;">
+            <div class="meta">
+              <span class="t-label">面板网址</span>
+            </div>
+            <div class="url-field">
+              <select id="panel-url-preset" class="url-box" title="选择常用面板网址">
+                <option value="">自定义…</option>
+                <option value="https://chat.deepseek.com/">DeepSeek 官方</option>
+                <option value="https://chatgpt.com/">ChatGPT</option>
+                <option value="https://www.kimi.com/">Kimi</option>
+                <option value="https://gemini.google.com/app">Gemini</option>
+                <option value="https://chatglm.cn/main/alltoolsdetail?lang=zh">智谱清言</option>
+              </select>
+              <input id="panel-url-input" class="url-box" type="text"
+                placeholder="https://chat.deepseek.com/" />
+            </div>
+          </div>
+          <div class="url-hint" id="panel-url-hint">选择后立即切换，并取消当前发送与读取；也可从右键菜单快捷切换</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>当前划词内容</h2>
+        <div id="text-preview" class="preview preview-empty">（还没有划词文本，先选中一段文字）</div>
+        <div class="hint" style="margin-top:6px;">点提示词右边的「运行」会用这段文本发给 DeepSeek。</div>
+      </section>
+
+      <section class="card" id="backup-card">
+        <h2>数据备份与恢复</h2>
+        <div class="hint">可迁移提示词、自定义站点、常规偏好和收藏，不包含 AI 网站登录状态、窗口位置或设备启动项。本公开构建已禁用自动复制回退；旧配置、合并及覆盖恢复均不能重新开启。</div>
+        <div class="backup-actions">
+          <button id="backup-export" type="button">导出备份</button>
+          <button id="backup-import" type="button">导入备份</button>
+        </div>
+        <div id="backup-status" class="save-feedback backup-status" role="status" aria-live="polite"></div>
+        <div id="backup-preview" class="backup-preview" hidden>
+          <h3>导入预览</h3>
+          <div id="backup-preview-summary" class="hint"></div>
+          <div id="backup-preview-counts" class="backup-stats"></div>
+          <div class="hint">合并时保留本机已有内容；仍为默认值的可迁移偏好视作未配置并由备份填充，已改过的偏好保留本机值。同 ID 或同名但内容不同的提示词、同名异址站点和同 ID 收藏均跳过备份项，并列为冲突。覆盖只替换提示词、站点、可迁移设置和收藏。</div>
+          <ul id="backup-conflicts" class="backup-conflicts"></ul>
+          <div id="backup-conflicts-more" class="hint" hidden></div>
+          <div class="backup-modes" role="radiogroup" aria-label="恢复模式">
+            <label><input type="radio" name="backup-mode" value="merge" checked /> <span><b>合并恢复</b>：保留本机数据，只导入不存在且无冲突的记录。</span></label>
+            <label><input type="radio" name="backup-mode" value="overwrite" /> <span><b>覆盖恢复</b>：以备份替换对应业务数据，窗口位置和开机自启仍保留。</span></label>
+          </div>
+          <div class="backup-preview-actions">
+            <button id="backup-restore-confirm" class="primary" type="button">确认恢复</button>
+            <button id="backup-cancel" type="button">取消</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="custom-sites-card">
+        <h2>自定义站点</h2>
+        <div class="hint">保存常用地址后可从右键菜单切换。保存、编辑或删除清单不会切换当前面板。最多 20 个；其他站点的发送、读回答和上传需实际验证。</div>
+        <div id="custom-sites-list"></div>
+        <div class="form" style="margin-top:8px;">
+          <label>站点名称（≤ 32 字）<input id="site-label" maxlength="32" placeholder="例如：工作助手" /></label>
+          <label>站点地址<input id="site-url" type="url" placeholder="https://example.com/chat" /></label>
+          <div class="form-actions">
+            <button id="site-use-current" type="button">填入当前地址</button>
+            <button id="site-cancel" type="button" hidden>取消编辑</button>
+            <button id="site-save" class="primary" type="button" disabled>添加站点</button>
+          </div>
+        </div>
+        <div class="save-feedback" role="status" aria-live="polite">
+          <span id="sites-save-status"></span><button id="sites-save-retry" type="button" hidden>重试保存</button>
+          <button id="sites-load-retry" type="button" hidden>重试读取</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+          <h2 style="margin:0;">提示词（内置 + 自定义）</h2>
+          <button id="add-btn" class="primary">＋ 新增提示词</button>
+        </div>
+        <div class="hint">
+          内置的「解释 / 翻译 / 总结 / 问问DeepSeek」也能改名称和指令；指令可含 <code>{text}</code> 占位符（替换为选区文本），不含则按「指令 + 选区文本」拼接。
+        </div>
+        <div class="hint" style="margin-top:4px;">
+          <b>交付方式</b>：<span class="badge" style="background:#eef2ff;color:#4f46e5;">结果卡</span> = 划词后<b>不弹面板</b>，回答直接浮动在结果卡上；
+          <span class="badge" style="background:#ecfdf5;color:#059669;">面板</span> = 划词后<b>弹出面板</b>，在面板里看回答（不出卡片）。每条提示词可单独设置。
+        </div>
+        <div id="list" style="margin-top:8px;"></div>
+        <div id="empty" class="empty-list">还没有提示词。</div>
+        <div class="save-feedback" role="status" aria-live="polite">
+          <span id="prompt-save-status"></span><button id="prompt-save-retry" type="button" hidden>重试保存</button>
+        </div>
+      </section>
+
+      <section id="editor-card" class="card" style="display:none;">
+        <h2 id="editor-title">新增提示词</h2>
+        <div class="form">
+          <label>
+            名称（≤ 20 字）
+            <input id="f-label" type="text" maxlength="20" placeholder="例如：提取关键词" />
+          </label>
+          <label>
+            提示词指令（≤ 2000 字；可用 <code>{text}</code> 表示选区文本；留空 = 原样发送）
+            <textarea id="f-instr" maxlength="2000" placeholder="例如：请从下面这段话里提取 5 个关键词：&#10;{text}&#10;只输出关键词列表"></textarea>
+          </label>
+          <div class="counter"><span id="f-instr-count">0</span> / 2000</div>
+          <div class="form-actions">
+            <button id="f-cancel">取消</button>
+            <button id="f-save" class="primary">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="hint">
+        所有提示词保存在 <code>%LOCALAPPDATA%\com.deepseekfloat.desktop\prompts.json</code>，仅本机保留。
+      </div>
+    </div>
+
+    <script>
+      // withGlobalTauri=false 时 __TAURI__ 不再自动注入；这里从始终存在的
+      // __TAURI_INTERNALS__（核心 IPC 通道）构造本地窗口所需的最小 API（core.invoke）。
+      if (!window.__TAURI__) {
+        // ★ R17-P2 自检：`__TAURI_INTERNALS__` 是 Tauri 的**内部**契约（不是公开 API）。
+        //   它一旦改名/改签名，本页会「加载成功、但所有按钮静默失效」—— 真机上只表现为
+        //   「点了没反应」，定位成本极高。故建桥前先探测：失败时给一个**明确报错**的桩，
+        //   而不是让后续每次 invoke 抛一个看不见的 TypeError。
+        //   升级 Tauri 后若看到这条报错 → 需回归全部 5 个页面（见 docs/upgrade-notes.md）。
+        const internals = window.__TAURI_INTERNALS__;
+        const ok = !!internals && typeof internals.invoke === 'function';
+        if (!ok) {
+          console.error(
+            '[deepseek-float] Tauri IPC 桥不可用：__TAURI_INTERNALS__.invoke 缺失 → 本页按钮将全部失效'
+          );
+        }
+        window.__TAURI__ = {
+          core: {
+            invoke: ok
+              ? (cmd, args) => internals.invoke(cmd, args || {})
+              : () => Promise.reject(new Error('tauri-ipc-bridge-unavailable')),
+          },
+        };
+      }
+      const tauri = window.__TAURI__;
+      const LABEL_MAX = 20;
+      const INSTR_MAX = 2000;
+      const MAX_CUSTOM = 20;
+
+      // 内置默认值：用于「恢复默认」。
+      const BUILTIN_DEFAULTS = {
+        explain: { label: "解释", instruction: "请解释下面的内容：" },
+        translate: { label: "翻译", instruction: "请把下面的内容翻译成中文，只输出译文：" },
+        summarize: { label: "总结", instruction: "请用要点总结下面的内容：" },
+        ask: { label: "问问DeepSeek", instruction: "" },
+      };
+
+      let prompts = [];
+      let editingId = null; // null=关闭；"new"=新增；否则为被编辑 id
+      let customSites = [];
+      let sitesLoaded = false;
+      let editingSite = null;
+      let featuresGeneration = 0;
+      let panelSwitchRevision = 0;
+      let backupBusy = false;
+
+      // 一个窗口仅有一个在途写入；连续编辑只保留最新快照，旧成功不能覆盖新内容。
+      function createSaveQueue(statusId, retryId, command, snapshot, apply, changed) {
+        const status = document.getElementById(statusId);
+        const retry = document.getElementById(retryId);
+        let revision = 0, pending = null, running = false, dirty = false;
+        function feedback(state, text) { status.dataset.state = state; status.textContent = text; retry.hidden = state !== 'error'; }
+        function pump() {
+          if (running || !pending) return;
+          const work = pending; pending = null; running = true;
+          feedback('saving', '保存中…');
+          let request;
+          try { request = tauri.core.invoke(command, work.args); } catch (e) { request = Promise.reject(e); }
+          Promise.resolve(request).then(saved => {
+            if (work.revision !== revision) return;
+            apply(saved); dirty = false; feedback('saved', '已保存');
+          }).catch(error => {
+            if (work.revision === revision) feedback('error', '保存失败：' + String(error) + '。修改已保留，可重试。');
+          }).finally(() => { running = false; if (changed) changed(); pump(); });
+        }
+        function saveLatest() {
+          if (backupBusy) return;
+          dirty = true;
+          pending = { revision: ++revision, args: JSON.parse(JSON.stringify(snapshot())) };
+          if (changed) changed();
+          pump();
+        }
+        retry.addEventListener('click', saveLatest);
+        return {save: saveLatest, dirty: () => dirty, revision: () => revision};
+      }
+
+      const $list = document.getElementById("list");
+      const $empty = document.getElementById("empty");
+      const $preview = document.getElementById("text-preview");
+      const $editor = document.getElementById("editor-card");
+      const $editorTitle = document.getElementById("editor-title");
+      const $fLabel = document.getElementById("f-label");
+      const $fInstr = document.getElementById("f-instr");
+      const $fInstrCount = document.getElementById("f-instr-count");
+
+      function escapeHtml(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+        });
+      }
+
+      function renderList() {
+        $list.innerHTML = "";
+        if (!prompts.length) { $empty.style.display = ""; return; }
+        $empty.style.display = "none";
+        for (let i = 0; i < prompts.length; i++) {
+          const p = prompts[i];
+          const row = document.createElement("div");
+          row.className = "row";
+          if (p.hidden) row.style.opacity = "0.5";
+          const badge = p.is_builtin ? '<span class="badge">内置</span>' : "";
+          const hiddenBadge = p.hidden ? '<span class="badge" style="background:#f3f4f6;color:#9ca3af;">已隐藏</span>' : "";
+          // ★ 交付方式：默认 true（结果卡）。旧数据无此字段时按 true 处理，与 Rust 侧一致。
+          const showCard = p.show_card !== false;
+          const cardBadge = '<span class="badge" style="background:' + (showCard ? "#eef2ff;color:#4f46e5;" : "#ecfdf5;color:#059669;") + '">' + (showCard ? "结果卡" : "面板") + '</span>';
+          const cardBtn =
+            '<button data-act="card" data-id="' + escapeHtml(p.id) + '" title="点一下切换：结果卡 ⇄ 面板">' +
+            (showCard ? "改为面板" : "改为结果卡") + '</button>';
+          // 排序按钮：顺序 = 工具条展示顺序（首行前 4 项 / 其余进「⋮ 更多」）。
+          const id = escapeHtml(p.id);
+          const moveBtns =
+            '<button data-act="up" data-id="' + id + '" title="上移"' + (i === 0 ? " disabled" : "") + '>↑</button>' +
+            '<button data-act="down" data-id="' + id + '" title="下移"' + (i === prompts.length - 1 ? " disabled" : "") + '>↓</button>';
+          // 全部操作直接排一行（放不下时由 .actions 的 flex-wrap 自动折行，不隐藏到 ⋯）。
+          let actionBtns =
+            '<button class="primary" data-act="run" data-id="' + id + '">运行</button>' +
+            cardBtn +
+            '<button data-act="edit" data-id="' + id + '">编辑</button>' +
+            '<button data-act="hide" data-id="' + id + '">' + (p.hidden ? "显示" : "隐藏") + '</button>';
+          if (p.is_builtin) {
+            actionBtns += '<button data-act="reset" data-id="' + id + '">恢复默认</button>';
+          } else {
+            actionBtns += '<button data-act="del" data-id="' + id + '" class="danger">删除</button>';
+          }
+          actionBtns += moveBtns;
+          row.innerHTML =
+            '<div class="meta">' +
+              '<div class="label">' + escapeHtml(p.label) + badge + hiddenBadge + cardBadge + '</div>' +
+              '<div class="instr" title="' + escapeHtml(p.instruction) + '">' + escapeHtml(p.instruction || "（原样发送）") + '</div>' +
+            '</div>' +
+            '<div class="actions">' + actionBtns + '</div>';
+          row.querySelector('[data-act="run"]').disabled = promptSaver.dirty();
+          $list.appendChild(row);
+        }
+      }
+
+      function openEditor(id) {
+        editingId = id;
+        if (id == null || id === "new") {
+          $editorTitle.textContent = "新增提示词";
+          $fLabel.value = "";
+          $fInstr.value = "";
+        } else {
+          const p = prompts.find((x) => x.id === id);
+          if (!p) return;
+          $editorTitle.textContent = (p.is_builtin ? "编辑内置提示词" : "编辑提示词");
+          $fLabel.value = p.label;
+          $fInstr.value = p.instruction;
+        }
+        updateCount();
+        $editor.style.display = "";
+        $fLabel.focus();
+      }
+
+      function closeEditor() { editingId = null; $editor.style.display = "none"; }
+
+      function updateCount() {
+        $fInstrCount.textContent = String(($fInstr.value || "").length);
+      }
+
+      $fInstr.addEventListener("input", updateCount);
+      $fLabel.addEventListener("input", () => {
+        if ($fLabel.value.length > LABEL_MAX) $fLabel.value = $fLabel.value.slice(0, LABEL_MAX);
+      });
+
+      document.getElementById("add-btn").addEventListener("click", () => openEditor("new"));
+      document.getElementById("f-cancel").addEventListener("click", closeEditor);
+      document.getElementById("f-save").addEventListener("click", () => {
+        const label = ($fLabel.value || "").trim();
+        const instr = ($fInstr.value || "").trim();
+        if (!label) { alert("请填写名称"); $fLabel.focus(); return; }
+        const customCount = prompts.filter((p) => !p.is_builtin).length;
+        if ((editingId == null || editingId === "new") && customCount >= MAX_CUSTOM) {
+          alert("自定义提示词最多 " + MAX_CUSTOM + " 个，请先删除一些。");
+          return;
+        }
+        if (editingId == null || editingId === "new") {
+          const newId = "custom_" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+          prompts.push({ id: newId, label: label.slice(0, LABEL_MAX), instruction: instr.slice(0, INSTR_MAX), is_builtin: false, hidden: false, show_card: true });
+        } else {
+          const p = prompts.find((x) => x.id === editingId);
+          if (p) { p.label = label.slice(0, LABEL_MAX); p.instruction = instr.slice(0, INSTR_MAX); }
+        }
+        save(); closeEditor(); renderList();
+      });
+
+      $list.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (!btn) return;
+        const id = btn.dataset.id;
+        const act = btn.dataset.act;
+        if (act === "run") {
+          try { tauri.core.invoke("settings_run", { id }).catch((e) => console.error("[settings] settings_run:", e)); } catch (err) { console.error("[settings] settings-run:", err); }
+        } else if (act === "edit") {
+          openEditor(id);
+        } else if (act === "del") {
+          const p = prompts.find((x) => x.id === id);
+          if (!p) return;
+          if (!confirm("删除提示词「" + p.label + "」？")) return;
+          prompts = prompts.filter((x) => x.id !== id);
+          save(); renderList();
+        } else if (act === "hide") {
+          const p = prompts.find((x) => x.id === id);
+          if (!p) return;
+          p.hidden = !p.hidden;
+          save(); renderList();
+        } else if (act === "card") {
+          const p = prompts.find((x) => x.id === id);
+          if (!p) return;
+          // 切换交付方式：结果卡（不弹面板）⇄ 面板（弹出来自己看）。undefined 视作 true。
+          p.show_card = !(p.show_card !== false);
+          save(); renderList();
+        } else if (act === "up" || act === "down") {
+          const i = prompts.findIndex((x) => x.id === id);
+          if (i < 0) return;
+          const j = act === "up" ? i - 1 : i + 1;
+          if (j < 0 || j >= prompts.length) return;
+          const t = prompts[i]; prompts[i] = prompts[j]; prompts[j] = t;
+          save(); renderList();
+        } else if (act === "reset") {
+          const p = prompts.find((x) => x.id === id);
+          if (!p || !BUILTIN_DEFAULTS[id]) return;
+          p.label = BUILTIN_DEFAULTS[id].label;
+          p.instruction = BUILTIN_DEFAULTS[id].instruction;
+          p.hidden = false;
+          p.show_card = true;
+          save(); renderList();
+        }
+      });
+
+      function save() {
+        promptSaver.save();
+      }
+      const promptSaver = createSaveQueue('prompt-save-status', 'prompt-save-retry', 'settings_save',
+        () => ({prompts}), saved => { if (Array.isArray(saved)) prompts = saved; }, renderList);
+
+      const sitesSaver = createSaveQueue('sites-save-status', 'sites-save-retry', 'panel_sites_save',
+        () => ({sites: customSites}), saved => { if (Array.isArray(saved)) customSites = saved; }, () => { renderSites(); syncUrlPreset(); });
+
+      // ---- 配置与收藏备份 / 恢复 ----
+      const backupCard = document.getElementById('backup-card');
+      const backupExportButton = document.getElementById('backup-export');
+      const backupImportButton = document.getElementById('backup-import');
+      const backupPreview = document.getElementById('backup-preview');
+      const backupConfirmButton = document.getElementById('backup-restore-confirm');
+      const backupCancelButton = document.getElementById('backup-cancel');
+      const backupStatus = document.getElementById('backup-status');
+      let backupTicket = null;
+
+      function backupFeedback(state, message) {
+        backupStatus.dataset.state = state;
+        backupStatus.textContent = message;
+      }
+
+      function setBackupBusy(value) {
+        backupBusy = value;
+        backupExportButton.disabled = value;
+        backupImportButton.disabled = value;
+        backupConfirmButton.disabled = value || backupTicket === null;
+        backupCancelButton.disabled = value || backupTicket === null;
+      }
+
+      function settingsHaveUnsavedEdits() {
+        return promptSaver.dirty() || sitesSaver.dirty() || editingId !== null || editingSite !== null ||
+          !!document.getElementById('site-label').value.trim() || !!document.getElementById('site-url').value.trim();
+      }
+
+      function lockSettingsControls(locked) {
+        document.querySelectorAll('.container input, .container button, .container select, .container textarea').forEach((control) => {
+          if (locked) {
+            control.dataset.backupWasDisabled = control.disabled ? '1' : '0';
+            control.disabled = true;
+          } else if (control.dataset.backupWasDisabled !== undefined) {
+            control.disabled = control.dataset.backupWasDisabled === '1';
+            delete control.dataset.backupWasDisabled;
+          }
+        });
+      }
+
+      function backupCountText(c) {
+        return '提示词 ' + c.prompts + ' 条；自定义站点 ' + c.custom_sites + ' 个；收藏 ' + c.favorites + ' 条；可迁移设置 ' + c.settings + ' 项';
+      }
+
+      async function exportBackup() {
+        if (backupBusy) return;
+        if (settingsHaveUnsavedEdits()) {
+          backupFeedback('error', '请先保存或取消当前提示词、站点修改，再导出备份。');
+          return;
+        }
+        setBackupBusy(true);
+        backupFeedback('saving', '正在准备备份并打开保存位置…');
+        try {
+          const result = await tauri.core.invoke('backup_export');
+          if (!result) {
+            backupFeedback('', '已取消导出。');
+          } else {
+            backupFeedback('saved', '已导出 ' + result.file_name + ' 到 ' + result.path + '（' + backupCountText(result.counts) + '）。');
+          }
+        } catch (error) {
+          backupFeedback('error', '导出失败：' + String(error));
+        } finally {
+          setBackupBusy(false);
+        }
+      }
+
+      function showBackupPreview(result) {
+        backupTicket = result.ticket;
+        document.getElementById('backup-preview-summary').textContent =
+          '文件：' + result.file_name + '；创建时间：' + result.created_at + '；来源版本：' + result.app_version +
+          '；当前面板地址：' + (result.current_site || 'DeepSeek 官方默认地址');
+        const countsBox = document.getElementById('backup-preview-counts');
+        countsBox.replaceChildren();
+        [
+          ['提示词', result.counts.prompts + ' 条'],
+          ['自定义站点', result.counts.custom_sites + ' 个'],
+          ['收藏', result.counts.favorites + ' 条'],
+          ['可迁移设置', result.counts.settings + ' 项'],
+          ['合并冲突', result.conflict_count + ' 项'],
+        ].forEach(([label, value]) => {
+          const row = document.createElement('div');
+          row.textContent = label + '：' + value;
+          countsBox.appendChild(row);
+        });
+        const conflicts = document.getElementById('backup-conflicts');
+        conflicts.replaceChildren();
+        if (result.conflict_count === 0) {
+          const empty = document.createElement('li');
+          empty.textContent = '未发现合并冲突。';
+          empty.style.color = '#047857';
+          conflicts.appendChild(empty);
+        } else {
+          (result.conflict_details || []).forEach((detail) => {
+            const item = document.createElement('li');
+            item.textContent = detail;
+            conflicts.appendChild(item);
+          });
+        }
+        const more = document.getElementById('backup-conflicts-more');
+        more.hidden = !result.conflicts_truncated;
+        more.textContent = result.conflicts_truncated ? '还有未展开的冲突项；合并时同样保留本机版本。' : '';
+        document.querySelector('input[name="backup-mode"][value="merge"]').checked = true;
+        backupPreview.hidden = false;
+        backupConfirmButton.disabled = false;
+        backupCancelButton.disabled = false;
+        backupFeedback('', '请检查备份内容并选择恢复方式。');
+      }
+
+      async function importBackup() {
+        if (backupBusy) return;
+        if (settingsHaveUnsavedEdits()) {
+          backupFeedback('error', '请先保存或取消当前提示词、站点修改，再导入备份。');
+          return;
+        }
+        setBackupBusy(true);
+        lockSettingsControls(true);
+        backupFeedback('saving', '请选择要导入的备份文件…');
+        try {
+          const result = await tauri.core.invoke('backup_import_preview');
+          if (!result) {
+            backupFeedback('', '已取消导入。');
+          } else {
+            showBackupPreview(result);
+          }
+        } catch (error) {
+          backupTicket = null;
+          backupPreview.hidden = true;
+          backupFeedback('error', '读取备份失败：' + String(error));
+        } finally {
+          lockSettingsControls(false);
+          setBackupBusy(false);
+        }
+      }
+
+      async function cancelBackupImport() {
+        if (backupBusy || backupTicket === null) return;
+        const ticket = backupTicket;
+        backupTicket = null;
+        backupPreview.hidden = true;
+        setBackupBusy(false);
+        backupFeedback('', '已取消导入。');
+        try { await tauri.core.invoke('backup_import_cancel', {ticket}); }
+        catch (error) { console.error('[settings] backup_import_cancel:', error); }
+      }
+
+      async function restoreBackup() {
+        if (backupBusy || backupTicket === null) return;
+        if (settingsHaveUnsavedEdits()) {
+          backupFeedback('error', '请先保存或取消当前提示词、站点修改，再恢复备份。');
+          return;
+        }
+        const mode = document.querySelector('input[name="backup-mode"]:checked').value;
+        if (mode === 'overwrite' && !window.confirm(
+          '覆盖恢复将替换本机的提示词、自定义站点、可迁移设置和收藏。窗口位置、开机自启和 AI 网站登录状态不会覆盖。确定继续吗？'
+        )) return;
+
+        const ticket = backupTicket;
+        setBackupBusy(true);
+        lockSettingsControls(true);
+        backupFeedback('saving', mode === 'overwrite' ? '正在覆盖并恢复数据…' : '正在合并并恢复数据…');
+        try {
+          const result = await tauri.core.invoke('backup_restore', {
+            ticket, mode, confirmOverwrite: mode === 'overwrite',
+          });
+          backupTicket = null;
+          backupPreview.hidden = true;
+          backupFeedback('saved', '恢复完成：提示词 ' + result.prompts + ' 条，自定义站点 ' + result.sites + ' 个，收藏 ' + result.favorites + ' 条，可迁移设置 ' + result.settings + ' 项。' +
+            (result.conflicts ? ' 合并跳过冲突 ' + result.conflicts + ' 项。' : '') + ' 请重启应用以应用面板地址。');
+        } catch (error) {
+          backupTicket = null;
+          backupPreview.hidden = true;
+          backupFeedback('error', '恢复失败：' + String(error) + '。请重新选择备份并预览后重试。');
+        } finally {
+          lockSettingsControls(false);
+          setBackupBusy(false);
+        }
+      }
+
+      backupExportButton.addEventListener('click', exportBackup);
+      backupImportButton.addEventListener('click', importBackup);
+      backupCancelButton.addEventListener('click', cancelBackupImport);
+      backupConfirmButton.addEventListener('click', restoreBackup);
+
+      // A restore from this settings window refreshes the prompt list and all visible config controls.
+      window.__dsfSettingsDataRestored = (payload) => {
+        try {
+          panelSwitchRevision++;
+          const restored = payload && Array.isArray(payload.prompts) ? payload.prompts : [];
+          prompts = restored.map((x) => ({
+            id:String(x.id || ''), label:String(x.label || ''), instruction:String(x.instruction || ''),
+            is_builtin:!!x.is_builtin, hidden:!!x.hidden, show_card:x.show_card !== false,
+          }));
+          renderList();
+          loadFeatures();
+          loadHotkey();
+        } catch (error) { console.error('[settings] backup UI refresh:', error); }
+      };
+
+      // Prevent a delayed form action in another area of the settings page from racing a restore.
+      ['click', 'change', 'input', 'keydown'].forEach((type) => {
+        document.addEventListener(type, (event) => {
+          if (backupBusy && !backupCard.contains(event.target)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      });
+
+      function resetSiteEditor() {
+        editingSite = null;
+        document.getElementById('site-label').value = '';
+        document.getElementById('site-url').value = '';
+        document.getElementById('site-save').textContent = '添加站点';
+        document.getElementById('site-cancel').hidden = true;
+      }
+      function renderSites() {
+        document.getElementById('site-save').disabled = !sitesLoaded;
+        const list = document.getElementById('custom-sites-list'); list.replaceChildren();
+        if (!customSites.length) { const empty = document.createElement('p'); empty.className = 'hint'; empty.textContent = '暂无自定义站点，可在下方添加。'; list.appendChild(empty); }
+        customSites.forEach((site, index) => {
+          const row = document.createElement('div'); row.className = 'row';
+          const meta = document.createElement('div'); meta.className = 'site-meta';
+          const label = document.createElement('strong'); label.textContent = site.label;
+          const url = document.createElement('small'); url.textContent = site.url;
+          meta.append(label, url); row.appendChild(meta);
+          const actions = document.createElement('div'); actions.className = 'actions';
+          [['switch','切换'],['edit','编辑'],['up','↑'],['down','↓'],['delete','删除']].forEach(([action,text]) => {
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = text; button.dataset.siteAction = action;
+            button.disabled = (action === 'up' && index === 0) || (action === 'down' && index === customSites.length - 1);
+            if (action === 'delete') button.className = 'danger';
+            if (action === 'switch') button.disabled = sitesSaver.dirty();
+            button.addEventListener('click', () => {
+              if (action === 'switch') { elPanelUrl.value = site.url; savePanelUrl(); return; }
+              if (action === 'edit') {
+                editingSite = index; document.getElementById('site-label').value = site.label; document.getElementById('site-url').value = site.url;
+                document.getElementById('site-save').textContent = '保存站点'; document.getElementById('site-cancel').hidden = false; document.getElementById('site-label').focus(); return;
+              }
+              if (action === 'delete') { if (!confirm('删除站点「' + site.label + '」？当前面板地址不会改变。')) return; customSites.splice(index, 1); }
+              else { const target = action === 'up' ? index - 1 : index + 1; [customSites[index], customSites[target]] = [customSites[target], customSites[index]]; }
+              resetSiteEditor(); sitesSaver.save();
+            });
+            actions.appendChild(button);
+          });
+          row.appendChild(actions); list.appendChild(row);
+        });
+      }
+      document.getElementById('site-cancel').addEventListener('click', resetSiteEditor);
+      document.getElementById('sites-load-retry').addEventListener('click', loadFeatures);
+      document.getElementById('site-use-current').addEventListener('click', () => { document.getElementById('site-url').value = elPanelUrl.value; });
+      document.getElementById('site-save').addEventListener('click', () => {
+        if (!sitesLoaded) return;
+        const label = document.getElementById('site-label').value.trim();
+        let url = document.getElementById('site-url').value.trim();
+        const status = document.getElementById('sites-save-status');
+        function invalid(message) { status.dataset.state = 'error'; status.textContent = message; }
+        if (!label || Array.from(label).length > 32) { invalid('请输入 1 至 32 字的站点名称'); return; }
+        try { const parsed = new URL(url); if (!['http:','https:'].includes(parsed.protocol) || !url.includes('.') || /[\s<>"';]/.test(url)) throw new Error(); url = parsed.href; }
+        catch (_) { invalid('请输入有效的 http(s) 站点地址'); return; }
+        if (editingSite === null && customSites.length >= 20) { invalid('自定义站点最多 20 个'); return; }
+        if (customSites.some((site, index) => index !== editingSite && site.url === url)) { invalid('该地址已保存，请编辑已有站点'); return; }
+        const site = {label, url};
+        if (editingSite === null) customSites.push(site); else customSites[editingSite] = site;
+        resetSiteEditor(); sitesSaver.save();
+      });
+
+      // ---- 产品功能开关：初始化读取 + 变更持久化 ----
+      function setFeatureToggle(key, on) {
+        const el = document.querySelector('#features input[data-key="' + key + '"]');
+        if (el) el.checked = !!on;
+      }
+      // ★ 开机自启仅在「能独立运行」的构建（release + custom-protocol）下可用。
+      //   开发构建（debug / 未内嵌前端资源）脱离 vite dev server 无法加载本地页面，
+      //   开机拉起会显示 WebView2 连接错误页（白底 + 巨字 + 滚动条）—— 见 autostart.rs 模块头。
+      //   这里据此**禁用开关并给出原因与出路**，避免「点了没反应」或「显示已开、开机后球是坏的」。
+      function applyAutostartSupport(supported) {
+        const box = document.querySelector('#features input[data-key="autostart"]');
+        const hint = document.getElementById("autostart-hint");
+        if (box) {
+          box.disabled = !supported;
+          if (!supported) box.checked = false;
+        }
+        if (!hint) return;
+        if (supported) {
+          hint.textContent = "登录系统后自动运行本助手";
+          hint.style.color = "";
+        } else {
+          hint.textContent =
+            "当前为开发构建，无法独立运行，不支持开机自启；请用 release 版（pnpm release）后在设置页开启";
+          hint.style.color = "#b45309";
+        }
+      }
+      async function loadFeatures() {
+        const generation = ++featuresGeneration;
+        const sitesRevision = sitesSaver.revision();
+        const urlRevision = panelSwitchRevision;
+        if (!sitesLoaded) { document.getElementById('sites-save-status').textContent = '正在读取站点清单…'; document.getElementById('sites-load-retry').hidden = true; }
+        try {
+          const cfg = await tauri.core.invoke("config_get");
+          if (generation !== featuresGeneration) return;
+          if (!sitesSaver.dirty() && sitesRevision === sitesSaver.revision()) {
+            customSites = Array.isArray(cfg && cfg.custom_sites) ? cfg.custom_sites : [];
+            if (!sitesLoaded) { document.getElementById('sites-save-status').textContent = ''; document.getElementById('sites-save-status').dataset.state = ''; }
+            sitesLoaded = true; renderSites();
+          }
+          setFeatureToggle("autostart", cfg && cfg.autostart);
+          setFeatureToggle("fullscreen", cfg && cfg.hide_on_fullscreen);
+          setFeatureToggle("privileged", cfg && cfg.privileged_capture);
+          setFeatureToggle("clipboard-fallback", false);
+          document.querySelector('[data-key="clipboard-fallback"]').disabled = true;
+          const pu = document.getElementById("panel-url-input");
+          if (pu && urlRevision === panelSwitchRevision) pu.value = (cfg && cfg.panel_url) || "https://chat.deepseek.com/";
+          syncUrlPreset();
+          // 查询本构建是否支持开机自启（决定开关可用性与提示文案）。
+          try {
+            const supported = await tauri.core.invoke("autostart_supported");
+            applyAutostartSupport(!!supported);
+          } catch (err) {
+            console.error("[settings] autostart_supported:", err);
+          }
+        } catch (e) {
+          if (generation !== featuresGeneration) return;
+          if (!sitesLoaded) {
+            const status = document.getElementById('sites-save-status'); status.dataset.state = 'error'; status.textContent = '读取站点失败：' + String(e) + '。请重试读取后再保存。';
+            document.getElementById('sites-load-retry').hidden = false;
+          }
+          console.error("[settings] config_get:", e);
+        }
+      }
+      document.querySelectorAll('#features input[type="checkbox"]').forEach((el) => {
+        el.addEventListener("change", async () => {
+          const key = el.dataset.key;
+          if (key === "clipboard-fallback") {
+            el.checked = false;
+            el.disabled = true;
+            return;
+          }
+          const on = el.checked;
+          if (el.disabled) return;
+          try {
+            if (key === "autostart") {
+              const ok = await tauri.core.invoke("config_set_autostart", { enable: on });
+              if (ok === false) {
+                el.checked = !on; // 注册表写入被拒 → 回滚开关
+                alert(
+                  "开机自启设置失败。若当前是开发构建（debug），请改用 release 版（pnpm release）；" +
+                    "否则可能是注册表写入被拒绝。"
+                );
+              }
+            } else if (key === "fullscreen") {
+              await tauri.core.invoke("config_set_fullscreen", { enable: on });
+            } else if (key === "privileged") {
+              await tauri.core.invoke("config_set_privileged", { enable: on });
+            }
+          } catch (e) {
+            console.error("[settings] config_set_*:", e);
+            el.checked = !on; // 失败回滚
+          }
+        });
+      });
+
+      // ---- 面板网址（2026-09-17）：失焦保存；Rust `config_set_panel_url` 是权威校验源 ----
+      const elPanelUrl = document.getElementById("panel-url-input");
+      const savePanelUrl = async () => {
+        const val = elPanelUrl.value.trim();
+        const revision = ++panelSwitchRevision;
+        const hint = document.getElementById('panel-url-hint');
+        hint.textContent = '正在切换…';
+        try {
+          const applied = await tauri.core.invoke("config_set_panel_url", { url: val });
+          if (revision !== panelSwitchRevision) return;
+          elPanelUrl.value = applied || val;
+          elPanelUrl.classList.remove("err");
+          syncUrlPreset();
+          hint.textContent = '已切换，旧发送与读取已取消';
+        } catch (e) {
+          if (revision !== panelSwitchRevision) return;
+          console.error("[settings] config_set_panel_url:", e);
+          elPanelUrl.classList.add("err");
+          hint.textContent = '切换失败：' + String(e) + '。地址已保留，可再次选择或修改。';
+        }
+      };
+      if (elPanelUrl) {
+        // 失焦保存（手输路径）。
+        elPanelUrl.addEventListener("blur", savePanelUrl);
+      }
+      // 常用面板网址预设：独立下拉，选择即填入输入框并保存；不影响手输与删除。
+      // ★ 必须与上方 <select id="panel-url-preset"> 的 <option value> **逐项一致**，
+      //   否则 syncUrlPreset() 的 `PRESET_URLS.includes(v)` 判定会失配、下拉无法回显。
+      const PRESET_URLS = [
+        "https://chat.deepseek.com/",
+        "https://chatgpt.com/",
+        "https://www.kimi.com/",
+        "https://gemini.google.com/app",
+        "https://chatglm.cn/main/alltoolsdetail?lang=zh"
+      ];
+      function syncUrlPreset() {
+        const input = document.getElementById("panel-url-input");
+        const sel = document.getElementById("panel-url-preset");
+        if (!input || !sel) return;
+        const base = Array.from(sel.options).filter(option => !option.dataset.custom);
+        sel.replaceChildren(...base);
+        customSites.forEach(site => {
+          if (PRESET_URLS.includes(site.url)) return;
+          const option = document.createElement('option'); option.value = site.url; option.textContent = site.label; option.dataset.custom = 'true'; sel.appendChild(option);
+        });
+        const v = (input.value || "").trim();
+        sel.value = Array.from(sel.options).some(option => option.value === v) ? v : "";
+      }
+      const elPreset = document.getElementById("panel-url-preset");
+      if (elPreset && elPanelUrl) {
+        elPreset.addEventListener("change", () => {
+          if (!elPreset.value) return;
+          elPanelUrl.value = elPreset.value;
+          savePanelUrl();
+        });
+      }
+
+      // ---- 截图热键录制（R13-S4b）----
+      //
+      // 交互：点输入框 → 进入「录制」（清空并提示）→ 按下组合键 → 立即 `set_hotkey`。
+      // ★ 前置校验放前端只为**即时反馈**（与 Rust `hotkey::parse` 同口径）；Rust 仍是权威 ——
+      //   注册失败 / 被别的程序占用由它返回错误，前端据此回滚显示并给出原因。
+      const HOTKEY_HINT_DEFAULT = "点右侧框后按组合键（如 Ctrl+Alt+1）；留空 = 关闭";
+      const elHotkey = document.getElementById("hotkey-input");
+      const elHotkeyHint = document.getElementById("hotkey-hint");
+      let hotkeySaved = "";
+      let hotkeyRecording = false;
+
+      function hotkeyShow(spec) {
+        elHotkey.value = spec || "";
+        elHotkey.placeholder = spec ? "" : "未设置";
+      }
+
+      // KeyboardEvent → `{spec}` / `{err}` / `null`（null = 还要继续等按键）。
+      function eventToSpec(e) {
+        const mods = [];
+        if (e.ctrlKey) mods.push("Ctrl");
+        if (e.altKey) mods.push("Alt");
+        if (e.shiftKey) mods.push("Shift");
+        if (e.metaKey) mods.push("Win");
+        const k = e.key || "";
+        if (/^(Control|Alt|Shift|Meta)$/.test(k)) return null; // 只按了修饰键
+        let key = null;
+        if (/^[a-zA-Z]$/.test(k)) key = k.toUpperCase();
+        else if (/^[0-9]$/.test(k)) key = k;
+        else if (/^F([1-9]|1[0-2])$/.test(k)) key = k.toUpperCase();
+        if (!key) return { err: "不支持的键（支持 A–Z / 0–9 / F1–F12）" };
+        if (mods.length === 0) return { err: "至少要有一个修饰键（Ctrl / Alt / Shift / Win）" };
+        return { spec: mods.join("+") + "+" + key };
+      }
+
+      function hotkeyStopRecording() {
+        hotkeyRecording = false;
+        elHotkey.classList.remove("recording");
+        hotkeyShow(hotkeySaved);
+        elHotkeyHint.textContent = HOTKEY_HINT_DEFAULT;
+      }
+
+      elHotkey.addEventListener("click", () => {
+        hotkeyRecording = true;
+        elHotkey.classList.add("recording");
+        elHotkey.classList.remove("error");
+        elHotkey.value = "";
+        elHotkey.placeholder = "请按组合键…";
+        elHotkeyHint.textContent = "按下组合键（Esc 取消）；至少要有一个修饰键";
+      });
+
+      elHotkey.addEventListener("keydown", async (e) => {
+        if (!hotkeyRecording) return;
+        e.preventDefault();
+        if (e.key === "Escape") {
+          hotkeyStopRecording();
+          return;
+        }
+        const r = eventToSpec(e);
+        if (!r) return;
+        if (r.err) {
+          elHotkeyHint.textContent = r.err;
+          return;
+        }
+        try {
+          const applied = await tauri.core.invoke("set_hotkey", { spec: r.spec });
+          hotkeySaved = applied || "";
+          elHotkey.classList.remove("error");
+          hotkeyStopRecording();
+          elHotkeyHint.textContent = hotkeySaved ? "已生效：" + hotkeySaved : "已关闭截图热键";
+        } catch (err) {
+          hotkeyRecording = false;
+          elHotkey.classList.remove("recording");
+          elHotkey.classList.add("error");
+          hotkeyShow(hotkeySaved);
+          elHotkeyHint.textContent = String(err || "设置失败");
+        }
+      });
+
+      // 失焦即结束录制（回滚显示），避免「点了别处还停在录制态」。
+      elHotkey.addEventListener("blur", () => {
+        if (hotkeyRecording) hotkeyStopRecording();
+      });
+
+      /// 读「想要的 spec」（`config_get`）与「实际生效的 spec」（`hotkey_status`）。
+      /// 两者不一致（配置了但没注册上，多为被占用）时明确提示 —— 不假装已启用。
+      async function loadHotkey() {
+        try {
+          const cfg = await tauri.core.invoke("config_get");
+          hotkeySaved = (cfg && cfg.hotkey) || "";
+          hotkeyShow(hotkeySaved);
+          const actual = await tauri.core.invoke("hotkey_status");
+          if (hotkeySaved && !actual) {
+            elHotkeyHint.textContent =
+              "配置为 " + hotkeySaved + "，但当前未注册（可能被其它程序占用）";
+          } else if (actual) {
+            elHotkeyHint.textContent = "当前生效：" + actual;
+          }
+        } catch (e) {
+          console.error("[settings] hotkey:", e);
+        }
+      }
+
+      // Rust 侧 settings::open 调 win.eval 触发的统一入口。
+      window.__dsfSettingsInit = (payload) => {
+        try {
+          // 同步产品功能开关的最新配置（在渲染提示词前先拉取）
+          loadFeatures();
+          loadHotkey();
+          const p = payload && typeof payload === "object" ? payload : {};
+          const text = String(p.text || "").trim();
+          if (text) { $preview.classList.remove("preview-empty"); $preview.textContent = text; }
+          else { $preview.classList.add("preview-empty"); $preview.textContent = "（还没有划词文本，先选中一段文字）"; }
+          if (!promptSaver.dirty() && editingId === null) prompts = Array.isArray(p.prompts) ? p.prompts.map((x) => ({
+            id: String(x.id || ""),
+            label: String(x.label || ""),
+            instruction: String(x.instruction || ""),
+            is_builtin: !!x.is_builtin,
+            hidden: !!x.hidden,
+            show_card: x.show_card !== false, // 缺字段 = 结果卡（与 Rust 侧默认值一致）
+          })) : [];
+          renderList();
+        } catch (e) { console.error("[settings] __dsfSettingsInit:", e); }
+      };
+    </script>
+  </body>
+</html>

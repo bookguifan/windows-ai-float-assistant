@@ -1,0 +1,13 @@
+{
+  "snapshot": "reviewed source snapshot with publication-document overlay",
+  "base_source_manifest_sha256": "93e389350ff40ff1cbb70a1bff19d7742dada4636b44f0b89e5e7e8a7c599fd5",
+  "original_git_history_included": false,
+  "automatic_copy_fallback": "hard-disabled; UIA and explicit copy retained",
+  "source_rights": "explicit maintainer declaration recorded in RIGHTS_CONFIRMATION.md",
+  "security_channel": "not enabled or verified; private staging only",
+  "executables_or_release_attachments_included": false,
+  "text_storage": "repository LF normalization; original upstream legal bytes retained",
+  "implementation_changes_from_reviewed_snapshot": "none beyond LF normalization",
+  "license_supplement": "five MPL components exact sources plus reviewed generated file; brotli exact source archive",
+  "repository_visibility": "private staging; no public release authorization"
+}

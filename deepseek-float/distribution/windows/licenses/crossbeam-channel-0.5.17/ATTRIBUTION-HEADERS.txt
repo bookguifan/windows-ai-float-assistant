@@ -1,0 +1,83 @@
+Verbatim license/copyright comment blocks from the exact published crate. Duplicate identical blocks are consolidated. This is a collection, not a claim every file was linked.
+
+--- examples/matching.rs ---
+//! Using `select!` to send and receive on the same channel at the same time.
+//!
+//! This example is based on the following program in Go.
+//!
+//! Source:
+//!   - https://web.archive.org/web/20171209034309/https://www.nada.kth.se/~snilsson/concurrency
+//!   - http://www.nada.kth.se/~snilsson/concurrency/src/matching.go
+//!
+//! Copyright & License:
+//!   - Stefan Nilsson
+//!   - Creative Commons Attribution 3.0 Unported License
+//!   - https://creativecommons.org/licenses/by/3.0/
+//!
+//! ```go
+//! func main() {
+//!     people := []string{"Anna", "Bob", "Cody", "Dave", "Eva"}
+//!     match := make(chan string, 1) // Make room for one unmatched send.
+//!     wg := new(sync.WaitGroup)
+//!     for _, name := range people {
+//!         wg.Add(1)
+//!         go Seek(name, match, wg)
+//!     }
+//!     wg.Wait()
+//!     select {
+//!     case name := <-match:
+//!         fmt.Printf("No one received %s’s message.\n", name)
+//!     default:
+//!         // There was no pending send operation.
+//!     }
+//! }
+//!
+//! // Seek either sends or receives, whichever possible, a name on the match
+//! // channel and notifies the wait group when done.
+//! func Seek(name string, match chan string, wg *sync.WaitGroup) {
+//!     select {
+//!     case peer := <-match:
+//!         fmt.Printf("%s received a message from %s.\n", name, peer)
+//!     case match <- name:
+//!         // Wait for someone to receive my message.
+//!     }
+//!     wg.Done()
+//! }
+//! ```
+
+
+--- tests/golang.rs ---
+//! Tests copied from Go and manually rewritten in Rust.
+//!
+//! Source:
+//!   - https://github.com/golang/go
+//!
+//! Copyright & License:
+//!   - Copyright (c) 2009 The Go Authors
+//!   - https://golang.org/AUTHORS
+//!   - https://golang.org/LICENSE
+//!   - https://golang.org/PATENTS
+
+
+--- tests/mpsc.rs ---
+//! Tests copied from `std::sync::mpsc`.
+//!
+//! This is a copy of tests for the `std::sync::mpsc` channels from the standard library, but
+//! modified to work with `crossbeam-channel` instead.
+//!
+//! Minor tweaks were needed to make the tests compile:
+//!
+//! - Replace `box` syntax with `Box::new`.
+//! - Replace all uses of `Select` with `select!`.
+//! - Change the imports.
+//! - Join all spawned threads.
+//! - Removed assertion from oneshot_multi_thread_send_close_stress tests.
+//!
+//! Source:
+//!   - https://github.com/rust-lang/rust/tree/master/src/libstd/sync/mpsc
+//!
+//! Copyright & License:
+//!   - Copyright 2013-2014 The Rust Project Developers
+//!   - Apache License, Version 2.0 or MIT license, at your option
+//!   - https://github.com/rust-lang/rust/blob/master/COPYRIGHT
+//!   - https://www.rust-lang.org/en-US/legal.html

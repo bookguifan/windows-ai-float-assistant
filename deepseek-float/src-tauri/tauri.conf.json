@@ -1,0 +1,60 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "deepseek-float",
+  "version": "0.1.0",
+  "identifier": "com.deepseekfloat.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "ball",
+        "title": "DeepSeek 悬浮助手",
+        "url": "poc/ball.html",
+        "x": 1200,
+        "y": 600,
+        "width": 64,
+        "height": 64,
+        "resizable": false,
+        "transparent": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "划词 / 截图即可向 DeepSeek 提问的 Windows 桌面悬浮助手",
+    "longDescription": "DeepSeek 悬浮助手：悬浮球常驻桌面，划词或框选截图即可把内容送到 DeepSeek 提问，回答以结果卡呈现（支持继续追问、逐轮复制、截图识字）；面板内嵌网页端，登录态本地持久化。",
+    "copyright": "Copyright (c) 2026 deepseek-float contributors",
+    "category": "Productivity",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      }
+    },
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}
