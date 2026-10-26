@@ -121,8 +121,15 @@ pub fn settings_save(
 
 /// 设置页运行某条提示词。
 #[tauri::command]
-pub fn settings_run(app: AppHandle, id: String) {
-    crate::popup::run_prompt(&app, &id);
+pub fn settings_run(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    id: String,
+    selection_ticket: String,
+) -> Result<(), String> {
+    let text = crate::settings::take_selection(&app, &window, &selection_ticket)?;
+    crate::popup::run_prompt(&app, &id, text);
+    Ok(())
 }
 
 /// 读取应用级偏好配置（位置记忆 / 开机自启 / 全屏隐藏 / 提权划词开关）。
@@ -185,6 +192,24 @@ pub fn config_set_clipboard_fallback(enable: bool) -> Result<(), String> {
     crate::release_policy::validate_automatic_copy_request(enable)?;
     crate::config::try_update(|c| c.clipboard_fallback_enabled = enable)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn safe_copy_status() -> crate::safe_copy::State {
+    crate::safe_copy::state()
+}
+#[tauri::command]
+pub fn safe_copy_revoke() -> crate::safe_copy::State {
+    crate::safe_copy::revoke();
+    crate::safe_copy::state()
+}
+#[tauri::command]
+pub async fn safe_copy_authorize(
+    window: tauri::WebviewWindow,
+) -> Result<crate::safe_copy::State, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::safe_copy::request_authorization(window))
+        .await
+        .map_err(|_| "授权确认失败".to_string())?
 }
 
 /// ★ 2026-09-17：设置「面板目标网址」（DeepSeek 页面可切换 —— 镜像 / 自托管 / 排障换源）。
@@ -545,6 +570,8 @@ pub fn backup_restore(
     confirm_overwrite: bool,
 ) -> Result<crate::backup::BackupRestoreResult, String> {
     let result = crate::backup::restore(&app, ticket, mode, confirm_overwrite)?;
+    crate::safe_copy::revoke();
+    crate::selection_runtime::invalidate();
     crate::settings::refresh_after_backup(&app);
     crate::result::refresh_favorites(&app);
     Ok(result)

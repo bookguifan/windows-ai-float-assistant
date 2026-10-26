@@ -144,15 +144,19 @@ input.url-box { width: 100%; box-sizing: border-box; }
           </div>
           <div class="toggle-row">
             <div class="meta">
-              <span class="t-label">提权划词</span>
-              <span class="t-hint">用 UI Automation 直读选区，突破部分受保护控件</span>
+              <span class="t-label">UIA 划词增强</span>
+              <span class="t-hint">读取支持 UIA 的应用选区，不提升 Windows 权限，不读取密码控件</span>
             </div>
             <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
+            <div class="meta"><span class="t-label">自动剪贴板划词回退（实验性）</span><span class="t-hint">默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
+            <label class="switch"><input type="checkbox" data-key="safe-copy" aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
             <div class="meta">
-              <span class="t-label">自动复制回退（本公开构建已禁用）</span>
-              <span class="t-hint">旧配置和备份不能开启此功能。自动抓词需开启“提权划词”且目标支持 UIA；用户主动复制不受影响。</span>
+              <span class="t-label">旧版自动复制回退（本公开构建已禁用）</span>
+              <span class="t-hint">此旧入口不可启用；新的实验性回退使用独立的本次运行授权，不继承旧设置。用户主动复制不受影响。</span>
             </div>
             <label class="switch"><input type="checkbox" data-key="clipboard-fallback" aria-label="自动复制回退：本构建已禁用" disabled /><span class="slider"></span></label>
           </div>
@@ -187,12 +191,12 @@ input.url-box { width: 100%; box-sizing: border-box; }
       <section class="card">
         <h2>当前划词内容</h2>
         <div id="text-preview" class="preview preview-empty">（还没有划词文本，先选中一段文字）</div>
-        <div class="hint" style="margin-top:6px;">点提示词右边的「运行」会用这段文本发给 DeepSeek。</div>
+        <div class="hint" style="margin-top:6px;">从工具条进入后，可在 60 秒内运行一次；关闭或离开设置窗口后选区失效。</div>
       </section>
 
       <section class="card" id="backup-card">
         <h2>数据备份与恢复</h2>
-        <div class="hint">可迁移提示词、自定义站点、常规偏好和收藏，不包含 AI 网站登录状态、窗口位置或设备启动项。本公开构建已禁用自动复制回退；旧配置、合并及覆盖恢复均不能重新开启。</div>
+        <div class="hint">可迁移提示词、自定义站点、常规偏好和收藏，不包含 AI 网站登录状态、窗口位置或设备启动项。备份不包含自动剪贴板划词授权；成功恢复会撤销本次运行授权，旧回退仍不能开启。</div>
         <div class="backup-actions">
           <button id="backup-export" type="button">导出备份</button>
           <button id="backup-import" type="button">导入备份</button>
@@ -357,6 +361,9 @@ input.url-box { width: 100%; box-sizing: border-box; }
       const $list = document.getElementById("list");
       const $empty = document.getElementById("empty");
       const $preview = document.getElementById("text-preview");
+      let selectionAvailable = false;
+      let selectionTicket = null;
+      let selectionRevision = 0n;
       const $editor = document.getElementById("editor-card");
       const $editorTitle = document.getElementById("editor-title");
       const $fLabel = document.getElementById("f-label");
@@ -409,7 +416,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
               '<div class="instr" title="' + escapeHtml(p.instruction) + '">' + escapeHtml(p.instruction || "（原样发送）") + '</div>' +
             '</div>' +
             '<div class="actions">' + actionBtns + '</div>';
-          row.querySelector('[data-act="run"]').disabled = promptSaver.dirty();
+          row.querySelector('[data-act="run"]').disabled = promptSaver.dirty() || !selectionAvailable;
           $list.appendChild(row);
         }
       }
@@ -470,7 +477,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         const id = btn.dataset.id;
         const act = btn.dataset.act;
         if (act === "run") {
-          try { tauri.core.invoke("settings_run", { id }).catch((e) => console.error("[settings] settings_run:", e)); } catch (err) { console.error("[settings] settings-run:", err); }
+          try { tauri.core.invoke("settings_run", { id, selectionTicket }).catch((e) => console.error("[settings] settings_run:", e)); } catch (err) { console.error("[settings] settings-run:", err); }
         } else if (act === "edit") {
           openEditor(id);
         } else if (act === "del") {
@@ -703,6 +710,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
       // A restore from this settings window refreshes the prompt list and all visible config controls.
       window.__dsfSettingsDataRestored = (payload) => {
         try {
+          window.__dsfSettingsSelectionExpired();
           panelSwitchRevision++;
           const restored = payload && Array.isArray(payload.prompts) ? payload.prompts : [];
           prompts = restored.map((x) => ({
@@ -824,6 +832,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
           setFeatureToggle("autostart", cfg && cfg.autostart);
           setFeatureToggle("fullscreen", cfg && cfg.hide_on_fullscreen);
           setFeatureToggle("privileged", cfg && cfg.privileged_capture);
+          refreshSafeCopy();
           setFeatureToggle("clipboard-fallback", false);
           document.querySelector('[data-key="clipboard-fallback"]').disabled = true;
           const pu = document.getElementById("panel-url-input");
@@ -845,9 +854,23 @@ input.url-box { width: 100%; box-sizing: border-box; }
           console.error("[settings] config_get:", e);
         }
       }
+      let safeCopyRevision=0;
+      async function refreshSafeCopy(){
+        const revision=safeCopyRevision;
+        try{const status=await tauri.core.invoke('safe_copy_status');if(revision===safeCopyRevision)document.querySelector('[data-key="safe-copy"]').checked=!!(status&&status.enabled);}
+        catch{if(revision===safeCopyRevision)document.querySelector('[data-key="safe-copy"]').checked=false;}
+      }
+      refreshSafeCopy();
       document.querySelectorAll('#features input[type="checkbox"]').forEach((el) => {
         el.addEventListener("change", async () => {
           const key = el.dataset.key;
+          if(key==='safe-copy'){
+            if(el.disabled)return;
+            ++safeCopyRevision; const revision=safeCopyRevision;el.disabled=true;
+            try{const status=await tauri.core.invoke(el.checked?'safe_copy_authorize':'safe_copy_revoke');if(revision===safeCopyRevision)el.checked=!!(status&&status.enabled);}
+            catch{try{await tauri.core.invoke('safe_copy_revoke');}catch{}el.checked=false;}finally{el.disabled=false;}
+            return;
+          }
           if (key === "clipboard-fallback") {
             el.checked = false;
             el.disabled = true;
@@ -1036,6 +1059,17 @@ input.url-box { width: 100%; box-sizing: border-box; }
         }
       }
 
+      window.__dsfSettingsSelectionExpired = (revision) => {
+        const next = revision == null ? selectionRevision : BigInt(revision);
+        if (next < selectionRevision) return;
+        selectionRevision = next;
+        selectionTicket = null;
+        selectionAvailable = false;
+        $preview.classList.add("preview-empty");
+        $preview.textContent = "（选区已使用或过期，请重新划词后从工具条进入设置）";
+        $list.querySelectorAll('[data-act="run"]').forEach(button => { button.disabled = true; });
+      };
+
       // Rust 侧 settings::open 调 win.eval 触发的统一入口。
       window.__dsfSettingsInit = (payload) => {
         try {
@@ -1043,9 +1077,15 @@ input.url-box { width: 100%; box-sizing: border-box; }
           loadFeatures();
           loadHotkey();
           const p = payload && typeof payload === "object" ? payload : {};
-          const text = String(p.text || "").trim();
-          if (text) { $preview.classList.remove("preview-empty"); $preview.textContent = text; }
-          else { $preview.classList.add("preview-empty"); $preview.textContent = "（还没有划词文本，先选中一段文字）"; }
+          const revision = p.selection_revision == null ? selectionRevision : BigInt(p.selection_revision);
+          if (revision >= selectionRevision) {
+            selectionRevision = revision;
+            selectionTicket = p.selection_ticket == null ? null : String(p.selection_ticket);
+            const text = String(p.text || "").trim();
+            selectionAvailable = !!text && selectionTicket !== null;
+            if (text) { $preview.classList.remove("preview-empty"); $preview.textContent = text; }
+            else { $preview.classList.add("preview-empty"); $preview.textContent = "（还没有划词文本，先选中一段文字）"; }
+          }
           if (!promptSaver.dirty() && editingId === null) prompts = Array.isArray(p.prompts) ? p.prompts.map((x) => ({
             id: String(x.id || ""),
             label: String(x.label || ""),

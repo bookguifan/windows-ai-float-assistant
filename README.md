@@ -7,6 +7,8 @@
 [![Beta](https://img.shields.io/badge/Beta-v0.1.0--beta.1-orange)](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1)
 [![CI](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml)
 
+> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载及校验值仍对应 `v0.1.0-beta.1`。旧自动复制入口继续禁用。本分支另有默认关闭、需原生确认且仅本次运行有效的实验性剪贴板回退，存在并发及恢复失败风险，尚未完成原生兼容性验收，见[开发验证报告](deepseek-float/docs/uia-beta2-validation.md)。
+
 ## 下载 Windows 版
 
 **[下载 v0.1.0-beta.1 · Windows x64 ZIP](https://github.com/bookguifan/windows-ai-float-assistant/releases/download/v0.1.0-beta.1/windows-ai-float-assistant-v0.1.0-beta.1-windows-x64.zip)**

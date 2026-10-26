@@ -566,8 +566,14 @@ pub(crate) fn setup_popup_and_mousehook(app: &AppHandle) -> AppResult<()> {
     crate::settings::ensure(app);
     let hm = app.clone();
     if !crate::mousehook::start(move |ev| match ev {
-        crate::mousehook::MouseEvent::Selection => crate::popup::trigger_selection(&hm),
-        crate::mousehook::MouseEvent::Dismiss => crate::popup::hide(&hm),
+        crate::mousehook::MouseEvent::Selection(request) => {
+            crate::popup::trigger_selection(&hm, request)
+        }
+        crate::mousehook::MouseEvent::Dismiss(generation) => {
+            if crate::selection_runtime::generation() == generation {
+                crate::popup::dismiss(&hm);
+            }
+        }
         crate::mousehook::MouseEvent::DismissMenu(generation) => {
             crate::context_menu::close(&hm, generation)
         }

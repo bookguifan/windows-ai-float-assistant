@@ -1,172 +1,360 @@
-//! §10：提权划词（UI Automation 直读选区）。
-//!
-//! 当 `config.privileged_capture` 打开时，优先用 UI Automation 的 `TextPattern` 读取
-//! 焦点控件里**当前选区**的文本，不经过剪贴板。这能突破一部分「合成复制键取不到文本」的
-//! 受保护 / UWP 控件（例如某些 UWP 文本控件、被标记为只读但可选中的控件）。
-//!
-//! 拿不到（控件没有 TextPattern / COM 未就绪 / 选区为空）时，调用方 `popup::trigger_selection`
-//! 会回退到 `capture::capture_selection`（合成 Ctrl+Insert + 剪贴板轮询法）。
-//!
-//! ⚠️ UI Automation 的 COM 接口必须在 **STA** 线程上使用。调用方（鼠标钩子 worker 线程）
-//! 一般是尚未初始化 COM 的普通线程，本模块在块内 `CoInitializeEx(STA)` 并成对 `CoUninitialize`。
-
+//! Bounded, read-only UIA selection on the dedicated MTA worker.
+use crate::selection::{join_ranges, Request, MAX_RANGES};
 use windows::core::Interface;
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
-    COINIT_DISABLE_OLE1DDE,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationLegacyIAccessiblePattern,
-    IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRangeArray,
-    IUIAutomationValuePattern, UIA_LegacyIAccessiblePatternId, UIA_TextPattern2Id,
-    UIA_TextPatternId, UIA_ValuePatternId,
-};
+use windows::Win32::UI::Accessibility::*;
+use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetWindowThreadProcessId, GA_ROOT};
 
-/// 选区文本上限字符数（与 capture::MAX_CHARS 对齐）。
-const MAX_CHARS: usize = 20_000;
-
-/// 取焦点元素的选区文本；失败 / 无文本返回 `None`。
-///
-/// 仅读取，不改动剪贴板、不改动前台焦点。字符串已做 `trim` 与长度截断。
-pub fn uia_selection_text() -> Option<String> {
-    unsafe {
-        // STA 必须用 CoInitializeEx 显式初始化；若本线程已以 MTA 初始化（返回 RPC_E_CHANGED_MODE），
-        // UIA 无法工作，直接放弃回退到剪贴板法。
-        let co_init =
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
-        if !co_init {
-            // ★ 诊断（纯观测）：此前该失败静默 return，无法与其它原因区分。
-            crate::diag::log("uia: CoInitializeEx(STA) 失败（线程可能已以 MTA 初始化）");
-            return None;
-        }
-
-        let automation: IUIAutomation = match CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL) {
-            Ok(a) => a,
-            Err(e) => {
-                crate::diag::log(&format!("uia: CoCreateInstance 失败: {e}"));
-                CoUninitialize();
-                return None;
-            }
-        };
-
-        let element: IUIAutomationElement = match automation.GetFocusedElement() {
-            Ok(e) => e,
-            Err(e) => {
-                crate::diag::log(&format!("uia: GetFocusedElement 失败: {e}"));
-                CoUninitialize();
-                return None;
-            }
-        };
-
-        // 取 TextPattern：先拿到 IUnknown，再 cast 到 TextPattern 接口。
-        let pattern: IUIAutomationTextPattern = match element
-            .GetCurrentPattern(UIA_TextPatternId)
-            .and_then(|unk| unk.cast::<IUIAutomationTextPattern>())
-        {
-            Ok(p) => p,
-            Err(e) => {
-                // 没有文本模式（如纯按钮 / 图片控件）→ 回退剪贴板法。
-                // ★ 诊断（纯观测，不改控制流）：此前该错误被完全丢弃，导致生产日志 89 次
-                //   TextPattern 失败无痕。这里在返回前补齐：错误本身 + 焦点元素四属性 +
-                //   三探针（TextPattern2 / Value / LegacyIAccessible 是否存在）。
-                //   所有 getter 用 unwrap_or / map 兜底，任一失败都不 panic、不提前 return。
-                let ct = element.CurrentControlType().map(|v| v.0).unwrap_or(-1);
-                let cls = element
-                    .CurrentClassName()
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-                let fw = element
-                    .CurrentFrameworkId()
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-                // ★ 隐私：`Name` 是焦点元素的 UIA Name 属性，**可能含用户可见文本**
-                //   （如自定义输入框 / 列表项），故必须与其它正文一样经 `diag::content()` 包装：
-                //   Meta 档下输出「正文已隐去 len=.. h=..」，Full 档才显示原文。切勿裸打。
-                let name = crate::diag::content(
-                    &element
-                        .CurrentName()
-                        .map(|s| s.to_string())
-                        .unwrap_or_default()
-                        .chars()
-                        .take(64)
-                        .collect::<String>(),
-                );
-                let tp2 = element
-                    .GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
-                    .is_ok();
-                let vp = element
-                    .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                    .is_ok();
-                let lp = element
-                    .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
-                        UIA_LegacyIAccessiblePatternId,
-                    )
-                    .is_ok();
-                crate::diag::log(&format!(
-                    "uia: GetCurrentPattern(TextPattern) 失败: {e}; CtrlType={ct} Class='{cls}' Fw='{fw}' Name={name} T2={tp2} VP={vp} LP={lp}"
-                ));
-                CoUninitialize();
-                return None;
-            }
-        };
-
-        let selection: IUIAutomationTextRangeArray = match pattern.GetSelection() {
-            Ok(s) => s,
-            Err(e) => {
-                crate::diag::log(&format!("uia: GetSelection 失败: {e}"));
-                CoUninitialize();
-                return None;
-            }
-        };
-
-        let mut text = String::new();
-        if let Ok(count) = selection.Length() {
-            // ★ 诊断（纯观测，零行为变更）：记录 range 数量与各段长度。
-            //   用途 —— 拖动一段多行 Markdown 时，若 UIA 切成**多个 range**，
-            //   则段间换行会被下面的 `push(' ')` 抹平（range 内部的 `\n` 仍保留）；
-            //   若为**单个 range**，内部换行完整。这条日志是判断「UIA 复制为何仍丢换行」
-            //   的一手证据，供后续决定是否改 range 拼接策略。
-            let mut seg_lengths: Vec<usize> = Vec::new();
-            for i in 0..count {
-                if let Ok(range) = selection.GetElement(i) {
-                    if let Ok(t) = range.GetText(-1) {
-                        let s = t.to_string();
-                        if !s.is_empty() {
-                            if !text.is_empty() {
-                                text.push(' ');
-                            }
-                            text.push_str(s.trim());
-                            seg_lengths.push(s.chars().count());
-                        }
-                    } else {
-                        // ★ 诊断（纯观测）：此前静默跳过。else 只记日志，不改控制流。
-                        // ⚠️ 措辞区分：GetText 返回 Err 在 UIA 中多为「该 range 无文本/不可用」
-                        //   （空 range 是常态，原逻辑跳过它继续拼下一个 range 是**有意设计**），
-                        //   并非都是异常。故记「无文本/不可用」，避免排查时去找不存在的错误。
-                        crate::diag::log(&format!("uia: range.GetText(-1) 无文本/不可用 (i={i})"));
-                    }
-                } else {
-                    // ★ 诊断（纯观测）：GetElement 失败此前静默跳过。else 只记日志，不改控制流。
-                    crate::diag::log(&format!("uia: selection.GetElement 失败 (i={i})"));
-                }
-            }
-            let joined_newlines = text.matches('\n').count();
-            crate::diag::log(&format!(
-                "uia: 选区 range 数={count} 有效段={} 各段字符={seg_lengths:?} 拼接后换行数={joined_newlines}",
-                seg_lengths.len()
-            ));
-        } else {
-            // ★ 诊断（纯观测）：Length 失败此前静默跳过（整个选区被丢弃）。else 只记日志。
-            crate::diag::log("uia: selection.Length() 失败");
-        }
-
-        CoUninitialize();
-
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text.chars().take(MAX_CHARS).collect())
+pub use crate::uia_strategy::ReadResult;
+use crate::uia_strategy::{self, Attempt, Provider};
+use std::cell::RefCell;
+struct Apartment;
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
         }
     }
+}
+const MAX_TEXT: usize = 20_000;
+fn live(r: &Request) -> bool {
+    crate::selection_runtime::valid(r)
+        && crate::selection_runtime::now_ms() < r.created_ms.saturating_add(350)
+}
+
+/// All interfaces created below are dropped before the apartment guard.
+pub fn read(r: &Request) -> ReadResult {
+    unsafe {
+        if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
+            return ReadResult::fail("UIA_INTERNAL_ERROR", false);
+        }
+        let _apartment = Apartment;
+        read_inner(r).unwrap_or_else(|s| ReadResult::fail(s, false))
+    }
+}
+unsafe fn checked(
+    a: &IUIAutomation,
+    walker: &IUIAutomationTreeWalker,
+    e: &IUIAutomationElement,
+    r: &Request,
+    metrics: &RefCell<UiaMetrics>,
+) -> Result<(), &'static str> {
+    uia_strategy::verify_ownership(
+        &NativeOwnership {
+            automation: a,
+            walker: walker.clone(),
+            request: r,
+            metrics,
+        },
+        e,
+    )
+}
+struct NativeOwnership<'a> {
+    automation: &'a IUIAutomation,
+    walker: IUIAutomationTreeWalker,
+    request: &'a Request,
+    metrics: &'a RefCell<UiaMetrics>,
+}
+impl uia_strategy::OwnershipProvider for NativeOwnership<'_> {
+    type Element = IUIAutomationElement;
+    fn rejected(&self, reason: &'static str, depth: usize) {
+        let mut m = self.metrics.borrow_mut();
+        m.ownership_reason = reason;
+        m.ownership_depth = depth;
+    }
+    fn live(&self) -> Result<(), &'static str> {
+        if !crate::selection_runtime::valid(self.request) {
+            let mut m = self.metrics.borrow_mut();
+            m.generation_match =
+                Some(crate::selection_runtime::generation() == self.request.generation);
+            m.foreground_match =
+                Some(crate::selection_runtime::target() == Some(self.request.target));
+            return Err("UIA_TARGET_CHANGED");
+        }
+        if !live(self.request) {
+            return Err("UIA_TIMEOUT");
+        }
+        Ok(())
+    }
+    fn process_matches(&self, e: &Self::Element) -> Result<bool, &'static str> {
+        unsafe {
+            e.CurrentProcessId()
+                .map(|pid| {
+                    self.metrics.borrow_mut().observed_pid = Some(pid as u32);
+                    pid as u32 == self.request.target.pid
+                })
+                .map_err(|_| "UIA_WINDOW_UNVERIFIED")
+        }
+    }
+    fn password(&self, e: &Self::Element) -> Result<bool, &'static str> {
+        unsafe {
+            e.CurrentIsPassword()
+                .map(|v| v.as_bool())
+                .map_err(|_| "UIA_PROTECTED_CONTROL")
+        }
+    }
+    fn root_matches(&self, e: &Self::Element) -> Result<Option<bool>, &'static str> {
+        unsafe {
+            let hwnd = e
+                .CurrentNativeWindowHandle()
+                .map_err(|_| "UIA_WINDOW_UNVERIFIED")?;
+            if hwnd.is_invalid() {
+                return Ok(None);
+            }
+            let root = GetAncestor(hwnd, GA_ROOT);
+            let mut pid = 0;
+            GetWindowThreadProcessId(root, Some(&mut pid));
+            let mut m = self.metrics.borrow_mut();
+            m.root_hwnd_match = Some(root == HWND(self.request.target.hwnd as *mut _));
+            m.root_pid_match = Some(pid == self.request.target.pid);
+            Ok(Some(
+                m.root_hwnd_match == Some(true) && m.root_pid_match == Some(true),
+            ))
+        }
+    }
+    fn parent(&self, e: &Self::Element) -> Result<Self::Element, &'static str> {
+        unsafe {
+            self.walker
+                .GetParentElement(e)
+                .map_err(|_| "UIA_WINDOW_UNVERIFIED")
+        }
+    }
+    fn same(&self, a: &Self::Element, b: &Self::Element) -> Result<bool, &'static str> {
+        unsafe {
+            self.automation
+                .CompareElements(a, b)
+                .map(|v| v.as_bool())
+                .map_err(|_| "UIA_WINDOW_UNVERIFIED")
+        }
+    }
+}
+
+unsafe fn range_text(e: &IUIAutomationElement, r: &Request) -> Result<Attempt, &'static str> {
+    let pattern = e
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .or_else(|_| {
+            e.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
+                .and_then(|p| p.cast())
+        });
+    let Ok(pattern) = pattern else {
+        return Ok(Attempt::Unsupported);
+    };
+    let selection = pattern.GetSelection().map_err(|_| "UIA_INTERNAL_ERROR")?;
+    let count = selection.Length().map_err(|_| "UIA_INTERNAL_ERROR")?;
+    if count < 0 || count as usize > MAX_RANGES {
+        return Err("UIA_INTERNAL_ERROR");
+    }
+    let mut ranges = Vec::<IUIAutomationTextRange>::new();
+    for i in 0..count {
+        if !live(r) {
+            return Err("UIA_TIMEOUT");
+        }
+        let range = selection.GetElement(i).map_err(|_| "UIA_INTERNAL_ERROR")?;
+        let mut at = ranges.len();
+        let mut duplicate = false;
+        for (j, old) in ranges.iter().enumerate() {
+            let start = range
+                .CompareEndpoints(
+                    TextPatternRangeEndpoint_Start,
+                    old,
+                    TextPatternRangeEndpoint_Start,
+                )
+                .map_err(|_| "UIA_INTERNAL_ERROR")?;
+            let end = range
+                .CompareEndpoints(
+                    TextPatternRangeEndpoint_End,
+                    old,
+                    TextPatternRangeEndpoint_End,
+                )
+                .map_err(|_| "UIA_INTERNAL_ERROR")?;
+            if start == 0 && end == 0 {
+                duplicate = true;
+                break;
+            }
+            if start < 0 {
+                at = j;
+                break;
+            }
+        }
+        if !duplicate {
+            ranges.insert(at, range);
+        }
+    }
+    let mut parts = Vec::new();
+    let mut remaining = MAX_TEXT;
+    for range in ranges {
+        if !live(r) {
+            return Err("UIA_TIMEOUT");
+        }
+        // UTF-16 budget is bounded before invoking the provider; never GetText(-1).
+        let text = range
+            .GetText((remaining * 2).min(40_000) as i32)
+            .map_err(|_| "UIA_INTERNAL_ERROR")?
+            .to_string();
+        let text: String = text.chars().take(remaining).collect();
+        remaining = remaining.saturating_sub(text.chars().count() + 1);
+        parts.push(text);
+        if remaining == 0 {
+            break;
+        }
+    }
+    match join_ranges(&parts, MAX_TEXT) {
+        Ok(text) => Ok(Attempt::Text(text)),
+        Err("UIA_EMPTY_SELECTION") => Ok(Attempt::Empty),
+        Err(s) => Err(s),
+    }
+}
+#[derive(Default)]
+struct UiaMetrics {
+    calls: [u32; 6],
+    ms: [u64; 6],
+    last_stage: &'static str,
+    last_error: &'static str,
+    candidate: usize,
+    role: &'static str,
+    depth: usize,
+    ownership_reason: &'static str,
+    ownership_depth: usize,
+    observed_pid: Option<u32>,
+    generation_match: Option<bool>,
+    foreground_match: Option<bool>,
+    root_hwnd_match: Option<bool>,
+    root_pid_match: Option<bool>,
+}
+const STAGES: [&str; 6] = ["focus", "hit", "validate", "recheck", "parent", "pattern"];
+struct NativeProvider<'a> {
+    automation: IUIAutomation,
+    walker: IUIAutomationTreeWalker,
+    request: &'a Request,
+    metrics: RefCell<UiaMetrics>,
+}
+impl NativeProvider<'_> {
+    fn measured<T>(
+        &self,
+        stage: usize,
+        f: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        let start = crate::selection_runtime::now_ms();
+        let result = f();
+        let mut m = self.metrics.borrow_mut();
+        m.calls[stage] += 1;
+        m.ms[stage] += crate::selection_runtime::now_ms().saturating_sub(start);
+        m.last_stage = STAGES[stage];
+        if let Err(s) = &result {
+            m.last_error = s;
+        }
+        result
+    }
+}
+impl Provider for NativeProvider<'_> {
+    type Element = IUIAutomationElement;
+    fn focused(&self) -> Result<Self::Element, &'static str> {
+        self.measured(0, || unsafe {
+            self.automation
+                .GetFocusedElement()
+                .map_err(|_| "UIA_ELEMENT_UNAVAILABLE")
+        })
+    }
+    fn hit(&self) -> Result<Self::Element, &'static str> {
+        self.measured(1, || unsafe {
+            self.automation
+                .ElementFromPoint(POINT {
+                    x: self.request.point.0,
+                    y: self.request.point.1,
+                })
+                .map_err(|_| "UIA_TARGET_CHANGED")
+        })
+    }
+    fn validate(&self, e: &Self::Element) -> Result<(), &'static str> {
+        self.measured(2, || unsafe {
+            checked(
+                &self.automation,
+                &self.walker,
+                e,
+                self.request,
+                &self.metrics,
+            )
+        })
+    }
+    fn recheck(&self, e: &Self::Element) -> Result<(), &'static str> {
+        self.measured(3, || {
+            let owner = NativeOwnership {
+                automation: &self.automation,
+                walker: self.walker.clone(),
+                request: self.request,
+                metrics: &self.metrics,
+            };
+            uia_strategy::recheck_ownership(&owner, e)
+        })
+    }
+    fn candidate(&self, index: usize, role: &'static str, depth: usize) {
+        let mut m = self.metrics.borrow_mut();
+        m.candidate = index;
+        m.role = role;
+        m.depth = depth;
+    }
+    fn parent(&self, e: &Self::Element) -> Result<Option<Self::Element>, &'static str> {
+        self.measured(4, || unsafe {
+            let Ok(parent) = self.walker.GetParentElement(e) else {
+                return Ok(None);
+            };
+            match checked(
+                &self.automation,
+                &self.walker,
+                &parent,
+                self.request,
+                &self.metrics,
+            ) {
+                Ok(()) => Ok(Some(parent)),
+                Err("UIA_TARGET_CHANGED") if crate::selection_runtime::valid(self.request) => {
+                    Ok(None)
+                }
+                Err(s) => Err(s),
+            }
+        })
+    }
+    fn text_container(&self, e: &Self::Element) -> bool {
+        unsafe {
+            e.CurrentControlType()
+                .map(|t| t == UIA_DocumentControlTypeId || t == UIA_EditControlTypeId)
+                .unwrap_or(false)
+        }
+    }
+    fn same(&self, a: &Self::Element, b: &Self::Element) -> bool {
+        unsafe {
+            self.automation
+                .CompareElements(a, b)
+                .map(|v| v.as_bool())
+                .unwrap_or(false)
+        }
+    }
+    fn attempt(&self, e: &Self::Element) -> Result<Attempt, &'static str> {
+        self.measured(5, || unsafe { range_text(e, self.request) })
+    }
+}
+unsafe fn read_inner(r: &Request) -> Result<ReadResult, &'static str> {
+    let started = crate::selection_runtime::now_ms();
+    if !live(r) {
+        return Err("UIA_TIMEOUT");
+    }
+    let automation: IUIAutomation =
+        CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL).map_err(|_| "UIA_INTERNAL_ERROR")?;
+    let walker = automation
+        .ControlViewWalker()
+        .map_err(|_| "UIA_INTERNAL_ERROR")?;
+    let provider = NativeProvider {
+        automation,
+        walker,
+        request: r,
+        metrics: RefCell::new(UiaMetrics::default()),
+    };
+    let result = uia_strategy::read_with(&provider);
+    let m = provider.metrics.borrow();
+    // One metadata-only summary after the transaction; never log text or titles.
+    crate::diag::log(&format!("selection trace request={} target_pid={} pre_strategy_ms={} calls={:?} stage_ms={:?} last_stage={} last_error={} candidate={} role={} depth={} ownership_reason={} ownership_depth={} observed_pid={:?} generation_match={:?} foreground_match={:?} root_hwnd_match={:?} root_pid_match={:?}",
+        r.generation, r.target.pid, started.saturating_sub(r.created_ms), m.calls, m.ms, m.last_stage, m.last_error, m.candidate, m.role, m.depth, m.ownership_reason, m.ownership_depth, m.observed_pid, m.generation_match, m.foreground_match, m.root_hwnd_match, m.root_pid_match));
+    result
 }

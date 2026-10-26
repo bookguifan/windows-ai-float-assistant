@@ -18,7 +18,7 @@
     "check": "npm run check:csp && npm run check:inline-js && npm run check:version && npm run check:sanitize-whitelist",
     "check:sanitize-whitelist": "node scripts/check-sanitize-whitelist.mjs",
     "test:rs": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:unit": "node tests/sanitize.test.mjs && node tests/business-logic.test.mjs && node tests/screenshot-ui.test.mjs && node tests/context-menu.test.mjs && node tests/ball-interaction.test.mjs && node tests/send-feedback.test.mjs && node tests/new-session.test.mjs && node tests/favorites-export.test.mjs && node tests/settings-workflows.test.mjs && node tests/backup-ui.test.mjs && node tests/site-compatibility.test.mjs && node tests/ocr-score.test.mjs && node tests/release-security.test.mjs",
+    "test:unit": "node tests/sanitize.test.mjs && node tests/business-logic.test.mjs && node tests/screenshot-ui.test.mjs && node tests/context-menu.test.mjs && node tests/ball-interaction.test.mjs && node tests/send-feedback.test.mjs && node tests/new-session.test.mjs && node tests/favorites-export.test.mjs && node tests/settings-workflows.test.mjs && node tests/safe-copy-ui.test.mjs && node tests/backup-ui.test.mjs && node tests/site-compatibility.test.mjs && node tests/ocr-score.test.mjs && node tests/release-security.test.mjs",
     "test:js": "playwright test",
     "e2e:shell": "node scripts/e2e-shell.mjs",
     "e2e:diag": "node scripts/e2e-diag.mjs",

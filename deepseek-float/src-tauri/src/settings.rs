@@ -11,6 +11,14 @@
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+static SELECTION: Mutex<crate::selection::SettingsSelection> =
+    Mutex::new(crate::selection::SettingsSelection::empty());
+static WAS_FOCUSED: AtomicBool = AtomicBool::new(false);
+
 pub const SETTINGS_LABEL: &str = "settings";
 const LOGICAL_W: f64 = 460.0;
 const LOGICAL_H: f64 = 560.0;
@@ -40,13 +48,26 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
             crate::diag::log("settings 窗口创建成功（常驻，visible=false）");
             // 关闭 → 隐藏（不销毁）：保留加载过的提示词状态
             let h = app.clone();
-            w.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            w.on_window_event(move |event| match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
+                    clear_selection(&h);
+                    WAS_FOCUSED.store(false, Ordering::Release);
                     if let Some(win) = h.get_webview_window(SETTINGS_LABEL) {
                         let _ = win.hide();
                     }
                 }
+                tauri::WindowEvent::Focused(focused) => {
+                    let was = WAS_FOCUSED.swap(*focused, Ordering::AcqRel);
+                    if was && !focused {
+                        clear_selection(&h);
+                    }
+                }
+                tauri::WindowEvent::Destroyed => {
+                    revoke_selection();
+                    WAS_FOCUSED.store(false, Ordering::Release);
+                }
+                _ => {}
             });
             Some(w)
         }
@@ -62,28 +83,125 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
 /// `text` 长度被粗略截到 800 字，避免对 settings 的 webview eval 输入巨大 JSON
 /// （JSON 走 serde_json 转义本身就是安全的，但浏览器一次性解析 100k 字符无意义）。
 pub fn open(app: &AppHandle) {
+    clear_selection(app);
     let Some(w) = ensure(app) else {
         return;
     };
-    let text = crate::popup::peek_pending_text().unwrap_or_default();
-    let preview: String = text.chars().take(800).collect();
+    let revision = SELECTION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .revision();
+    show(app, &w, String::new(), None, revision);
+}
+/// Only an explicit toolbar action may delegate a currently verified selection.
+pub(crate) fn open_from_selection(app: &AppHandle, session: Option<crate::selection::Session>) {
+    clear_selection(app);
+    let window = ensure(app);
+    let now = crate::selection_runtime::now_ms();
+    let (preview, ticket, revision) = {
+        let mut state = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
+        if let (Some(w), Some(session)) = (&window, session) {
+            if let Ok(hwnd) = w.hwnd() {
+                state.prepare(
+                    session,
+                    crate::selection_runtime::target(),
+                    crate::selection_runtime::generation(),
+                    now,
+                    hwnd.0 as isize,
+                );
+            }
+        }
+        let preview = window
+            .as_ref()
+            .and_then(|w| w.hwnd().ok())
+            .and_then(|h| state.preview(h.0 as isize, now))
+            .unwrap_or_default()
+            .chars()
+            .take(800)
+            .collect();
+        (preview, state.ticket(), state.revision())
+    };
+    crate::popup::hide(app);
+    if let Some(w) = window {
+        show(app, &w, preview, ticket, revision);
+    }
+}
+fn show(app: &AppHandle, w: &WebviewWindow, preview: String, ticket: Option<u64>, revision: u64) {
     let prompts = crate::prompts::load(app);
-    let payload = serde_json::json!({
-      "text": preview,
-      "prompts": prompts,
-    });
+    let payload = serde_json::json!({"text":preview,"prompts":prompts,"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()});
     let js = format!(
         "if(window.__dsfSettingsInit)window.__dsfSettingsInit({});",
         payload
     );
-    let _ = w.show();
-    if let Err(e) = w.eval(js) {
-        crate::diag::warn(&format!("[M2] settings init eval 失败: {e}"));
+    if w.show().is_err() {
+        clear_selection(app);
+        return;
     }
+    if let Err(e) = w.eval(js) {
+        clear_selection(app);
+        crate::diag::warn(&format!("settings init eval failed: {e}"));
+    }
+}
+pub(crate) fn revoke_selection() {
+    SELECTION.lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+fn clear_preview(app: &AppHandle, revision: u64) {
+    if let Some(w) = app.get_webview_window(SETTINGS_LABEL) {
+        let js = format!(
+            "if(window.__dsfSettingsSelectionExpired)window.__dsfSettingsSelectionExpired({});",
+            serde_json::json!(revision.to_string())
+        );
+        let _ = w.eval(js);
+    }
+}
+pub(crate) fn clear_selection(app: &AppHandle) {
+    let (had, revision) = {
+        let mut s = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
+        (s.clear(), s.revision())
+    };
+    if had {
+        clear_preview(app, revision);
+    }
+}
+pub(crate) fn expire_selection(app: &AppHandle) {
+    let (expired, revision) = {
+        let mut s = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
+        (s.expire(crate::selection_runtime::now_ms()), s.revision())
+    };
+    if expired {
+        clear_preview(app, revision);
+    }
+}
+pub(crate) fn take_selection(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    ticket: &str,
+) -> Result<String, String> {
+    if !crate::safe_copy::trusted(window) {
+        return Err("只能在聚焦的本地设置页运行提示词".into());
+    }
+    let ticket = ticket.parse::<u64>().map_err(|_| "选区凭据无效")?;
+    let hwnd = window.hwnd().map_err(|_| "设置窗口不可用")?;
+    let now = crate::selection_runtime::now_ms();
+    let (text, revision, has_current) = {
+        let mut s = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
+        let text = s.take(hwnd.0 as isize, ticket, now);
+        (
+            text,
+            s.revision(),
+            s.preview(hwnd.0 as isize, now).is_some(),
+        )
+    };
+    // An old request must neither consume nor visually revoke a newer grant.
+    if text.is_some() || !has_current {
+        clear_preview(app, revision);
+    }
+    text.ok_or_else(|| "选区已更新、过期或已使用，请重新划词后从工具条进入设置".into())
 }
 
 /// Refresh the already-open settings page after a backup restore without reopening the window.
 pub fn refresh_after_backup(app: &AppHandle) {
+    clear_selection(app);
     let Some(window) = app.get_webview_window(SETTINGS_LABEL) else {
         return;
     };

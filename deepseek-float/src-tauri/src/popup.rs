@@ -70,10 +70,7 @@ static SHOW_LAST: Mutex<Option<LastShow>> = Mutex::new(None);
 /// 每次 show 自增：用于让「在途的 8s 超时」失效，避免旧超时把新弹窗关掉。
 static SHOW_GEN: AtomicU64 = AtomicU64::new(0);
 /// 触发时抓到的选区文本，等用户在工具条上点按钮时取用。
-static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
-/// 抓词串行锁：多个触发源（鼠标钩子回调等）可能并发触发，剪贴板读/写不可重入，
-/// 用 try_lock 让并发中的第二次触发直接跳过（而不是去抢剪贴板）。
-static TRIGGER_GUARD: Mutex<()> = Mutex::new(());
+static PENDING_SESSION: Mutex<Option<crate::selection::Session>> = Mutex::new(None);
 /// 工具条当前是否可见（供 mousehook 判断「点击是否落在工具条外」以自动隐藏）。
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// 工具条的屏幕矩形（物理像素）(left, top, right, bottom)，show 时更新。
@@ -451,6 +448,13 @@ fn arm_auto_close(app: &AppHandle, timeout_ms: u64) {
 ///   hide 后强制球重绘一次，冲刷残留旧帧。这正是「**第二次点击就不出现**」里 `hide_panel`
 ///   已验证有效的那一步 —— 此前**只**加在 panel 侧，工具条侧缺失。
 pub fn hide(app: &AppHandle) {
+    crate::selection_runtime::invalidate();
+    dismiss(app);
+}
+
+/// Mouse-down already invalidated the previous generation. Do not invalidate its later mouse-up.
+pub fn dismiss(app: &AppHandle) {
+    clear_pending_text();
     SHOW_GEN.fetch_add(1, Ordering::SeqCst);
     POPUP_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
@@ -461,27 +465,43 @@ pub fn hide(app: &AppHandle) {
     crate::diag::log("popup 已 hide 并冲刷球合成表面");
 }
 
-pub fn set_pending_text(text: String) {
-    if let Ok(mut g) = PENDING_TEXT.lock() {
-        *g = Some(text);
+pub fn accept_session(app: &AppHandle, session: crate::selection::Session) {
+    if !crate::selection_runtime::valid(&session.request)
+        || !session.usable(
+            crate::selection_runtime::target(),
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+        || session.normalized.chars().count() < capture::MIN_CHARS
+    {
+        return;
     }
+    crate::settings::clear_selection(app);
+    crate::diag::log(&format!(
+        "selection status=SESSION_READY method={:?}",
+        session.method
+    ));
+    if let Ok(mut pending) = PENDING_SESSION.lock() {
+        *pending = Some(session);
+    }
+    show_at_cursor(app);
 }
-
+fn take_pending_session() -> Option<crate::selection::Session> {
+    let session = PENDING_SESSION.lock().ok()?.take()?;
+    session
+        .usable(
+            crate::selection_runtime::target(),
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+        .then_some(session)
+}
 fn take_pending_text() -> Option<String> {
-    PENDING_TEXT.lock().ok().and_then(|mut g| g.take())
+    take_pending_session().map(|s| s.raw)
 }
-
-/// 仅读取不消费——供设置窗口展示预览而不会清空。
-pub fn peek_pending_text() -> Option<String> {
-    PENDING_TEXT.lock().ok().and_then(|g| g.clone())
-}
-
-/// 清空待发选区文本（不读不消费）。用于「本应用窗口内划词」守卫：
-/// 该分支会跳过抓词并提前返回，若之前残留了上一次成功抓词的 `PENDING_TEXT`，
-/// 不清空会被后续动作（如设置页运行 / 工具条按钮）误消费陈旧文本。
 pub(crate) fn clear_pending_text() {
-    if let Ok(mut g) = PENDING_TEXT.lock() {
-        *g = None;
+    if let Ok(mut pending) = PENDING_SESSION.lock() {
+        *pending = None;
     }
 }
 
@@ -516,59 +536,18 @@ fn cursor_in_own_window(app: &AppHandle) -> bool {
 /// 划词抓取的唯一入口（由全局鼠标钩子的 Selection 事件触发）：
 /// 抓当前选区 → 成功则弹工具条；失败只落诊断日志（用户已要求不要浮层提示）。
 ///
-/// ⚠️ 本函数会阻塞约 400ms（剪贴板轮询），**只能从鼠标钩子的 worker 线程调用**，不要放主线程。
-pub fn trigger_selection(app: &AppHandle) {
-    // 串行化：并发触发时第二次直接跳过（剪贴板操作不可重入）
-    let Ok(_guard) = TRIGGER_GUARD.try_lock() else {
-        crate::diag::log("trigger_selection 跳过（上一次抓词仍在进行）");
-        return;
-    };
-    // ★ 前置自身窗口守卫（2026-09-19 修复强化）：在任何抓词前先判定光标是否落在本应用自身窗口
-    //   （悬浮球 / 工具条 / 结果卡 / 设置页 / 面板）内。命中则直接跳过 —— 拖动 ball、在设置页
-    //   或面板输入框里拖选都是「真编辑」，并非「划词查询」，无需合成 Ctrl+Insert 去临时劫持剪贴板。
-    //   原实现把这一判断放「抓词成功后」，代价是自身窗口内动作仍会执行一次剪贴板读改写。
+/// 仅投递有界请求，不等待 UIA 或剪贴板；失败不弹提示。
+pub fn trigger_selection(app: &AppHandle, request: crate::selection::Request) {
+    dismiss(app);
     if cursor_in_own_window(app) {
-        crate::diag::log("划词发生在本应用窗口内，跳过抓词（避免劫持剪贴板）");
-        // ★ MEDIUM-3 修复（2026-09-21）：跳过抓词前先清空残留的 PENDING_TEXT，
-        //   避免上一次成功抓词留下的旧文本被后续动作误消费。
-        clear_pending_text();
         hide(app);
         return;
     }
-    crate::diag::log("trigger_selection 进入（鼠标钩子 worker 线程）");
-
-    let cfg = crate::config::load();
-    let _ = capture::take_last_raw();
-    let outcome = selection_with_policy(
-        cfg.privileged_capture,
-        cfg.clipboard_fallback_enabled,
-        crate::uia::uia_selection_text,
-        capture::set_last_raw,
-        || capture::capture_selection(capture::POLL_TIMEOUT_MS, capture::MAX_CHARS),
-    );
-
-    match outcome {
-        capture::CaptureOutcome::Ok(text) => {
-            // 自身窗口守卫已前置到函数开头（见 L509），能走到这里即非自身窗口动作，直接弹工具条。
-            crate::diag::log(&format!(
-                "抓词成功，{} 字符，准备弹工具条",
-                text.chars().count()
-            ));
-            set_pending_text(text);
-            show_at_cursor(app);
-        }
-        other => {
-            crate::diag::log(&format!("抓词失败/非成功: {other:?}"));
-            // 抓词失败：不弹工具条。用户已明确要求「不要浮层提示」→ 只落诊断日志（降级矩阵仍可见于 d1-debug.log）
-            if let Some(msg) = other.user_message() {
-                crate::diag::warn(&format!("划词失败：{msg}"));
-            }
-            hide(app);
-        }
-    }
+    crate::selection_runtime::submit(app, request);
 }
 
 /// UIA 始终先于获准的回退；关闭回退时不调用任何自动复制 API。
+#[cfg(test)]
 fn selection_with_policy(
     use_uia: bool,
     allow_fallback: bool,
@@ -618,52 +597,33 @@ pub fn on_action(app: &AppHandle, preset_name: &str) {
         if overflow > 0 {
             expand_more(app);
         } else {
-            crate::settings::open(app);
-            hide(app);
+            let selected = take_pending_session();
+            crate::settings::open_from_selection(app, selected);
         }
         return;
     }
 
     if preset_name == "open-settings" {
-        // 打开设置窗口：保留 pending text（设置页要预览/运行都要用到）
-        crate::settings::open(app);
-        hide(app);
+        let selected = take_pending_session();
+        crate::settings::open_from_selection(app, selected);
         return;
     }
 
     // 常规动作：先关闭工具条，再消费选区文本
+    let selected = take_pending_text();
     hide(app);
-    let Some(text) = take_pending_text() else {
+    let Some(text) = selected else {
         crate::diag::warn("[M2] popup action 触发但待发文本已丢失");
         return;
     };
 
     // 复制：写回系统剪贴板（不注入面板）
     if preset_name == "copy" {
-        // ★ 排版保真：优先用抓词时旁路留存的**原文**，以保留换行 / 缩进 / 制表符。
-        //   `text`（PENDING_TEXT）是 normalize_text 的产物，所有空白已被折叠为单空格，
-        //   直接复制会丢掉 Markdown 的列表 / 段落 / 代码块结构。
-        //   取不到原文（如 UIA 直读路径）时退化为 `text`，行为与改动前一致，绝不失败。
-        //
-        // ★ 自校验（防止 LAST_RAW 与 PENDING_TEXT 错配）：仅当原文**确属本次划词**时才用 raw，
-        //   否则视为陈旧缓存，退化为 `text`。
-        //   判据：`normalize(raw)` 以 `text` 为前缀。两种合法形态都满足——
-        //     ① 正常：两者全等，前缀恒成立；
-        //     ② 超长：`text` 是 `normalize(raw)` 截断到 MAX_CHARS 的前缀（原文不截断，见方案取舍 1）。
-        //   而「上一条划词的原文」其归一化结果**不会**以当前 text 为前缀（内容不同），故被挡住。
-        //   代价：复制时多算一次 normalize（O(n)，n ≤ 一次选区长度），可忽略。
-        let (raw, source) = match capture::take_last_raw() {
-            Some(r) if capture::raw_matches_pending(&r, &text) => (r, "raw"),
-            Some(_) => (text, "normalized(缓存不匹配)"),
-            None => (text, "normalized(无原文)"),
-        };
-        if capture::set_clipboard_text(&raw) {
-            crate::diag::log(&format!(
-                "popup: 已复制 {} 字符到剪贴板（来源={source}）",
-                raw.chars().count()
-            ));
+        // Raw text and target identity were consumed from one verified session.
+        if capture::set_clipboard_text(&text) {
+            crate::diag::log("selection status=USER_COPY_SUCCESS");
         } else {
-            crate::diag::warn("popup: 复制失败（剪贴板被占用）");
+            crate::diag::log("selection status=USER_COPY_FAILED");
         }
         return;
     }
@@ -674,22 +634,18 @@ pub fn on_action(app: &AppHandle, preset_name: &str) {
         crate::diag::warn(&format!("[M2] popup 收到未知 preset: {preset_name}"));
         return;
     };
-    let prompt = capture::compose_custom(&p.instruction, &text);
+    let prompt = crate::selection::compose(&p.instruction, &text);
     send_prompt(app, prompt, p.label.clone(), text, p.show_card);
 }
 
 /// 设置窗口里点「运行」某条提示词时调用（与 on_action 的提示词分支等价，走 settings-run 事件）。
-pub fn run_prompt(app: &AppHandle, id: &str) {
-    let Some(text) = take_pending_text() else {
-        crate::diag::warn("settings-run: 待发文本已丢失（需重新划词）");
-        return;
-    };
+pub fn run_prompt(app: &AppHandle, id: &str, text: String) {
     let list = crate::prompts::load(app);
     let Some(p) = list.iter().find(|p| p.id == id) else {
         crate::diag::warn(&format!("settings-run: 提示词不存在或已删除: {id}"));
         return;
     };
-    let prompt = capture::compose_custom(&p.instruction, &text);
+    let prompt = crate::selection::compose(&p.instruction, &text);
     let label = p.label.clone();
     let show_card = p.show_card;
     send_prompt(app, prompt, label.clone(), text, show_card);
@@ -763,6 +719,21 @@ fn send_prompt(app: &AppHandle, prompt: String, label: String, quote: String, sh
             ..Default::default()
         },
     );
+}
+
+/// Remove expired/changed-target raw text even if showing the window failed.
+pub(crate) fn expire_session() {
+    let target = crate::selection_runtime::target();
+    let generation = crate::selection_runtime::generation();
+    let now = crate::selection_runtime::now_ms();
+    if let Ok(mut pending) = PENDING_SESSION.lock() {
+        if pending
+            .as_ref()
+            .is_some_and(|s| !s.usable(target, generation, now))
+        {
+            *pending = None;
+        }
+    }
 }
 
 #[cfg(test)]

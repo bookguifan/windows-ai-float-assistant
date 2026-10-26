@@ -27,6 +27,8 @@ mod workflow;
 // 模块名取 `panels` 而非 `windows`：外部 `windows` crate（`windows::Win32::…`，见 `hotkey.rs` /
 // `inject.rs` 等）若被本地 `mod windows` 遮蔽，会导致全仓库 `windows::Win32::…` 解析失败。
 // 源文件仍叫 `windows.rs`（描述其内容：窗口生命周期）。
+mod copy_engine;
+mod native_copy_proof;
 mod panel_site;
 #[path = "windows.rs"]
 mod panels;
@@ -35,12 +37,16 @@ mod prompts;
 mod readback;
 mod release_policy;
 mod result;
+mod safe_copy;
 mod screenshot;
 mod screenshot_state;
+mod selection;
+mod selection_runtime;
 mod settings;
 mod single_instance;
 mod tray;
 mod uia;
+mod uia_strategy;
 
 // 对外再导出窗口公开项：既有 `crate::show_panel` / `crate::hide_panel` /
 // `crate::ensure_panel_loaded` / `crate::redact_url` 等调用点（ipc / popup / result /

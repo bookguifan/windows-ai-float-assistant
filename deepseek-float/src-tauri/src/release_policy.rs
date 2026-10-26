@@ -12,6 +12,15 @@ pub(crate) fn validate_automatic_copy_request(enabled: bool) -> Result<(), Strin
     Ok(())
 }
 
+/// New entry only: native consent and transaction context are independent gates.
+pub(crate) fn safe_copy_allowed(
+    authorized: bool,
+    target_valid: bool,
+    transaction_live: bool,
+) -> bool {
+    cfg!(target_os = "windows") && authorized && target_valid && transaction_live
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
