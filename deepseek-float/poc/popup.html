@@ -250,13 +250,14 @@
 
       // 复位一次性锁的确定性入口：由 Rust 侧 show_at_cursor 每次弹窗 show 成功后
       // 通过 win.eval("__dsfResetFired()") 复位。
-      window.__dsfResetFired = () => { fired = false; };
+      let selectionTicket = null;
+      window.__dsfResetFired = (ticket) => { fired = false; selectionTicket = ticket == null ? null : String(ticket); };
 
       function fire(preset) {
-        if (fired) return;
+        if (fired || selectionTicket === null) return;
         fired = true;
         try {
-          tauri.core.invoke("popup_action", { preset }).catch((e) => console.error("[popup] popup_action:", e));
+          tauri.core.invoke("popup_action", { preset, selectionTicket }).catch((e) => console.error("[popup] popup_action:", e));
           // 「⋮ 更多」只负责扩高、不关闭：尽快解锁，让用户能接着点浮层里的项。
           if (preset === "open-more") setTimeout(() => { fired = false; }, 250);
           else setTimeout(() => { fired = false; }, 400); // 兜底解锁

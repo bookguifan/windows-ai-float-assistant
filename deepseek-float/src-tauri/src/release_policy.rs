@@ -12,6 +12,26 @@ pub(crate) fn validate_automatic_copy_request(enabled: bool) -> Result<(), Strin
     Ok(())
 }
 
+/// Only explicitly opted-in DEBUG research builds can contain a usable copy path.
+/// Release stays locked even with --all-features. No runtime input participates.
+pub(crate) const fn experimental_copy_available() -> bool {
+    cfg!(all(
+        debug_assertions,
+        not(feature = "custom-protocol"),
+        feature = "experimental-clipboard-fallback",
+        target_os = "windows"
+    ))
+}
+
+/// Native consent and transaction context cannot override the build policy.
+pub(crate) fn safe_copy_allowed(
+    authorized: bool,
+    target_valid: bool,
+    transaction_live: bool,
+) -> bool {
+    experimental_copy_available() && authorized && target_valid && transaction_live
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

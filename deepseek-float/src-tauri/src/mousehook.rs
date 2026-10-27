@@ -13,7 +13,7 @@
 //!   - 「点击工具条外 → 隐藏」在 WM_LBUTTONDOWN 立即发信号（不防抖），隐藏要即时。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,13 +26,29 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONDOWN,
 };
 
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows::Win32::UI::WindowsAndMessaging::{EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT};
+unsafe extern "system" fn foreground_changed(
+    _: HWINEVENTHOOK,
+    _: u32,
+    hwnd: windows::Win32::Foundation::HWND,
+    _: i32,
+    _: i32,
+    _: u32,
+    _: u32,
+) {
+    if !crate::popup::preserves_foreground(hwnd.0 as isize) {
+        crate::selection_runtime::invalidate();
+    }
+}
+
 /// 鼠标钩子产生的事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseEvent {
     /// 拖动选中了文字（松开左键且位移超阈值）→ 抓词弹工具条。
-    Selection,
+    Selection(crate::selection::Request),
     /// 工具条可见时在工具条外点击 → 隐藏工具条。
-    Dismiss,
+    Dismiss(u64),
     /// 自绘菜单外按下鼠标；携带代次，迟到事件不关闭新菜单。
     DismissMenu(u64),
 }
@@ -41,14 +57,13 @@ pub enum MouseEvent {
 const DRAG_THRESHOLD: i32 = 8;
 /// 两次「划词触发」的最小间隔（防抖）。
 const DEBOUNCE_MS: u64 = 300;
-/// 松开左键后、真正抓词前的小延迟（让选区稳定）。
-const SETTLE_MS: u64 = 80;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static PUMP_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-static SIGNAL: Mutex<Option<Sender<MouseEvent>>> = Mutex::new(None);
+static SIGNAL: Mutex<Option<SyncSender<MouseEvent>>> = Mutex::new(None);
 static DOWN_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+static DOWN_TARGET: Mutex<Option<crate::selection::Target>> = Mutex::new(None);
 static LAST_TRIGGER: AtomicU64 = AtomicU64::new(0);
 /// 「截图遮罩显示中」→ 暂停划词判定。遮罩上的框选（按下→松开，位移必然超阈值）
 /// 若不挂起会被当成划词触发，白等轮询并弹出工具条盖住遮罩（设计文档 §5.5）。
@@ -74,7 +89,7 @@ fn debounce_ok() -> bool {
 fn emit(ev: MouseEvent) {
     let tx = SIGNAL.lock().ok().and_then(|g| g.as_ref().cloned());
     if let Some(tx) = tx {
-        let _ = tx.send(ev);
+        let _ = tx.try_send(ev);
     }
 }
 
@@ -96,16 +111,27 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let root = GetAncestor(hit, GA_ROOT);
                     let mut owner = 0;
                     GetWindowThreadProcessId(root, Some(&mut owner));
+                    if owner == GetCurrentProcessId()
+                        && crate::popup::point_in_popup(info.pt.x, info.pt.y)
+                    {
+                        crate::popup::arm_action(root.0 as isize);
+                    } else {
+                        crate::selection_runtime::invalidate();
+                        if let Ok(mut target) = DOWN_TARGET.lock() {
+                            *target = crate::selection_runtime::target();
+                        }
+                    }
                     *g = (owner != GetCurrentProcessId()).then_some((info.pt.x, info.pt.y));
                 }
                 // 工具条可见时，在它外面按下左键 → 立即请求隐藏
                 if crate::popup::popup_visible()
                     && !crate::popup::point_in_popup(info.pt.x, info.pt.y)
                 {
-                    emit(MouseEvent::Dismiss);
+                    emit(MouseEvent::Dismiss(crate::selection_runtime::generation()));
                 }
             }
             WM_RBUTTONDOWN => {
+                crate::selection_runtime::invalidate();
                 if let Some(generation) =
                     crate::context_menu::outside_generation(info.pt.x, info.pt.y)
                 {
@@ -122,8 +148,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                             || (info.pt.y - y).abs() > DRAG_THRESHOLD
                     })
                     .unwrap_or(false);
-                if dragged && debounce_ok() {
-                    emit(MouseEvent::Selection);
+                let original = DOWN_TARGET.lock().ok().and_then(|mut t| t.take());
+                if dragged
+                    && original.is_some()
+                    && original == crate::selection_runtime::target()
+                    && debounce_ok()
+                {
+                    if let Some(request) = crate::selection_runtime::request((info.pt.x, info.pt.y))
+                    {
+                        emit(MouseEvent::Selection(request));
+                    }
                 }
             }
             _ => {}
@@ -132,7 +166,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     CallNextHookEx(None, code, wparam, lparam)
 }
 
-/// 启动鼠标钩子。`on_event` 会在 worker 线程上被调用（Selection 会阻塞抓词，Dismiss 即时）。
+/// 启动鼠标钩子。`on_event` 会在 worker 线程上被调用（Selection 只投递有界请求，Dismiss 不等待 UIA）。
 pub fn start<F>(on_event: F) -> bool
 where
     F: Fn(MouseEvent) + Send + 'static,
@@ -142,8 +176,8 @@ where
     }
     crate::diag::log("mousehook::start 被调用");
 
-    // worker：接收事件并分发（Selection 稍等选区稳定后再抓词）
-    let (tx, rx) = std::sync::mpsc::channel::<MouseEvent>();
+    // 控制 worker：只转发到有界选区调度器，关闭事件不等待 UIA。
+    let (tx, rx) = std::sync::mpsc::sync_channel::<MouseEvent>(16);
     // ★ 健壮性（P4）：锁一旦 poison（极少，仅在持锁 panic 时）就别再 unwrap 造成二次崩溃，
     //   改为降级——通道建不起来，钩子事件发不出去，但进程不崩。
     if let Ok(mut g) = SIGNAL.lock() {
@@ -156,12 +190,11 @@ where
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {
             match ev {
-                MouseEvent::Selection => {
-                    std::thread::sleep(Duration::from_millis(SETTLE_MS));
-                    on_event(MouseEvent::Selection);
+                MouseEvent::Selection(request) => {
+                    on_event(MouseEvent::Selection(request));
                 }
-                MouseEvent::Dismiss => {
-                    on_event(MouseEvent::Dismiss);
+                MouseEvent::Dismiss(generation) => {
+                    on_event(MouseEvent::Dismiss(generation));
                 }
                 MouseEvent::DismissMenu(generation) => {
                     on_event(MouseEvent::DismissMenu(generation));
@@ -182,6 +215,21 @@ where
         });
         match hook {
             Ok(h) => {
+                let foreground = SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,
+                    EVENT_SYSTEM_FOREGROUND,
+                    None,
+                    Some(foreground_changed),
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT,
+                );
+                if foreground.is_invalid() {
+                    let _ = UnhookWindowsHookEx(h);
+                    let _ = ready_tx.send(false);
+                    crate::diag::log("selection status=FOREGROUND_MONITOR_UNAVAILABLE");
+                    return;
+                }
                 PUMP_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
                 let _ = ready_tx.send(true);
                 let mut msg = MSG::default();
@@ -189,6 +237,7 @@ where
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
+                let _ = UnhookWinEvent(foreground);
                 let _ = UnhookWindowsHookEx(h);
             }
             Err(_) => {
@@ -204,6 +253,7 @@ where
 
 /// 退出清理：给泵线程投递 WM_QUIT，循环退出时自动 UnhookWindowsHookEx。
 pub fn stop() {
+    crate::selection_runtime::stop();
     let id = PUMP_THREAD_ID.load(Ordering::SeqCst);
     if id != 0 && !STOPPED.swap(true, Ordering::SeqCst) {
         unsafe {
@@ -215,6 +265,9 @@ pub fn stop() {
 /// 挂起 / 恢复划词判定。截图遮罩显示期间置 `true`（调用方：`screenshot::begin` / `finish`）。
 /// 只影响钩子回调的判定，**不卸载钩子** —— 恢复后立刻可用，无安装/卸载开销与超时风险。
 pub fn set_suspend(v: bool) {
+    if v {
+        crate::selection_runtime::invalidate();
+    }
     SUSPENDED.store(v, Ordering::SeqCst);
 }
 

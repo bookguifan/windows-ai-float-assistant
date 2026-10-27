@@ -39,6 +39,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const CF_UNICODETEXT_FORMAT: u32 = 13;
 
 /// 轮询参数（team-lead 规定 `capture_selection(400, 20000)`）。
+#[cfg(test)]
 pub const POLL_TIMEOUT_MS: u64 = 400;
 pub const POLL_INTERVAL_MS: u64 = 25;
 /// 长度闸门（按 Unicode 字符数，不按字节）。
@@ -261,12 +262,14 @@ static LAST_CAPTURED: Mutex<Option<String>> = Mutex::new(None);
 ///
 /// ⚠️ 与 `LAST_CAPTURED` 语义**互相独立**。复制处另有 `raw_matches_pending`
 /// 自校验兜底：万一两份缓存错配，也会安全退化为归一化文本，绝不复制出错误内容。
+#[cfg(test)]
 static LAST_RAW: Mutex<Option<String>> = Mutex::new(None);
 
 /// 取出并消费上次抓取的原文（配合工具条「复制」使用）。
 ///
 /// 返回 `None` 表示「本次抓词没有留下原文」（如 UIA 直读路径），
 /// 调用方应退化为使用归一化文本，**绝不失败**。
+#[cfg(test)]
 pub fn take_last_raw() -> Option<String> {
     LAST_RAW.lock().ok().and_then(|mut g| g.take())
 }
@@ -278,6 +281,7 @@ pub fn take_last_raw() -> Option<String> {
 ///
 /// ⚠️ 调用方须保证 `raw` 与随后写入 `PENDING_TEXT` 的归一化文本**同源**，
 /// 否则复制处的 `raw_matches_pending` 自校验会判否并退化为归一化文本（安全但无收益）。
+#[cfg(test)]
 pub fn set_last_raw(raw: String) {
     if let Ok(mut g) = LAST_RAW.lock() {
         *g = Some(raw);
@@ -292,6 +296,7 @@ pub fn set_last_raw(raw: String) {
 ///
 /// 若 `raw` 是**上一次**划词残留的原文，其归一化结果不会以本次 `pending` 为前缀 ⇒ 判否。
 /// 这使「缓存错配」从"理论上不会"变成"物理上不可能生效"。
+#[cfg(test)]
 pub fn raw_matches_pending(raw: &str, pending: &str) -> bool {
     if pending.is_empty() {
         return false;
@@ -319,6 +324,7 @@ pub fn normalize_text(raw: &str) -> String {
 /// - instruction 里含 `{text}` 占位符 → 原样替换（用户完全掌控排版）；
 /// - 否则：`指令\n\n正文`；
 /// - 空正文 → 仅指令；空指令 → 仅正文（调用方须在此之前用长度闸门挡住「双空」）。
+#[cfg(test)]
 pub fn compose_custom(instruction: &str, body: &str) -> String {
     let text = normalize_text(body);
     let instr = instruction.trim();
@@ -354,6 +360,7 @@ pub enum CaptureOutcome {
 
 impl CaptureOutcome {
     /// 给用户看的提示文案；成功时为 `None`。
+    #[cfg(test)]
     pub fn user_message(&self) -> Option<String> {
         match self {
             CaptureOutcome::Ok(_) => None,
@@ -533,7 +540,7 @@ unsafe fn read_clipboard_text(
 }
 
 /// Caller must hold OpenClipboard until this bounded read is complete.
-unsafe fn read_open_clipboard_text() -> Option<String> {
+pub(crate) unsafe fn read_open_clipboard_text() -> Option<String> {
     (|| -> Option<String> {
         if IsClipboardFormatAvailable(CF_UNICODETEXT_FORMAT).is_err() {
             // ★ 诊断（纯观测）：区分「格式缺失」与「读到空文本」。此前两者日志同形。
@@ -655,6 +662,7 @@ pub fn set_clipboard_text(text: &str) -> bool {
 ///
 /// `poll_timeout_ms` / `max_len` 由调用方给出（team-lead 规定 400 / 20000）。
 /// 无法安全恢复原格式时不投递复制。仅恢复仍对应本次读取代次的旧文本。
+#[allow(dead_code)] // Deliberately retained locked legacy entry; never dispatched by Beta.2.
 pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome {
     // 最底层入口也硬拒绝：未来新增调用方不能绕过配置/UI策略。
     // 必须在绑定目标、读取剪贴板或投递按键之前返回；主动set_clipboard_text不受影响。
@@ -662,6 +670,7 @@ pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome
         return CaptureOutcome::ClipboardProtected;
     }
     let protected = || {
+        #[cfg(test)]
         let _ = take_last_raw();
         CaptureOutcome::ClipboardProtected
     };
@@ -671,6 +680,7 @@ pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome
     // Wait before taking the snapshot, so changes during modifier release are not stale.
     wait_modifiers_released(300);
     let Some((saved, seq_before)) = (unsafe { restorable_clipboard_snapshot() }) else {
+        #[cfg(test)]
         let _ = take_last_raw();
         return CaptureOutcome::ClipboardProtected;
     };
@@ -706,6 +716,7 @@ pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome
         seq_changed = changed;
     }
     if !seq_changed {
+        #[cfg(test)]
         let _ = take_last_raw();
         return CaptureOutcome::NoNewCopy;
     }
@@ -754,12 +765,14 @@ pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome
     // 6) 闸门
     let last = LAST_CAPTURED.lock().ok().and_then(|g| g.clone());
     let outcome = evaluate(read.as_deref(), seq_changed, max_len, last.as_deref());
+    #[cfg(test)]
     let succeeded = matches!(outcome, CaptureOutcome::Ok(_));
     if let CaptureOutcome::Ok(text) = &outcome {
         if let Ok(mut g) = LAST_CAPTURED.lock() {
             *g = Some(text.clone());
         }
     }
+    #[cfg(test)]
     if let Ok(mut g) = LAST_RAW.lock() {
         // ★ 旁路留存原文：仅供工具条「复制」保留排版用。
         //   仅在成功时写入，与 `PENDING_TEXT` 的赋值点（popup.rs 抓词成功分支）严格配对；
@@ -784,7 +797,7 @@ pub fn capture_selection(poll_timeout_ms: u64, max_len: usize) -> CaptureOutcome
 mod tests {
     #[test]
     fn public_build_direct_capture_is_rejected_before_any_native_capture_work() {
-        for (timeout, limit) in [(0, 0), (400, 20_000)] {
+        for (timeout, limit) in [(0, 0), (POLL_TIMEOUT_MS, MAX_CHARS)] {
             assert_eq!(
                 super::capture_selection(timeout, limit),
                 super::CaptureOutcome::ClipboardProtected

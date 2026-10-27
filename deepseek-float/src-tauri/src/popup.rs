@@ -17,7 +17,7 @@
 //!   5) 8s 超时自动关闭
 //!   6) 显式调用 `hide()`（新的划词覆盖旧的、或抓词失败）
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -70,10 +70,9 @@ static SHOW_LAST: Mutex<Option<LastShow>> = Mutex::new(None);
 /// 每次 show 自增：用于让「在途的 8s 超时」失效，避免旧超时把新弹窗关掉。
 static SHOW_GEN: AtomicU64 = AtomicU64::new(0);
 /// 触发时抓到的选区文本，等用户在工具条上点按钮时取用。
-static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
-/// 抓词串行锁：多个触发源（鼠标钩子回调等）可能并发触发，剪贴板读/写不可重入，
-/// 用 try_lock 让并发中的第二次触发直接跳过（而不是去抢剪贴板）。
-static TRIGGER_GUARD: Mutex<()> = Mutex::new(());
+static PENDING_SESSION: Mutex<crate::selection::ToolbarSelection> =
+    Mutex::new(crate::selection::ToolbarSelection::empty());
+static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
 /// 工具条当前是否可见（供 mousehook 判断「点击是否落在工具条外」以自动隐藏）。
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// 工具条的屏幕矩形（物理像素）(left, top, right, bottom)，show 时更新。
@@ -88,6 +87,32 @@ static AUTO_CLOSE_TX: Mutex<Option<Sender<ArmMsg>>> = Mutex::new(None);
 struct ArmMsg {
     generation: u64,
     deadline: Instant,
+    ticket: Option<u64>,
+}
+fn queue_auto_close(app: &AppHandle, generation: u64, ticket: Option<u64>) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if SHOW_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        if let Ok(mut state) = PENDING_SESSION.lock() {
+            if state.ticket().is_some() && state.ticket() != ticket {
+                return;
+            }
+            if let Some(ticket) = ticket {
+                state.clear_if(ticket);
+            }
+        }
+        hide(&handle);
+    });
+}
+pub(crate) fn dismiss_generation(app: &AppHandle, generation: u64) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if crate::selection_runtime::generation() == generation {
+            dismiss(&handle);
+        }
+    });
 }
 
 /// 启动自动关闭常驻线程（在 ensure 首次创建 popup 时调用一次）。
@@ -102,10 +127,7 @@ fn start_auto_close(app: AppHandle) {
             if let Some(msg) = pending.take() {
                 let now = Instant::now();
                 if now >= msg.deadline {
-                    if SHOW_GEN.load(Ordering::SeqCst) == msg.generation {
-                        crate::diag::log("popup 自动关闭：超时到达，隐藏工具条");
-                        hide(&app);
-                    }
+                    queue_auto_close(&app, msg.generation, msg.ticket);
                     continue;
                 }
                 match rx.recv_timeout(msg.deadline - now) {
@@ -170,6 +192,9 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
                 POPUP_DEFAULT_W, POPUP_LOGICAL_H
             ));
             // 启动常驻自动关闭线程（线程复用：取代原先「每次弹窗起一个 8s 线程」的做法）
+            if let Ok(hwnd) = w.hwnd() {
+                POPUP_HWND.store(hwnd.0 as isize, Ordering::Release);
+            }
             start_auto_close(app.clone());
             Some(w)
         }
@@ -366,7 +391,12 @@ pub fn show_at_cursor(app: &AppHandle) {
         visible.len().min(INLINE_MAX) + 2
     ));
     // 每次弹窗成功显示后，复位前端的一次性锁 fired + 收起浮层（popup.html 暴露的全局函数）。
-    let _ = win.eval("if (window.__dsfResetFired) window.__dsfResetFired(); if (window.__dsfHideMore) window.__dsfHideMore();");
+    let ticket = PENDING_SESSION
+        .lock()
+        .ok()
+        .and_then(|p| p.ticket())
+        .map(|t| t.to_string());
+    let _ = win.eval(format!("if (window.__dsfResetFired) window.__dsfResetFired({}); if (window.__dsfHideMore) window.__dsfHideMore();",serde_json::json!(ticket)));
     arm_auto_close(app, POPUP_TIMEOUT_MS);
 }
 
@@ -421,9 +451,11 @@ fn expand_more(app: &AppHandle) {
 /// 避免频繁划词堆积大量短命线程（线程复用）。常驻线程到点再按 SHOW_GEN 判定是否仍有效。
 fn arm_auto_close(app: &AppHandle, timeout_ms: u64) {
     let generation = SHOW_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let ticket = PENDING_SESSION.lock().ok().and_then(|s| s.ticket());
     let msg = ArmMsg {
         generation,
         deadline: Instant::now() + Duration::from_millis(timeout_ms),
+        ticket,
     };
     // 常驻线程未就绪（极端竞态：ensure 尚未调用 start_auto_close）时降级为一次性线程兜底，
     // 保证 8s 超时仍生效，不会因重构引入「永不关闭」的回归。
@@ -436,9 +468,7 @@ fn arm_auto_close(app: &AppHandle, timeout_ms: u64) {
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(timeout_ms));
-            if SHOW_GEN.load(Ordering::SeqCst) == generation {
-                hide(&app);
-            }
+            queue_auto_close(&app, generation, ticket);
         });
     }
 }
@@ -451,6 +481,13 @@ fn arm_auto_close(app: &AppHandle, timeout_ms: u64) {
 ///   hide 后强制球重绘一次，冲刷残留旧帧。这正是「**第二次点击就不出现**」里 `hide_panel`
 ///   已验证有效的那一步 —— 此前**只**加在 panel 侧，工具条侧缺失。
 pub fn hide(app: &AppHandle) {
+    crate::selection_runtime::invalidate();
+    dismiss(app);
+}
+
+/// Mouse-down already invalidated the previous generation. Do not invalidate its later mouse-up.
+pub fn dismiss(app: &AppHandle) {
+    clear_pending_text();
     SHOW_GEN.fetch_add(1, Ordering::SeqCst);
     POPUP_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
@@ -461,27 +498,102 @@ pub fn hide(app: &AppHandle) {
     crate::diag::log("popup 已 hide 并冲刷球合成表面");
 }
 
-pub fn set_pending_text(text: String) {
-    if let Ok(mut g) = PENDING_TEXT.lock() {
-        *g = Some(text);
+pub fn accept_session(app: &AppHandle, session: crate::selection::Session) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || accept_session_on_main(&handle, session));
+}
+fn accept_session_on_main(app: &AppHandle, session: crate::selection::Session) {
+    if !crate::selection_runtime::valid(&session.request)
+        || !session.usable(
+            crate::selection_runtime::target(),
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+        || session.normalized.chars().count() < capture::MIN_CHARS
+    {
+        return;
+    }
+    crate::settings::clear_selection(app);
+    crate::diag::log(&format!(
+        "selection status=SESSION_READY method={:?}",
+        session.method
+    ));
+    let ticket = session.request.session_id;
+    crate::diag::log(&format!(
+        "selection stage=offer request={} session={} generation={} source_hwnd={} now_ms={}",
+        session.request.generation,
+        ticket,
+        crate::selection_runtime::generation(),
+        session.request.target.hwnd,
+        crate::selection_runtime::now_ms()
+    ));
+    if let Ok(mut pending) = PENDING_SESSION.lock() {
+        pending.offer(session);
+    }
+    show_at_cursor(app);
+}
+fn popup_is_foreground() -> bool {
+    let hwnd = POPUP_HWND.load(Ordering::Acquire);
+    hwnd != 0
+        && unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize == hwnd
+        }
+}
+fn source_alive(state: &crate::selection::ToolbarSelection) -> bool {
+    state
+        .target()
+        .is_some_and(crate::selection_runtime::is_native_target)
+}
+/// Called only by the native mouse hook on a verified popup hit. No I/O or UIA calls.
+pub(crate) fn arm_action(root: isize) {
+    if root == 0 || root != POPUP_HWND.load(Ordering::Acquire) || !popup_visible() {
+        return;
+    }
+    if let Ok(mut state) = PENDING_SESSION.lock() {
+        let alive = source_alive(&state);
+        state.arm(
+            crate::selection_runtime::target(),
+            popup_is_foreground(),
+            alive,
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        );
     }
 }
-
-fn take_pending_text() -> Option<String> {
-    PENDING_TEXT.lock().ok().and_then(|mut g| g.take())
+/// A foreground event caused by that native click may move focus to popup and back to its source.
+/// All other foreground changes still revoke the generation, including unarmed app windows.
+pub(crate) fn preserves_foreground(hwnd: isize) -> bool {
+    if !popup_visible() {
+        return false;
+    }
+    let fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize };
+    if fg != hwnd {
+        return false;
+    }
+    PENDING_SESSION.lock().ok().is_some_and(|state| {
+        state.allows_popup_focus(
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        ) && source_alive(&state)
+            && (hwnd == POPUP_HWND.load(Ordering::Acquire)
+                || state.target().is_some_and(|t| t.hwnd == hwnd))
+    })
 }
-
-/// 仅读取不消费——供设置窗口展示预览而不会清空。
-pub fn peek_pending_text() -> Option<String> {
-    PENDING_TEXT.lock().ok().and_then(|g| g.clone())
+fn take_pending_action(ticket: u64, consume: bool) -> Option<crate::selection::ToolbarAction> {
+    let mut state = PENDING_SESSION.lock().ok()?;
+    let alive = source_alive(&state);
+    let fg = crate::selection_runtime::target();
+    let popup = popup_is_foreground();
+    let generation = crate::selection_runtime::generation();
+    let now = crate::selection_runtime::now_ms();
+    let result = state.take_action(ticket, fg, popup, alive, generation, now, consume);
+    drop(state); // Never hold a hook-visible mutex during diagnostic file I/O.
+    crate::diag::log(&format!("selection stage=action ticket={ticket} generation={generation} now_ms={now} source_alive={alive} popup_foreground={popup} accepted={}",result.is_some()));
+    result
 }
-
-/// 清空待发选区文本（不读不消费）。用于「本应用窗口内划词」守卫：
-/// 该分支会跳过抓词并提前返回，若之前残留了上一次成功抓词的 `PENDING_TEXT`，
-/// 不清空会被后续动作（如设置页运行 / 工具条按钮）误消费陈旧文本。
 pub(crate) fn clear_pending_text() {
-    if let Ok(mut g) = PENDING_TEXT.lock() {
-        *g = None;
+    if let Ok(mut pending) = PENDING_SESSION.lock() {
+        pending.clear();
     }
 }
 
@@ -516,59 +628,18 @@ fn cursor_in_own_window(app: &AppHandle) -> bool {
 /// 划词抓取的唯一入口（由全局鼠标钩子的 Selection 事件触发）：
 /// 抓当前选区 → 成功则弹工具条；失败只落诊断日志（用户已要求不要浮层提示）。
 ///
-/// ⚠️ 本函数会阻塞约 400ms（剪贴板轮询），**只能从鼠标钩子的 worker 线程调用**，不要放主线程。
-pub fn trigger_selection(app: &AppHandle) {
-    // 串行化：并发触发时第二次直接跳过（剪贴板操作不可重入）
-    let Ok(_guard) = TRIGGER_GUARD.try_lock() else {
-        crate::diag::log("trigger_selection 跳过（上一次抓词仍在进行）");
-        return;
-    };
-    // ★ 前置自身窗口守卫（2026-09-19 修复强化）：在任何抓词前先判定光标是否落在本应用自身窗口
-    //   （悬浮球 / 工具条 / 结果卡 / 设置页 / 面板）内。命中则直接跳过 —— 拖动 ball、在设置页
-    //   或面板输入框里拖选都是「真编辑」，并非「划词查询」，无需合成 Ctrl+Insert 去临时劫持剪贴板。
-    //   原实现把这一判断放「抓词成功后」，代价是自身窗口内动作仍会执行一次剪贴板读改写。
+/// 仅投递有界请求，不等待 UIA 或剪贴板；失败不弹提示。
+pub fn trigger_selection(app: &AppHandle, request: crate::selection::Request) {
+    dismiss(app);
     if cursor_in_own_window(app) {
-        crate::diag::log("划词发生在本应用窗口内，跳过抓词（避免劫持剪贴板）");
-        // ★ MEDIUM-3 修复（2026-09-21）：跳过抓词前先清空残留的 PENDING_TEXT，
-        //   避免上一次成功抓词留下的旧文本被后续动作误消费。
-        clear_pending_text();
         hide(app);
         return;
     }
-    crate::diag::log("trigger_selection 进入（鼠标钩子 worker 线程）");
-
-    let cfg = crate::config::load();
-    let _ = capture::take_last_raw();
-    let outcome = selection_with_policy(
-        cfg.privileged_capture,
-        cfg.clipboard_fallback_enabled,
-        crate::uia::uia_selection_text,
-        capture::set_last_raw,
-        || capture::capture_selection(capture::POLL_TIMEOUT_MS, capture::MAX_CHARS),
-    );
-
-    match outcome {
-        capture::CaptureOutcome::Ok(text) => {
-            // 自身窗口守卫已前置到函数开头（见 L509），能走到这里即非自身窗口动作，直接弹工具条。
-            crate::diag::log(&format!(
-                "抓词成功，{} 字符，准备弹工具条",
-                text.chars().count()
-            ));
-            set_pending_text(text);
-            show_at_cursor(app);
-        }
-        other => {
-            crate::diag::log(&format!("抓词失败/非成功: {other:?}"));
-            // 抓词失败：不弹工具条。用户已明确要求「不要浮层提示」→ 只落诊断日志（降级矩阵仍可见于 d1-debug.log）
-            if let Some(msg) = other.user_message() {
-                crate::diag::warn(&format!("划词失败：{msg}"));
-            }
-            hide(app);
-        }
-    }
+    crate::selection_runtime::submit(app, request);
 }
 
 /// UIA 始终先于获准的回退；关闭回退时不调用任何自动复制 API。
+#[cfg(test)]
 fn selection_with_policy(
     use_uia: bool,
     allow_fallback: bool,
@@ -605,7 +676,7 @@ fn selection_with_policy(
 ///     查 prompts 后 compose_custom + 注入面板。
 ///
 /// 硬约束：绝不发送空内容。
-pub fn on_action(app: &AppHandle, preset_name: &str) {
+pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
     if preset_name == "open-more" {
         // 「⋮ 更多」：若有溢出项才就地扩高展开浮层；无溢出则直接打开设置（避免空浮层「点了没东西」）。
         let overflow = {
@@ -615,55 +686,46 @@ pub fn on_action(app: &AppHandle, preset_name: &str) {
                 .count()
                 .saturating_sub(INLINE_MAX)
         };
+        let selected = take_pending_action(ticket, overflow == 0);
         if overflow > 0 {
-            expand_more(app);
-        } else {
-            crate::settings::open(app);
-            hide(app);
+            if selected.is_some() {
+                expand_more(app);
+            }
+        } else if let Some(selected) = selected {
+            crate::settings::open_from_selection(app, selected);
         }
         return;
     }
 
     if preset_name == "open-settings" {
-        // 打开设置窗口：保留 pending text（设置页要预览/运行都要用到）
-        crate::settings::open(app);
-        hide(app);
+        if let Some(selected) = take_pending_action(ticket, true) {
+            crate::settings::open_from_selection(app, selected);
+        }
         return;
     }
 
     // 常规动作：先关闭工具条，再消费选区文本
-    hide(app);
-    let Some(text) = take_pending_text() else {
+    let selected = take_pending_action(ticket, true)
+        .and_then(|a| {
+            a.into_session(
+                crate::selection_runtime::generation(),
+                crate::selection_runtime::now_ms(),
+            )
+        })
+        .map(|s| s.raw);
+    let Some(text) = selected else {
         crate::diag::warn("[M2] popup action 触发但待发文本已丢失");
-        return;
+        return; // A late action must not hide or revoke a replacement selection.
     };
+    hide(app);
 
     // 复制：写回系统剪贴板（不注入面板）
     if preset_name == "copy" {
-        // ★ 排版保真：优先用抓词时旁路留存的**原文**，以保留换行 / 缩进 / 制表符。
-        //   `text`（PENDING_TEXT）是 normalize_text 的产物，所有空白已被折叠为单空格，
-        //   直接复制会丢掉 Markdown 的列表 / 段落 / 代码块结构。
-        //   取不到原文（如 UIA 直读路径）时退化为 `text`，行为与改动前一致，绝不失败。
-        //
-        // ★ 自校验（防止 LAST_RAW 与 PENDING_TEXT 错配）：仅当原文**确属本次划词**时才用 raw，
-        //   否则视为陈旧缓存，退化为 `text`。
-        //   判据：`normalize(raw)` 以 `text` 为前缀。两种合法形态都满足——
-        //     ① 正常：两者全等，前缀恒成立；
-        //     ② 超长：`text` 是 `normalize(raw)` 截断到 MAX_CHARS 的前缀（原文不截断，见方案取舍 1）。
-        //   而「上一条划词的原文」其归一化结果**不会**以当前 text 为前缀（内容不同），故被挡住。
-        //   代价：复制时多算一次 normalize（O(n)，n ≤ 一次选区长度），可忽略。
-        let (raw, source) = match capture::take_last_raw() {
-            Some(r) if capture::raw_matches_pending(&r, &text) => (r, "raw"),
-            Some(_) => (text, "normalized(缓存不匹配)"),
-            None => (text, "normalized(无原文)"),
-        };
-        if capture::set_clipboard_text(&raw) {
-            crate::diag::log(&format!(
-                "popup: 已复制 {} 字符到剪贴板（来源={source}）",
-                raw.chars().count()
-            ));
+        // Raw text and target identity were consumed from one verified session.
+        if capture::set_clipboard_text(&text) {
+            crate::diag::log("selection status=USER_COPY_SUCCESS");
         } else {
-            crate::diag::warn("popup: 复制失败（剪贴板被占用）");
+            crate::diag::log("selection status=USER_COPY_FAILED");
         }
         return;
     }
@@ -674,22 +736,18 @@ pub fn on_action(app: &AppHandle, preset_name: &str) {
         crate::diag::warn(&format!("[M2] popup 收到未知 preset: {preset_name}"));
         return;
     };
-    let prompt = capture::compose_custom(&p.instruction, &text);
+    let prompt = crate::selection::compose(&p.instruction, &text);
     send_prompt(app, prompt, p.label.clone(), text, p.show_card);
 }
 
 /// 设置窗口里点「运行」某条提示词时调用（与 on_action 的提示词分支等价，走 settings-run 事件）。
-pub fn run_prompt(app: &AppHandle, id: &str) {
-    let Some(text) = take_pending_text() else {
-        crate::diag::warn("settings-run: 待发文本已丢失（需重新划词）");
-        return;
-    };
+pub fn run_prompt(app: &AppHandle, id: &str, text: String) {
     let list = crate::prompts::load(app);
     let Some(p) = list.iter().find(|p| p.id == id) else {
         crate::diag::warn(&format!("settings-run: 提示词不存在或已删除: {id}"));
         return;
     };
-    let prompt = capture::compose_custom(&p.instruction, &text);
+    let prompt = crate::selection::compose(&p.instruction, &text);
     let label = p.label.clone();
     let show_card = p.show_card;
     send_prompt(app, prompt, label.clone(), text, show_card);
@@ -763,6 +821,20 @@ fn send_prompt(app: &AppHandle, prompt: String, label: String, quote: String, sh
             ..Default::default()
         },
     );
+}
+
+/// Remove expired/changed-target raw text even if showing the window failed.
+pub(crate) fn expire_session() {
+    if let Ok(mut state) = PENDING_SESSION.lock() {
+        let alive = source_alive(&state);
+        state.expire(
+            crate::selection_runtime::target(),
+            popup_is_foreground(),
+            alive,
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        );
+    }
 }
 
 #[cfg(test)]
