@@ -29,6 +29,7 @@ mod workflow;
 // 源文件仍叫 `windows.rs`（描述其内容：窗口生命周期）。
 mod copy_engine;
 mod native_copy_proof;
+mod native_selection;
 mod panel_site;
 #[path = "windows.rs"]
 mod panels;

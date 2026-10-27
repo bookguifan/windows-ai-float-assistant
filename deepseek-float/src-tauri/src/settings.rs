@@ -94,17 +94,16 @@ pub fn open(app: &AppHandle) {
     show(app, &w, String::new(), None, revision);
 }
 /// Only an explicit toolbar action may delegate a currently verified selection.
-pub(crate) fn open_from_selection(app: &AppHandle, session: Option<crate::selection::Session>) {
+pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::ToolbarAction) {
     clear_selection(app);
     let window = ensure(app);
     let now = crate::selection_runtime::now_ms();
     let (preview, ticket, revision) = {
         let mut state = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
-        if let (Some(w), Some(session)) = (&window, session) {
+        if let Some(w) = &window {
             if let Ok(hwnd) = w.hwnd() {
-                state.prepare(
-                    session,
-                    crate::selection_runtime::target(),
+                state.prepare_action(
+                    action,
                     crate::selection_runtime::generation(),
                     now,
                     hwnd.0 as isize,
@@ -129,6 +128,10 @@ pub(crate) fn open_from_selection(app: &AppHandle, session: Option<crate::select
 fn show(app: &AppHandle, w: &WebviewWindow, preview: String, ticket: Option<u64>, revision: u64) {
     let prompts = crate::prompts::load(app);
     let payload = serde_json::json!({"text":preview,"prompts":prompts,"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()});
+    crate::diag::log(&format!(
+        "selection stage=settings-show revision={revision} ticket={ticket:?} now_ms={}",
+        crate::selection_runtime::now_ms()
+    ));
     let js = format!(
         "if(window.__dsfSettingsInit)window.__dsfSettingsInit({});",
         payload
@@ -214,4 +217,31 @@ pub fn refresh_after_backup(app: &AppHandle) {
     if let Err(error) = window.eval(js) {
         crate::diag::warn(&format!("settings: backup restore 后刷新界面失败: {error}"));
     }
+}
+
+pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<serde_json::Value> {
+    if !window.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let hwnd = window.hwnd().ok()?.0 as isize;
+    let now = crate::selection_runtime::now_ms();
+    let (text, ticket, revision) = {
+        let mut s = SELECTION.lock().unwrap_or_else(|p| p.into_inner());
+        s.expire(now);
+        (
+            s.preview(hwnd, now)
+                .unwrap_or_default()
+                .chars()
+                .take(800)
+                .collect::<String>(),
+            s.ticket(),
+            s.revision(),
+        )
+    };
+    crate::diag::log(&format!(
+        "selection stage=settings-ready revision={revision} ticket={ticket:?} now_ms={now}"
+    ));
+    Some(
+        serde_json::json!({"text":text,"prompts":crate::prompts::load(app),"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()}),
+    )
 }

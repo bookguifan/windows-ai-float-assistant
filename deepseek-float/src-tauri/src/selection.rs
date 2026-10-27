@@ -43,6 +43,7 @@ impl Latest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
     Uia,
+    NativeEdit,
     Clipboard,
 }
 #[derive(Clone)]
@@ -122,6 +123,20 @@ impl SettingsSelection {
             raw: session.raw,
         });
         true
+    }
+    pub fn prepare_action(
+        &mut self,
+        action: ToolbarAction,
+        generation: u64,
+        now: u64,
+        window: isize,
+    ) -> bool {
+        let Some(session) = action.into_session(generation, now) else {
+            self.clear();
+            return false;
+        };
+        let source = session.request.target;
+        self.prepare(session, Some(source), generation, now, window)
     }
     pub fn preview(&self, window: isize, now: u64) -> Option<&str> {
         self.grant
@@ -259,4 +274,142 @@ pub fn compose(instruction: &str, raw: &str) -> String {
 /// ES_PASSWORD has defined meaning here only for the verified native edit classes.
 pub fn copy_control_allowed(class: &str, style: u32) -> bool {
     (class == "edit" || class.starts_with("richedit")) && style & 0x20 == 0
+}
+
+/// Native pointer-down proof, distinct from an ordinary/background selection request.
+pub struct ToolbarAction {
+    session: Session,
+}
+impl ToolbarAction {
+    pub fn into_session(self, generation: u64, now: u64) -> Option<Session> {
+        self.session
+            .usable(Some(self.session.request.target), generation, now)
+            .then_some(self.session)
+    }
+}
+#[derive(Default)]
+pub struct ToolbarSelection {
+    pending: Option<Session>,
+    armed: Option<(u64, u64)>,
+    interacting: bool,
+}
+impl ToolbarSelection {
+    pub const fn empty() -> Self {
+        Self {
+            pending: None,
+            armed: None,
+            interacting: false,
+        }
+    }
+    pub fn offer(&mut self, session: Session) {
+        self.pending = Some(session);
+        self.armed = None;
+        self.interacting = false;
+    }
+    pub fn target(&self) -> Option<Target> {
+        self.pending.as_ref().map(|s| s.request.target)
+    }
+    pub fn ticket(&self) -> Option<u64> {
+        self.pending.as_ref().map(|s| s.request.session_id)
+    }
+    pub fn clear(&mut self) {
+        self.pending = None;
+        self.armed = None;
+        self.interacting = false;
+    }
+    pub fn clear_if(&mut self, ticket: u64) {
+        if self.ticket() == Some(ticket) {
+            self.clear();
+        }
+    }
+    pub fn retains(
+        &self,
+        foreground: Option<Target>,
+        popup: bool,
+        alive: bool,
+        generation: u64,
+        now: u64,
+    ) -> bool {
+        alive
+            && self.pending.as_ref().is_some_and(|s| {
+                s.usable(Some(s.request.target), generation, now)
+                    && (foreground == Some(s.request.target) || popup && self.interacting)
+            })
+    }
+    pub fn arm(
+        &mut self,
+        foreground: Option<Target>,
+        popup: bool,
+        alive: bool,
+        generation: u64,
+        now: u64,
+    ) -> bool {
+        self.armed = None;
+        if !self.retains(foreground, popup, alive, generation, now) {
+            return false;
+        }
+        self.interacting = true;
+        self.armed = self.ticket().map(|t| (t, now));
+        true
+    }
+    pub fn allows_popup_focus(&self, generation: u64, now: u64) -> bool {
+        self.interacting
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|s| s.usable(Some(s.request.target), generation, now))
+    }
+    #[allow(clippy::too_many_arguments)] // Explicit independent inputs of the pure native action gate.
+    pub fn take_action(
+        &mut self,
+        ticket: u64,
+        foreground: Option<Target>,
+        popup: bool,
+        alive: bool,
+        generation: u64,
+        now: u64,
+        consume: bool,
+    ) -> Option<ToolbarAction> {
+        let (armed, at) = self.armed?;
+        if armed != ticket || self.ticket() != Some(ticket) {
+            return None;
+        }
+        self.armed = None;
+        if now < at || now - at >= 1000 || !self.retains(foreground, popup, alive, generation, now)
+        {
+            return None;
+        }
+        let session = if consume {
+            self.pending.take()?
+        } else {
+            self.pending.as_ref()?.clone()
+        };
+        Some(ToolbarAction { session })
+    }
+    pub fn expire(
+        &mut self,
+        foreground: Option<Target>,
+        popup: bool,
+        alive: bool,
+        generation: u64,
+        now: u64,
+    ) {
+        if !self.retains(foreground, popup, alive, generation, now) {
+            self.clear();
+        }
+    }
+}
+
+/// Local app documents only; never authorize an external AI page to consume a toolbar session.
+pub fn local_page(label: &str, url: &tauri::Url, expected: &str, visible: bool) -> bool {
+    if label != expected || !visible {
+        return false;
+    }
+    let app = url.scheme() == "tauri" && url.host_str() == Some("localhost")
+        || matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost");
+    let dev = cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && matches!(url.host_str(), Some("localhost" | "127.0.0.1"))
+        && url.port() == Some(5173);
+    (app || dev) && url.path() == format!("/poc/{expected}.html")
 }

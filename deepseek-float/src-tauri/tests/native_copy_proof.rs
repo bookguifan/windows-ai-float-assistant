@@ -137,15 +137,24 @@ impl Drop for Fixture {
     }
 }
 #[test]
+#[ignore = "manual native-window gate; requires an authorized desktop session"]
 fn cross_process_edit_selection_is_exact_without_clipboard() {
     let f = Fixture::new(false);
     let proof = native_copy_proof::capture(f.hwnd, || f.valid()).unwrap();
     assert_eq!(proof.text, "😀中文\r\n  code <&>");
 }
 #[test]
+#[ignore = "manual native-window gate; requires an authorized desktop session"]
 fn cross_process_hung_text_read_is_bounded_and_rejected() {
     let f = Fixture::new(true);
     let start = Instant::now();
     assert!(native_copy_proof::capture(f.hwnd, || f.valid()).is_err());
     assert!(start.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
+fn expired_guard_refuses_before_any_native_message() {
+    assert!(
+        native_copy_proof::read_stable(|| false, || panic!("must not read native data")).is_err()
+    );
 }

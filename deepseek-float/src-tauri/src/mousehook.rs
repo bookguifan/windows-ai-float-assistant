@@ -31,13 +31,15 @@ use windows::Win32::UI::WindowsAndMessaging::{EVENT_SYSTEM_FOREGROUND, WINEVENT_
 unsafe extern "system" fn foreground_changed(
     _: HWINEVENTHOOK,
     _: u32,
-    _: windows::Win32::Foundation::HWND,
+    hwnd: windows::Win32::Foundation::HWND,
     _: i32,
     _: i32,
     _: u32,
     _: u32,
 ) {
-    crate::selection_runtime::invalidate();
+    if !crate::popup::preserves_foreground(hwnd.0 as isize) {
+        crate::selection_runtime::invalidate();
+    }
 }
 
 /// 鼠标钩子产生的事件。
@@ -109,9 +111,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let root = GetAncestor(hit, GA_ROOT);
                     let mut owner = 0;
                     GetWindowThreadProcessId(root, Some(&mut owner));
-                    if owner != GetCurrentProcessId()
-                        || !crate::popup::point_in_popup(info.pt.x, info.pt.y)
+                    if owner == GetCurrentProcessId()
+                        && crate::popup::point_in_popup(info.pt.x, info.pt.y)
                     {
+                        crate::popup::arm_action(root.0 as isize);
+                    } else {
                         crate::selection_runtime::invalidate();
                         if let Ok(mut target) = DOWN_TARGET.lock() {
                             *target = crate::selection_runtime::target();

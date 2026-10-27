@@ -570,9 +570,7 @@ pub(crate) fn setup_popup_and_mousehook(app: &AppHandle) -> AppResult<()> {
             crate::popup::trigger_selection(&hm, request)
         }
         crate::mousehook::MouseEvent::Dismiss(generation) => {
-            if crate::selection_runtime::generation() == generation {
-                crate::popup::dismiss(&hm);
-            }
+            crate::popup::dismiss_generation(&hm, generation);
         }
         crate::mousehook::MouseEvent::DismissMenu(generation) => {
             crate::context_menu::close(&hm, generation)

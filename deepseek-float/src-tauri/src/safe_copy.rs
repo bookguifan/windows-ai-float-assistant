@@ -32,12 +32,15 @@ static PROMPTING: AtomicBool = AtomicBool::new(false);
 #[derive(serde::Serialize)]
 pub struct State {
     pub enabled: bool,
+    pub available: bool,
     pub policy_version: u32,
     pub session_only: bool,
 }
 pub fn state() -> State {
     State {
-        enabled: CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows(),
+        enabled: crate::release_policy::experimental_copy_available()
+            && CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows(),
+        available: crate::release_policy::experimental_copy_available(),
         policy_version: POLICY_VERSION,
         session_only: true,
     }
@@ -46,6 +49,9 @@ pub fn revoke() {
     CONSENT.lock().unwrap_or_else(|p| p.into_inner()).revoke();
 }
 fn epoch() -> Option<u64> {
+    if !crate::release_policy::experimental_copy_available() {
+        return None;
+    }
     let c = CONSENT.lock().ok()?;
     c.allows().then_some(c.epoch())
 }
@@ -79,6 +85,9 @@ pub(crate) fn trusted(window: &WebviewWindow) -> bool {
 }
 /// The IPC is only a request: only the real native modal's OK can grant this process.
 pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
+    if !crate::release_policy::experimental_copy_available() {
+        return Err("本发行构建已禁用实验性 Ctrl+C 回退；UIA 和原生 Edit 读取不受影响".into());
+    }
     if !trusted(&window) {
         return Err("只能在聚焦的本地设置页请求授权".into());
     }
@@ -161,6 +170,9 @@ struct Snapshot {
     blocks: Vec<(u32, Block)>,
 }
 unsafe fn snapshot() -> Result<Snapshot, &'static str> {
+    if !crate::release_policy::experimental_copy_available() {
+        return Err("COPY_BUILD_DISABLED");
+    }
     let _lock = Clipboard::open()?;
     let sequence = GetClipboardSequenceNumber();
     let start = Instant::now();
@@ -239,6 +251,9 @@ fn current(r: &Request, e: u64, p: &Process) -> bool {
         && code == 259
 }
 unsafe fn copy_chord() -> bool {
+    if !crate::release_policy::experimental_copy_available() {
+        return false;
+    }
     if [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
         .iter()
         .any(|v| GetAsyncKeyState(i32::from(v.0)) < 0)
@@ -348,6 +363,9 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
         }
     }
     fn restore(&mut self, mut saved: Snapshot, expected: Stamp) -> Result<(), &'static str> {
+        if !crate::release_policy::experimental_copy_available() {
+            return Err("COPY_BUILD_DISABLED");
+        }
         unsafe {
             let owner = self
                 .app
@@ -404,6 +422,9 @@ fn native_focus(target: Target) -> Option<isize> {
     }
 }
 fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
+    if !crate::release_policy::experimental_copy_available() {
+        return Err("COPY_BUILD_DISABLED");
+    }
     let _serial = TRANSACTION.try_lock().map_err(|_| "COPY_BUSY")?;
     let e = epoch().ok_or("COPY_UNAUTHORIZED")?;
     unsafe {
@@ -463,13 +484,27 @@ mod tests {
         }
     }
     #[test]
+    fn distribution_state_and_epoch_ignore_even_forged_runtime_consent() {
+        if crate::release_policy::experimental_copy_available() {
+            return;
+        }
+        CONSENT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .grant(POLICY_VERSION);
+        assert!(!state().available);
+        assert!(!state().enabled);
+        assert!(epoch().is_none());
+        revoke();
+    }
+    #[test]
     fn centralized_policy_requires_all_gates() {
         for a in [false, true] {
             for b in [false, true] {
                 for c in [false, true] {
                     assert_eq!(
                         crate::release_policy::safe_copy_allowed(a, b, c),
-                        a && b && c
+                        crate::release_policy::experimental_copy_available() && a && b && c
                     );
                 }
             }

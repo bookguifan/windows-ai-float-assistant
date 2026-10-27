@@ -7,7 +7,7 @@
 [![Beta](https://img.shields.io/badge/Beta-v0.1.0--beta.1-orange)](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1)
 [![CI](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml)
 
-> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载及校验值仍对应 `v0.1.0-beta.1`。旧自动复制入口继续禁用。本分支另有默认关闭、需原生确认且仅本次运行有效的实验性剪贴板回退，存在并发及恢复失败风险，尚未完成原生兼容性验收，见[开发验证报告](deepseek-float/docs/uia-beta2-validation.md)。
+> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载与校验值仍对应 `v0.1.0-beta.1`。UIA 优先，失败后仅尝试标准 Unicode Edit 无剪贴板选区读取。发行构建固定禁用自动 Ctrl+C 回退；研究源码及历史风险记录保留，仅显式启用研究特性的非生产 Debug 构建可授权，R01–R03 尚未关闭。见[发行安全门禁](deepseek-float/docs/uia-beta2-release-safety-gate.md)。 开发代码允许保留已披露缺陷，Beta.2 发布仍 NO-GO；见 [Known Issues 与合并边界](deepseek-float/docs/beta2-known-issues.md)。
 
 ## 下载 Windows 版
 

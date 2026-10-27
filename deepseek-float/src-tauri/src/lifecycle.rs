@@ -377,6 +377,7 @@ pub fn run() {
             crate::ipc::popup_action,
             crate::ipc::settings_save,
             crate::ipc::settings_run,
+            crate::ipc::settings_ready,
             crate::ipc::config_get,
             crate::ipc::autostart_supported,
             crate::ipc::config_set_autostart,

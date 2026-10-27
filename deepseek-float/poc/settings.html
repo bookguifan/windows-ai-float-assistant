@@ -145,18 +145,18 @@ input.url-box { width: 100%; box-sizing: border-box; }
           <div class="toggle-row">
             <div class="meta">
               <span class="t-label">UIA 划词增强</span>
-              <span class="t-hint">读取支持 UIA 的应用选区，不提升 Windows 权限，不读取密码控件</span>
+              <span class="t-hint">优先 UIA；失败时尝试标准 Unicode Edit 原生选区读取，不模拟复制、不读取密码控件，不提升 Windows 权限</span>
             </div>
             <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动剪贴板划词回退（实验性）</span><span class="t-hint">默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
-            <label class="switch"><input type="checkbox" data-key="safe-copy" aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
+            <div class="meta"><span class="t-label">自动剪贴板划词回退（实验性）</span><span class="t-hint" id="safe-copy-hint">本发行构建已禁用；仅显式启用研究特性的调试构建可授权。默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
+            <label class="switch"><input type="checkbox" data-key="safe-copy" disabled aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
             <div class="meta">
               <span class="t-label">旧版自动复制回退（本公开构建已禁用）</span>
-              <span class="t-hint">此旧入口不可启用；新的实验性回退使用独立的本次运行授权，不继承旧设置。用户主动复制不受影响。</span>
+              <span class="t-hint">此旧入口不可启用；实验性 Ctrl+C 仅用于显式启用研究特性的调试构建，发行构建不可授权。用户主动复制不受影响。</span>
             </div>
             <label class="switch"><input type="checkbox" data-key="clipboard-fallback" aria-label="自动复制回退：本构建已禁用" disabled /><span class="slider"></span></label>
           </div>
@@ -364,6 +364,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
       let selectionAvailable = false;
       let selectionTicket = null;
       let selectionRevision = 0n;
+      let selectionRevoked = false;
       const $editor = document.getElementById("editor-card");
       const $editorTitle = document.getElementById("editor-title");
       const $fLabel = document.getElementById("f-label");
@@ -855,20 +856,30 @@ input.url-box { width: 100%; box-sizing: border-box; }
         }
       }
       let safeCopyRevision=0;
+      let safeCopyAvailable=false;
+      function applySafeCopyStatus(status){
+        const el=document.querySelector('[data-key="safe-copy"]');
+        safeCopyAvailable=!!(status&&status.available);
+        el.checked=safeCopyAvailable&&!!status.enabled;
+        el.disabled=!safeCopyAvailable;
+        document.querySelector('#safe-copy-hint').textContent=safeCopyAvailable
+          ?'实验性调试能力；仅本次运行授权。Ctrl+C 与多格式恢复仍有未关闭风险，不可用于发布验收。'
+          :'本发行构建已禁用自动 Ctrl+C 回退，配置、备份及授权不能开启。UIA、标准 Unicode Edit 原生读取和主动复制保留。';
+      }
       async function refreshSafeCopy(){
         const revision=safeCopyRevision;
-        try{const status=await tauri.core.invoke('safe_copy_status');if(revision===safeCopyRevision)document.querySelector('[data-key="safe-copy"]').checked=!!(status&&status.enabled);}
-        catch{if(revision===safeCopyRevision)document.querySelector('[data-key="safe-copy"]').checked=false;}
+        try{const status=await tauri.core.invoke('safe_copy_status');if(revision===safeCopyRevision)applySafeCopyStatus(status);}
+        catch{if(revision===safeCopyRevision)applySafeCopyStatus(null);}
       }
       refreshSafeCopy();
       document.querySelectorAll('#features input[type="checkbox"]').forEach((el) => {
         el.addEventListener("change", async () => {
           const key = el.dataset.key;
           if(key==='safe-copy'){
-            if(el.disabled)return;
+            if(el.disabled||!safeCopyAvailable){applySafeCopyStatus({available:false,enabled:false});return;}
             ++safeCopyRevision; const revision=safeCopyRevision;el.disabled=true;
-            try{const status=await tauri.core.invoke(el.checked?'safe_copy_authorize':'safe_copy_revoke');if(revision===safeCopyRevision)el.checked=!!(status&&status.enabled);}
-            catch{try{await tauri.core.invoke('safe_copy_revoke');}catch{}el.checked=false;}finally{el.disabled=false;}
+            try{const status=await tauri.core.invoke(el.checked?'safe_copy_authorize':'safe_copy_revoke');if(revision===safeCopyRevision)applySafeCopyStatus(status);}
+            catch{try{await tauri.core.invoke('safe_copy_revoke');}catch{}el.checked=false;}finally{el.disabled=!safeCopyAvailable;}
             return;
           }
           if (key === "clipboard-fallback") {
@@ -1063,6 +1074,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         const next = revision == null ? selectionRevision : BigInt(revision);
         if (next < selectionRevision) return;
         selectionRevision = next;
+        selectionRevoked = true;
         selectionTicket = null;
         selectionAvailable = false;
         $preview.classList.add("preview-empty");
@@ -1078,11 +1090,12 @@ input.url-box { width: 100%; box-sizing: border-box; }
           loadHotkey();
           const p = payload && typeof payload === "object" ? payload : {};
           const revision = p.selection_revision == null ? selectionRevision : BigInt(p.selection_revision);
-          if (revision >= selectionRevision) {
+          if (revision > selectionRevision || revision === selectionRevision && (!selectionRevoked || p.selection_revision == null && p.selection_ticket == null)) {
             selectionRevision = revision;
+            selectionRevoked = false;
             selectionTicket = p.selection_ticket == null ? null : String(p.selection_ticket);
-            const text = String(p.text || "").trim();
-            selectionAvailable = !!text && selectionTicket !== null;
+            const text = String(p.text || "");
+            selectionAvailable = !!text.trim() && selectionTicket !== null;
             if (text) { $preview.classList.remove("preview-empty"); $preview.textContent = text; }
             else { $preview.classList.add("preview-empty"); $preview.textContent = "（还没有划词文本，先选中一段文字）"; }
           }
@@ -1097,6 +1110,11 @@ input.url-box { width: 100%; box-sizing: border-box; }
           renderList();
         } catch (e) { console.error("[settings] __dsfSettingsInit:", e); }
       };
+      // Cold hidden WebView may have missed the first native eval; fetch the current revision once.
+      // Older replies cannot replace a live selection or revive a revoked revision.
+      tauri.core.invoke('settings_ready').then(payload => {
+        if (payload && typeof payload === 'object') window.__dsfSettingsInit(payload);
+      }).catch(error => console.error('[settings] ready snapshot:', error));
     </script>
   </body>
 </html>

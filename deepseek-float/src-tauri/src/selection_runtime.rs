@@ -108,12 +108,24 @@ fn start(app: AppHandle) {
                         );
                     }
                 } else if read.safe_target && valid(&r) {
-                    if let Ok(text) = crate::safe_copy::capture(&r, &worker_app) {
-                        if valid(&r) {
+                    let native = crate::native_selection::capture(&r, || {
+                        valid(&r) && crate::config::load().privileged_capture
+                    });
+                    if let Ok(text) = native {
+                        if valid(&r) && crate::config::load().privileged_capture {
                             crate::popup::accept_session(
                                 &worker_app,
-                                Session::new(r.clone(), text, Method::Clipboard),
+                                Session::new(r.clone(), text, Method::NativeEdit),
                             );
+                        }
+                    } else if crate::release_policy::experimental_copy_available() {
+                        if let Ok(text) = crate::safe_copy::capture(&r, &worker_app) {
+                            if valid(&r) {
+                                crate::popup::accept_session(
+                                    &worker_app,
+                                    Session::new(r.clone(), text, Method::Clipboard),
+                                );
+                            }
                         }
                     }
                 }

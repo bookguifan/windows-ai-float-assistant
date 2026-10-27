@@ -103,8 +103,37 @@ pub fn ball_ready() {
 
 /// 工具条按钮点击：preset 为 copy / open-settings / 提示词 id。
 #[tauri::command]
-pub fn popup_action(app: AppHandle, preset: String) {
-    crate::popup::on_action(&app, &preset);
+pub fn popup_action(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    preset: String,
+    selection_ticket: String,
+) -> Result<(), String> {
+    let url = window.url().map_err(|_| "工具条地址不可用")?;
+    if !crate::selection::local_page(
+        window.label(),
+        &url,
+        "popup",
+        window.is_visible().unwrap_or(false),
+    ) {
+        return Err("只能从本地工具条执行选区动作".into());
+    }
+    let ticket = selection_ticket
+        .parse::<u64>()
+        .map_err(|_| "选区凭据无效")?;
+    crate::popup::on_action(&app, &preset, ticket);
+    Ok(())
+}
+#[tauri::command]
+pub fn settings_ready(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    let url = window.url().map_err(|_| "设置页地址不可用")?;
+    if !crate::selection::local_page(window.label(), &url, "settings", true) {
+        return Err("只能由本地设置页读取当前快照".into());
+    }
+    Ok(crate::settings::ready_snapshot(&app, &window))
 }
 
 /// 设置页保存提示词列表（内置 + 自定义，覆盖式写入）。

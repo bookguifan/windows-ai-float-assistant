@@ -35,6 +35,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # 注意该 cfg 是在 **tauri-macros 这个 proc-macro crate 编译时**求值的，所以
 # 真正要打开的是映射目标 `tauri/custom-protocol`（下面这一行就是干这个的）。
 custom-protocol = ["tauri/custom-protocol"]
+# Research only. Even this feature cannot unlock release builds.
+experimental-clipboard-fallback = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }

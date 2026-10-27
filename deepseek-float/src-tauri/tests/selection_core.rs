@@ -353,3 +353,172 @@ fn cancellation_revision_increases_and_ticket_is_not_reused() {
     );
     assert!(h.ticket().unwrap() > cancelled);
 }
+
+fn toolbar(method: Method) -> ToolbarSelection {
+    let mut t = ToolbarSelection::empty();
+    t.offer(Session::new(
+        request(),
+        "中文 😀\n  code <&>\n".into(),
+        method,
+    ));
+    t
+}
+#[test]
+fn toolbar_copy_survives_only_its_explicit_native_click_focus_transfer() {
+    let mut t = toolbar(Method::Uia);
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    assert!(
+        t.allows_popup_focus(1, 101),
+        "native toolbar click must not revoke its own session"
+    );
+    t.expire(None, true, true, 1, 102);
+    let action = t
+        .take_action(1, None, true, true, 1, 110, true)
+        .expect("foreground toolbar must not lose the armed session");
+    assert_eq!(
+        action.into_session(1, 111).unwrap().raw,
+        "中文 😀\n  code <&>\n"
+    );
+    assert!(t.take_action(1, None, true, true, 1, 112, true).is_none());
+}
+#[test]
+fn native_edit_handoff_survives_more_then_settings_and_preserves_exact_text() {
+    let mut t = toolbar(Method::NativeEdit);
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    assert!(t.take_action(1, None, true, true, 1, 110, false).is_some());
+    assert!(t.arm(None, true, true, 1, 120));
+    let session = t
+        .take_action(1, None, true, true, 1, 130, true)
+        .unwrap()
+        .into_session(1, 131)
+        .unwrap();
+    let mut h = SettingsSelection::empty();
+    assert!(h.prepare(session, Some(target()), 1, 132, 99));
+    assert_eq!(h.preview(99, 133), Some("中文 😀\n  code <&>\n"));
+}
+#[test]
+fn toolbar_unarmed_ipc_background_and_expired_clicks_cannot_consume() {
+    let mut t = toolbar(Method::Uia);
+    assert!(!t.allows_popup_focus(1, 50));
+    assert!(!t.arm(None, true, true, 1, 50));
+    assert!(t
+        .take_action(1, Some(target()), false, true, 1, 60, true)
+        .is_none());
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    assert!(t
+        .take_action(1, Some(target()), false, true, 1, 1100, true)
+        .is_none());
+    assert!(!t.arm(Some(target()), false, true, 1, 8010));
+}
+#[test]
+fn toolbar_replacement_old_ticket_and_late_cleanup_do_not_consume_new_selection() {
+    let mut t = toolbar(Method::Uia);
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    let mut next = request();
+    next.generation = 2;
+    next.session_id = 2;
+    next.created_ms = 150;
+    t.offer(Session::new(next, "new".into(), Method::NativeEdit));
+    t.clear_if(1);
+    assert_eq!(t.ticket(), Some(2));
+    assert!(t.arm(Some(target()), false, true, 2, 160));
+    assert!(t
+        .take_action(1, Some(target()), false, true, 2, 170, true)
+        .is_none());
+    assert_eq!(
+        t.take_action(2, Some(target()), false, true, 2, 180, true)
+            .unwrap()
+            .into_session(2, 181)
+            .unwrap()
+            .raw,
+        "new"
+    );
+}
+#[test]
+fn toolbar_generation_invalid_target_password_guard_and_other_window_fail_closed() {
+    for (fg, popup, alive, g, n) in [
+        (None, false, true, 1, 120),
+        (Some(target()), false, false, 1, 120),
+        (Some(target()), false, true, 2, 120),
+        (Some(target()), false, true, 1, 8010),
+    ] {
+        let mut t = toolbar(Method::NativeEdit);
+        assert!(t.arm(Some(target()), false, true, 1, 100));
+        assert!(t.take_action(1, fg, popup, alive, g, n, true).is_none());
+    }
+    // The native target guard supplies false for protected/invalid source controls.
+    let mut t = toolbar(Method::NativeEdit);
+    assert!(!t.arm(Some(target()), false, false, 1, 100));
+}
+#[test]
+fn ordinary_source_window_action_and_settings_revocation_remain_one_shot() {
+    let mut t = toolbar(Method::Uia);
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    assert!(t
+        .take_action(1, Some(target()), false, true, 1, 101, true)
+        .is_some());
+    let mut h = SettingsSelection::empty();
+    assert!(h.prepare(
+        Session::new(request(), "old".into(), Method::NativeEdit),
+        Some(target()),
+        1,
+        100,
+        99
+    ));
+    let old = h.ticket().unwrap();
+    h.clear();
+    assert!(h.take(99, old, 101).is_none());
+    assert!(h.prepare(
+        Session::new(request(), "new".into(), Method::Uia),
+        Some(target()),
+        1,
+        102,
+        99
+    ));
+    assert!(h.take(99, old, 103).is_none());
+    assert_eq!(h.preview(99, 104), Some("new"));
+}
+
+#[test]
+fn native_action_is_delegated_once_without_requiring_the_source_to_remain_foreground() {
+    let mut t = toolbar(Method::NativeEdit);
+    assert!(t.arm(Some(target()), false, true, 1, 100));
+    let action = t.take_action(1, None, true, true, 1, 110, true).unwrap();
+    let mut h = SettingsSelection::empty();
+    assert!(h.prepare_action(action, 1, 111, 99));
+    let ticket = h.ticket().unwrap();
+    assert_eq!(
+        h.take(99, ticket, 112).as_deref(),
+        Some("中文 😀\n  code <&>\n")
+    );
+    assert!(h.take(99, ticket, 113).is_none());
+    assert!(!Session::new(request(), "synthetic".into(), Method::NativeEdit).usable(None, 1, 111));
+}
+#[test]
+fn action_cannot_delegate_after_a_new_generation_or_expiry() {
+    for (generation, now) in [(2, 111), (1, 8010)] {
+        let mut t = toolbar(Method::Uia);
+        assert!(t.arm(Some(target()), false, true, 1, 100));
+        let a = t.take_action(1, None, true, true, 1, 110, true).unwrap();
+        assert!(!SettingsSelection::empty().prepare_action(a, generation, now, 99));
+    }
+}
+#[test]
+fn external_windows_wrong_labels_hidden_pages_and_ai_pages_cannot_invoke_toolbar_actions() {
+    let local = tauri::Url::parse("http://tauri.localhost/poc/popup.html").unwrap();
+    assert!(local_page("popup", &local, "popup", true));
+    assert!(!local_page("popup", &local, "popup", false));
+    assert!(!local_page("panel", &local, "popup", true));
+    for u in [
+        "https://chat.example/poc/popup.html",
+        "http://tauri.localhost/poc/settings.html",
+        "http://tauri.localhost.evil/poc/popup.html",
+    ] {
+        assert!(!local_page(
+            "popup",
+            &tauri::Url::parse(u).unwrap(),
+            "popup",
+            true
+        ));
+    }
+}
