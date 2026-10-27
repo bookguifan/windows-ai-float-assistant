@@ -281,6 +281,9 @@ pub struct ToolbarAction {
     session: Session,
 }
 impl ToolbarAction {
+    pub(crate) fn session(&self) -> &Session {
+        &self.session
+    }
     pub fn into_session(self, generation: u64, now: u64) -> Option<Session> {
         self.session
             .usable(Some(self.session.request.target), generation, now)
@@ -316,6 +319,38 @@ impl ToolbarSelection {
         self.pending = None;
         self.armed = None;
         self.interacting = false;
+    }
+    pub(crate) fn action_rejection(
+        &self,
+        ticket: u64,
+        foreground: Option<Target>,
+        popup: bool,
+        alive: bool,
+        generation: u64,
+        now: u64,
+    ) -> &'static str {
+        let Some((armed, at)) = self.armed else {
+            return "missing-native-arm";
+        };
+        if armed != ticket || self.ticket() != Some(ticket) {
+            return "ticket-replaced";
+        }
+        if now < at || now - at >= 1000 {
+            return "native-click-expired";
+        }
+        if !alive {
+            return "source-dead";
+        }
+        let Some(s) = &self.pending else {
+            return "missing-session";
+        };
+        if !s.usable(Some(s.request.target), generation, now) {
+            return "session-stale";
+        }
+        if foreground != Some(s.request.target) && !(popup && self.interacting) {
+            return "foreground-changed";
+        }
+        "accepted"
     }
     pub fn clear_if(&mut self, ticket: u64) {
         if self.ticket() == Some(ticket) {

@@ -42,8 +42,8 @@ const FLY_MAX_ROWS: usize = 8;
 
 /// 自动关闭时间（team-lead 规定 8s）
 pub const POPUP_TIMEOUT_MS: u64 = 8_000;
-/// 工具条逻辑高度（紧凑：胶囊上下各留 6px，减少文字外白边）。
-const POPUP_LOGICAL_H: f64 = 42.0;
+/// 工具条逻辑高度（紧凑：胶囊上下各留 4px，减少文字外白边）。
+const POPUP_LOGICAL_H: f64 = 34.0;
 /// 创建窗口时的初始宽度（每次 show 前会 set_size 到按内容估算的宽度）。
 const POPUP_DEFAULT_W: f64 = 320.0;
 /// 与光标之间的距离（逻辑像素）
@@ -252,21 +252,21 @@ pub fn place_near(
 }
 
 /// 按文字估算按钮宽度（逻辑像素）。13px 字体：CJK ≈13px/字，ASCII ≈7.5px/字；
-/// 按钮 = 左右 padding 18 + 图标 14 + 间距 5 + 文字。
+/// 按钮 = 左右 padding 8 + 图标 14 + 间距 4 + 文字。
 fn text_px(s: &str) -> f64 {
     s.chars()
         .map(|c| if c.is_ascii() { 7.5 } else { 13.0 })
         .sum()
 }
 fn button_px(label: &str) -> f64 {
-    31.0 + text_px(label) // 内边距 12(6×2) + 图标 14 + 图标/文字间距 5
+    26.0 + text_px(label) // 内边距 8(4×2) + 图标 14 + 图标/文字间距 4
 }
 /// 「复制」「⋯」按钮的固定宽度。
-const COPY_PX: f64 = 63.0;
-const MORE_PX: f64 = 30.0;
-/// .bar 左右内边距合计 8px（4×2），按钮间距 3px，安全余量 8px。
+const COPY_PX: f64 = 52.0;
+const MORE_PX: f64 = 26.0;
+/// .bar 左右内边距合计 8px（4×2），按钮间距 2px，安全余量 8px。
 const BAR_PAD: f64 = 8.0;
-const BTN_GAP: f64 = 3.0;
+const BTN_GAP: f64 = 2.0;
 const WIDTH_MARGIN: f64 = 8.0;
 
 /// 工具条总宽：复制 + **首行内置提示词** + ⋯。自定义并入「⋮ 更多」浮层，不参与宽度估算，
@@ -290,6 +290,10 @@ pub fn show_at_cursor(app: &AppHandle) {
         return;
     };
 
+    let _ = win.eval(format!(
+        "window.__dsfSelectionTrace={};",
+        crate::selection_trace::enabled()
+    ));
     // 推「未隐藏」的提示词列表（顺序 = 设置里的列表顺序，用户可排序）给前端：
     // 前 ≤4 项进首行、其余进「⋮ 更多」浮层。
     let prompts = crate::prompts::load(app);
@@ -419,9 +423,9 @@ fn expand_more(app: &AppHandle) {
         .map(|p| p.label.clone())
         .collect();
     let n = labels.len().saturating_sub(INLINE_MAX).min(FLY_MAX_ROWS);
-    // ★ 顶栏保留：窗口宽 = 顶栏宽；高度 = 顶栏 42 + 右下窄下拉（窄宽由 CSS 的 max-content 决定）。
+    // ★ 顶栏保留：窗口宽 = 顶栏宽；高度 = 顶栏 34 + 右下窄下拉（窄宽由 CSS 的 max-content 决定）。
     let new_h =
-        POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 7.0 } else { 0.0 };
+        POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 9.0 } else { 0.0 }; // 分隔线/边距7px及其额外2px间隙
     if let Err(e) = win.set_size(LogicalSize::new(last.logical_w, new_h)) {
         crate::diag::log(&format!(
             "popup 展开 set_size({}, {new_h:.0}) 失败: {e}",
@@ -499,6 +503,7 @@ pub fn dismiss(app: &AppHandle) {
 }
 
 pub fn accept_session(app: &AppHandle, session: crate::selection::Session) {
+    crate::selection_trace::session("session-created", &session);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || accept_session_on_main(&handle, session));
 }
@@ -514,6 +519,7 @@ fn accept_session_on_main(app: &AppHandle, session: crate::selection::Session) {
         return;
     }
     crate::settings::clear_selection(app);
+    crate::selection_trace::session("session-offer", &session);
     crate::diag::log(&format!(
         "selection status=SESSION_READY method={:?}",
         session.method
@@ -545,13 +551,13 @@ fn source_alive(state: &crate::selection::ToolbarSelection) -> bool {
         .is_some_and(crate::selection_runtime::is_native_target)
 }
 /// Called only by the native mouse hook on a verified popup hit. No I/O or UIA calls.
-pub(crate) fn arm_action(root: isize) {
+pub(crate) fn arm_action(root: isize) -> bool {
     if root == 0 || root != POPUP_HWND.load(Ordering::Acquire) || !popup_visible() {
-        return;
+        return false;
     }
     if let Ok(mut state) = PENDING_SESSION.lock() {
         let alive = source_alive(&state);
-        state.arm(
+        return state.arm(
             crate::selection_runtime::target(),
             popup_is_foreground(),
             alive,
@@ -559,6 +565,10 @@ pub(crate) fn arm_action(root: isize) {
             crate::selection_runtime::now_ms(),
         );
     }
+    false
+}
+pub(crate) fn pending_ticket() -> Option<u64> {
+    PENDING_SESSION.lock().ok().and_then(|s| s.ticket())
 }
 /// A foreground event caused by that native click may move focus to popup and back to its source.
 /// All other foreground changes still revoke the generation, including unarmed app windows.
@@ -586,15 +596,29 @@ fn take_pending_action(ticket: u64, consume: bool) -> Option<crate::selection::T
     let popup = popup_is_foreground();
     let generation = crate::selection_runtime::generation();
     let now = crate::selection_runtime::now_ms();
+    let rejection = if crate::selection_trace::enabled() {
+        state.action_rejection(ticket, fg, popup, alive, generation, now)
+    } else {
+        "diagnostics-disabled"
+    };
     let result = state.take_action(ticket, fg, popup, alive, generation, now, consume);
     drop(state); // Never hold a hook-visible mutex during diagnostic file I/O.
+    if let Some(action) = &result {
+        crate::selection_trace::session("ticket-action", action.session());
+    }
+    crate::selection_trace::event("ticket-check", Some(ticket), rejection);
     crate::diag::log(&format!("selection stage=action ticket={ticket} generation={generation} now_ms={now} source_alive={alive} popup_foreground={popup} accepted={}",result.is_some()));
     result
 }
 pub(crate) fn clear_pending_text() {
-    if let Ok(mut pending) = PENDING_SESSION.lock() {
+    let ticket = if let Ok(mut pending) = PENDING_SESSION.lock() {
+        let ticket = pending.ticket();
         pending.clear();
-    }
+        ticket
+    } else {
+        None
+    };
+    crate::selection_trace::event("popup-clear", ticket, "cleared");
 }
 
 /// 检查光标当前是否落在本应用**自己的某个窗口**内（settings / result / panel / popup / ball …）。
@@ -705,24 +729,26 @@ pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
     }
 
     // 常规动作：先关闭工具条，再消费选区文本
-    let selected = take_pending_action(ticket, true)
-        .and_then(|a| {
-            a.into_session(
-                crate::selection_runtime::generation(),
-                crate::selection_runtime::now_ms(),
-            )
-        })
-        .map(|s| s.raw);
-    let Some(text) = selected else {
+    let selected = take_pending_action(ticket, true).and_then(|a| {
+        a.into_session(
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+    });
+    let Some(session) = selected else {
         crate::diag::warn("[M2] popup action 触发但待发文本已丢失");
         return; // A late action must not hide or revoke a replacement selection.
     };
+    crate::selection_trace::session("action-text", &session);
+    let (request, text) = (session.request, session.raw);
     hide(app);
 
     // 复制：写回系统剪贴板（不注入面板）
     if preset_name == "copy" {
         // Raw text and target identity were consumed from one verified session.
+        crate::selection_trace::text("clipboard-write-input", &request, ticket, &text);
         if capture::set_clipboard_text(&text) {
+            crate::selection_trace::text("clipboard-write-success", &request, ticket, &text);
             crate::diag::log("selection status=USER_COPY_SUCCESS");
         } else {
             crate::diag::log("selection status=USER_COPY_FAILED");
@@ -825,7 +851,9 @@ fn send_prompt(app: &AppHandle, prompt: String, label: String, quote: String, sh
 
 /// Remove expired/changed-target raw text even if showing the window failed.
 pub(crate) fn expire_session() {
+    let mut expired = None;
     if let Ok(mut state) = PENDING_SESSION.lock() {
+        let before = state.ticket();
         let alive = source_alive(&state);
         state.expire(
             crate::selection_runtime::target(),
@@ -834,6 +862,12 @@ pub(crate) fn expire_session() {
             crate::selection_runtime::generation(),
             crate::selection_runtime::now_ms(),
         );
+        if state.ticket() != before {
+            expired = before;
+        }
+    }
+    if expired.is_some() {
+        crate::selection_trace::event("popup-expire", expired, "revoked");
     }
 }
 

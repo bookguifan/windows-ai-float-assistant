@@ -102,6 +102,7 @@ fn start(app: AppHandle) {
                 ));
                 if let Some(text) = read.text {
                     if valid(&r) {
+                        crate::selection_trace::text("uia-read", &r, r.session_id, &text);
                         crate::popup::accept_session(
                             &worker_app,
                             Session::new(r.clone(), text, Method::Uia),

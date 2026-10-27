@@ -95,6 +95,8 @@ pub fn open(app: &AppHandle) {
 }
 /// Only an explicit toolbar action may delegate a currently verified selection.
 pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::ToolbarAction) {
+    crate::selection_trace::session("settings-handoff-input", action.session());
+    let source_request = action.session().request.clone();
     clear_selection(app);
     let window = ensure(app);
     let now = crate::selection_runtime::now_ms();
@@ -110,7 +112,7 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
                 );
             }
         }
-        let preview = window
+        let preview: String = window
             .as_ref()
             .and_then(|w| w.hwnd().ok())
             .and_then(|h| state.preview(h.0 as isize, now))
@@ -120,6 +122,21 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
             .collect();
         (preview, state.ticket(), state.revision())
     };
+    crate::selection_trace::text(
+        "settings-preview",
+        &source_request,
+        ticket.unwrap_or(0),
+        &preview,
+    );
+    crate::selection_trace::event(
+        "settings-handoff",
+        ticket,
+        if ticket.is_some() {
+            "prepared"
+        } else {
+            "rejected"
+        },
+    );
     crate::popup::hide(app);
     if let Some(w) = window {
         show(app, &w, preview, ticket, revision);

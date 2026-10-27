@@ -522,3 +522,70 @@ fn external_windows_wrong_labels_hidden_pages_and_ai_pages_cannot_invoke_toolbar
         ));
     }
 }
+
+// Characterization of the whole pure Session/Ticket chain, not a clipboard GUI PASS.
+#[test]
+fn copy_ticket_keeps_exact_full_or_partial_selection_without_normalizing_raw() {
+    for method in [Method::Uia, Method::NativeEdit] {
+        for raw in [
+            "  N01 Unicode Edit synthetic 中文 😀.\r\n  code <&> preserved.  ",
+            "  中文 😀\n    code <&>  ",
+            "N01 Unicode Edit synthetic 中文 😀.",
+        ] {
+            let mut t = ToolbarSelection::empty();
+            let s = Session::new(request(), raw.into(), method);
+            assert_eq!(
+                s.raw.encode_utf16().collect::<Vec<_>>(),
+                raw.encode_utf16().collect::<Vec<_>>()
+            );
+            t.offer(s);
+            assert!(t.arm(Some(target()), false, true, 1, 100));
+            let s = t
+                .take_action(1, Some(target()), false, true, 1, 101, true)
+                .unwrap()
+                .into_session(1, 102)
+                .unwrap();
+            assert_eq!(s.raw, raw);
+            assert_eq!(
+                s.raw.encode_utf16().collect::<Vec<_>>(),
+                raw.encode_utf16().collect::<Vec<_>>()
+            );
+            assert!(t
+                .take_action(1, Some(target()), false, true, 1, 103, true)
+                .is_none());
+        }
+    }
+}
+
+#[test]
+fn diagnostic_rejections_agree_with_action_gate_without_consuming_anything() {
+    for (ticket, fg, popup, alive, g, n, reason) in [
+        (1, Some(target()), false, true, 1, 101, "accepted"),
+        (2, Some(target()), false, true, 1, 101, "ticket-replaced"),
+        (
+            1,
+            Some(target()),
+            false,
+            true,
+            1,
+            1100,
+            "native-click-expired",
+        ),
+        (1, Some(target()), false, false, 1, 101, "source-dead"),
+        (1, Some(target()), false, true, 2, 101, "session-stale"),
+        (1, None, false, true, 1, 101, "foreground-changed"),
+    ] {
+        let mut t = toolbar(Method::NativeEdit);
+        assert_eq!(
+            t.action_rejection(1, Some(target()), false, true, 1, 100),
+            "missing-native-arm"
+        );
+        assert!(t.arm(Some(target()), false, true, 1, 100));
+        assert_eq!(t.action_rejection(ticket, fg, popup, alive, g, n), reason);
+        assert_eq!(
+            t.take_action(ticket, fg, popup, alive, g, n, true)
+                .is_some(),
+            reason == "accepted"
+        );
+    }
+}

@@ -120,6 +120,13 @@ pub(crate) fn capture(
     hwnd: HWND,
     valid: impl Fn() -> bool,
 ) -> Result<SelectionProof, &'static str> {
+    capture_observed(hwnd, valid, |_, _, _, _| {})
+}
+pub(crate) fn capture_observed(
+    hwnd: HWND,
+    valid: impl Fn() -> bool,
+    mut observe: impl FnMut(u32, u32, usize, &str),
+) -> Result<SelectionProof, &'static str> {
     if !valid() || !control_allowed(hwnd) {
         return Err("COPY_SELECTION_UNVERIFIED");
     }
@@ -148,6 +155,7 @@ pub(crate) fn capture(
         return Err("COPY_SELECTION_CHANGED");
     }
     let text = selected(&buffer.0[..len], start, end)?;
+    observe(start, end, len, &text);
     Ok(SelectionProof {
         control: hwnd.0 as isize,
         start,
@@ -158,6 +166,25 @@ pub(crate) fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exact_slice_keeps_both_lines_or_the_actual_partial_range() {
+        let raw = "  N01 Unicode Edit synthetic 中文 😀.\r\n  code <&> preserved.  ";
+        let units: Vec<_> = raw.encode_utf16().collect();
+        assert_eq!(units.len(), 60);
+        assert_eq!(selected(&units, 0, 60).unwrap(), raw);
+        // The observed 33-unit paste is also a legitimate *partial* Edit range.
+        assert_eq!(
+            selected(&units, 2, 35).unwrap(),
+            "N01 Unicode Edit synthetic 中文 😀."
+        );
+    }
+    #[test]
+    fn empty_out_of_range_and_split_surrogate_are_rejected() {
+        assert!(selected(&[0xD83D, 0xDE00], 0, 1).is_err());
+        assert!(selected(&[65, 66], 0, 3).is_err());
+        assert!(selected(&[65, 66], 1, 1).is_err());
+        assert!(selected(&[32, 32], 0, 2).is_err());
+    }
     use windows::core::{w, PCWSTR};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE,

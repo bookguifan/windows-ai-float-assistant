@@ -43,6 +43,7 @@ mod screenshot;
 mod screenshot_state;
 mod selection;
 mod selection_runtime;
+mod selection_trace;
 mod settings;
 mod single_instance;
 mod tray;

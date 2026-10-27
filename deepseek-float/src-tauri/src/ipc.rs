@@ -101,6 +101,34 @@ pub fn ball_ready() {
     crate::diag::log("ball_ready: 收到悬浮球首帧就绪握手信号（Rust 侧随后套椭圆区域显形）");
 }
 
+/// Synthetic-only telemetry; rejects arbitrary stages/actions and external documents.
+#[tauri::command]
+pub fn popup_trace(
+    window: tauri::WebviewWindow,
+    stage: String,
+    action: String,
+    selection_ticket: Option<String>,
+) -> Result<(), String> {
+    if !crate::selection_trace::enabled() {
+        return Ok(());
+    }
+    let url = window.url().map_err(|_| "工具条地址不可用")?;
+    if !crate::selection::local_page(
+        window.label(),
+        &url,
+        "popup",
+        window.is_visible().unwrap_or(false),
+    ) {
+        return Err("只能由本地工具条记录合成诊断".into());
+    }
+    crate::selection_trace::frontend(
+        &stage,
+        &action,
+        selection_ticket.and_then(|s| s.parse().ok()),
+    );
+    Ok(())
+}
+
 /// 工具条按钮点击：preset 为 copy / open-settings / 提示词 id。
 #[tauri::command]
 pub fn popup_action(
@@ -121,6 +149,7 @@ pub fn popup_action(
     let ticket = selection_ticket
         .parse::<u64>()
         .map_err(|_| "选区凭据无效")?;
+    crate::selection_trace::event("ipc-action", Some(ticket), "received");
     crate::popup::on_action(&app, &preset, ticket);
     Ok(())
 }

@@ -60,5 +60,10 @@ pub(crate) fn capture(r: &Request, valid: impl Fn() -> bool) -> Result<String, &
             && unsafe { GetExitCodeProcess(process.0, &mut code).is_ok() }
             && code == 259
     };
-    native_copy_proof::read_stable(guard, || native_copy_proof::capture(h, guard))
+    native_copy_proof::read_stable(guard, || {
+        native_copy_proof::capture_observed(h, guard, |start, end, total, text| {
+            crate::selection_trace::range(r, h.0 as isize, start, end, total);
+            crate::selection_trace::text("native-read", r, r.session_id, text);
+        })
+    })
 }
