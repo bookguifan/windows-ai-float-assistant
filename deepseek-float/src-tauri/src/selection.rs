@@ -290,11 +290,23 @@ impl ToolbarAction {
             .then_some(self.session)
     }
 }
+/// A short, exact-identity lease for one native popup show, never an action grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PopupShow {
+    pub ticket: u64,
+    pub generation: u64,
+    pub source: Target,
+    pub popup: Target,
+    pub serial: u64,
+    started: u64,
+    deadline: u64,
+}
 #[derive(Default)]
 pub struct ToolbarSelection {
     pending: Option<Session>,
     armed: Option<(u64, u64)>,
     interacting: bool,
+    showing: Option<PopupShow>,
 }
 impl ToolbarSelection {
     pub const fn empty() -> Self {
@@ -302,12 +314,75 @@ impl ToolbarSelection {
             pending: None,
             armed: None,
             interacting: false,
+            showing: None,
         }
     }
     pub fn offer(&mut self, session: Session) {
         self.pending = Some(session);
         self.armed = None;
         self.interacting = false;
+        self.showing = None;
+    }
+    pub fn begin_show(
+        &mut self,
+        serial: u64,
+        popup: Target,
+        generation: u64,
+        now: u64,
+    ) -> Option<PopupShow> {
+        self.showing = None;
+        let s = self.pending.as_ref()?;
+        if serial == 0
+            || popup.hwnd == 0
+            || popup.pid == 0
+            || popup.thread == 0
+            || popup.hwnd == s.request.target.hwnd
+            || !s.usable(Some(s.request.target), generation, now)
+        {
+            return None;
+        }
+        let show = PopupShow {
+            ticket: s.request.session_id,
+            generation,
+            source: s.request.target,
+            popup,
+            serial,
+            started: now,
+            deadline: now.saturating_add(350),
+        };
+        self.showing = Some(show);
+        Some(show)
+    }
+    pub fn current_show(&self, generation: u64, now: u64) -> Option<PopupShow> {
+        let show = self.showing?;
+        (self.ticket() == Some(show.ticket)
+            && self.target() == Some(show.source)
+            && show.generation == generation
+            && now >= show.started
+            && now < show.deadline
+            && self
+                .pending
+                .as_ref()?
+                .usable(Some(show.source), generation, now))
+        .then_some(show)
+    }
+    pub fn finish_show(&mut self, show: PopupShow) {
+        if self.showing == Some(show) {
+            self.showing = None;
+        }
+    }
+    pub fn can_return_focus(
+        &self,
+        show: PopupShow,
+        foreground: Option<Target>,
+        alive: bool,
+        generation: u64,
+        now: u64,
+    ) -> bool {
+        !self.interacting
+            && alive
+            && self.current_show(generation, now) == Some(show)
+            && foreground == Some(show.popup)
     }
     pub fn target(&self) -> Option<Target> {
         self.pending.as_ref().map(|s| s.request.target)
@@ -319,6 +394,7 @@ impl ToolbarSelection {
         self.pending = None;
         self.armed = None;
         self.interacting = false;
+        self.showing = None;
     }
     pub(crate) fn action_rejection(
         &self,
@@ -368,7 +444,9 @@ impl ToolbarSelection {
         alive
             && self.pending.as_ref().is_some_and(|s| {
                 s.usable(Some(s.request.target), generation, now)
-                    && (foreground == Some(s.request.target) || popup && self.interacting)
+                    && (foreground == Some(s.request.target)
+                        || popup
+                            && (self.interacting || self.current_show(generation, now).is_some()))
             })
     }
     pub fn arm(
@@ -384,11 +462,12 @@ impl ToolbarSelection {
             return false;
         }
         self.interacting = true;
+        self.showing = None; // A real native click ends all scheduled show-time focus returns.
         self.armed = self.ticket().map(|t| (t, now));
         true
     }
     pub fn allows_popup_focus(&self, generation: u64, now: u64) -> bool {
-        self.interacting
+        (self.interacting || self.current_show(generation, now).is_some())
             && self
                 .pending
                 .as_ref()
@@ -415,6 +494,8 @@ impl ToolbarSelection {
             return None;
         }
         let session = if consume {
+            self.showing = None;
+            self.interacting = false;
             self.pending.take()?
         } else {
             self.pending.as_ref()?.clone()

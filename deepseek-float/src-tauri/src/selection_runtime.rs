@@ -27,6 +27,14 @@ pub fn generation() -> u64 {
 pub fn invalidate() {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
+pub fn invalidate_if(generation: u64) {
+    let _ = GENERATION.compare_exchange(
+        generation,
+        generation.wrapping_add(1),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
 pub fn target() -> Option<Target> {
     unsafe {
         let h = GetForegroundWindow();

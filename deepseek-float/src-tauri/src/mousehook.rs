@@ -34,12 +34,27 @@ unsafe extern "system" fn foreground_changed(
     hwnd: windows::Win32::Foundation::HWND,
     _: i32,
     _: i32,
-    _: u32,
-    _: u32,
+    event_thread: u32,
+    event_ms: u32,
 ) {
-    if !crate::popup::preserves_foreground(hwnd.0 as isize) {
-        crate::selection_runtime::invalidate();
+    let generation = crate::selection_runtime::generation();
+    let captured_ms = crate::selection_runtime::now_ms();
+    let (preserved, ticket, show, alive) = crate::popup::preserves_foreground(hwnd.0 as isize);
+    if !preserved {
+        crate::selection_runtime::invalidate_if(generation);
     }
+    crate::selection_trace::foreground(
+        hwnd.0 as isize,
+        event_thread,
+        event_ms,
+        generation,
+        crate::selection_runtime::generation(),
+        captured_ms,
+        preserved,
+        ticket,
+        show,
+        alive,
+    );
 }
 
 /// 鼠标钩子产生的事件。

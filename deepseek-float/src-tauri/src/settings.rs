@@ -128,15 +128,7 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
         ticket.unwrap_or(0),
         &preview,
     );
-    crate::selection_trace::event(
-        "settings-handoff",
-        ticket,
-        if ticket.is_some() {
-            "prepared"
-        } else {
-            "rejected"
-        },
-    );
+    crate::selection_trace::settings("settings-handoff", ticket, revision);
     crate::popup::hide(app);
     if let Some(w) = window {
         show(app, &w, preview, ticket, revision);
@@ -145,10 +137,7 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
 fn show(app: &AppHandle, w: &WebviewWindow, preview: String, ticket: Option<u64>, revision: u64) {
     let prompts = crate::prompts::load(app);
     let payload = serde_json::json!({"text":preview,"prompts":prompts,"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()});
-    crate::diag::log(&format!(
-        "selection stage=settings-show revision={revision} ticket={ticket:?} now_ms={}",
-        crate::selection_runtime::now_ms()
-    ));
+    crate::selection_trace::settings("settings-show", ticket, revision);
     let js = format!(
         "if(window.__dsfSettingsInit)window.__dsfSettingsInit({});",
         payload
@@ -255,9 +244,7 @@ pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<
             s.revision(),
         )
     };
-    crate::diag::log(&format!(
-        "selection stage=settings-ready revision={revision} ticket={ticket:?} now_ms={now}"
-    ));
+    crate::selection_trace::settings("settings-ready", ticket, revision);
     Some(
         serde_json::json!({"text":text,"prompts":crate::prompts::load(app),"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()}),
     )

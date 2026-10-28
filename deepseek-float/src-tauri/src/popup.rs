@@ -287,6 +287,7 @@ fn toolbar_width(labels: impl Iterator<Item = String>) -> f64 {
 /// 在光标附近弹出工具条：先把**未隐藏**的提示词推给前端渲染，再按内容收缩宽度 + 物理定位 + 翻边。
 pub fn show_at_cursor(app: &AppHandle) {
     let Some(win) = ensure(app) else {
+        clear_pending_text();
         return;
     };
 
@@ -347,43 +348,62 @@ pub fn show_at_cursor(app: &AppHandle) {
     };
 
     let _ = win.set_position(PhysicalPosition::new(x, y));
-    // ★ 划词工具条不能抢走用户正在编辑的输入框的键盘焦点：
-    //   Tauri `show()` 对 always_on_top 无边框窗即便 focusable(false) 仍可能让原窗口失焦，
-    //   导致用户划词后在原输入框按 Backspace 无法删除（焦点已不在输入框）。
-    //   故显示前记录当前前台窗口，显示后立即把键盘焦点归还给原窗口。
-    let prev_fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    // Register the exact show before Tauri/WebView2 can emit foreground events.
+    let popup = native_identity(POPUP_HWND.load(Ordering::Acquire))
+        .filter(|t| t.pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() });
+    let serial = SHOW_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let show = PENDING_SESSION.lock().ok().and_then(|mut state| {
+        if !source_alive(&state) || state.target() != crate::selection_runtime::target() {
+            return None;
+        }
+        state.begin_show(
+            serial,
+            popup?,
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+    });
+    let Some(show) = show else {
+        dismiss(app);
+        return;
+    };
+    POPUP_VISIBLE.store(true, Ordering::SeqCst);
+    crate::selection_trace::event("show-begin", Some(show.ticket), "bound");
     if let Err(e) = win.show() {
         crate::diag::warn(&format!("popup show 失败: {e}"));
+        dismiss(app);
         return;
     }
-    // 归还前台：不判断 hwnd 有效性——对已失效/不存在窗口 SetForegroundWindow 会静默失败，无害。
-    let prev_fg = prev_fg.0 as isize;
-    unsafe {
-        let _ =
-            windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(HWND(prev_fg as *mut _));
+    let retained = PENDING_SESSION.lock().ok().is_some_and(|state| {
+        state.retains(
+            crate::selection_runtime::target(),
+            popup_is_foreground(),
+            source_alive(&state),
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        )
+    });
+    if !retained {
+        dismiss(app);
+        return;
     }
-    // ★ 防 WebView2 **异步**抢焦点（2026-09-19）：`show()` 后 WebView2 浏览器进程仍可能通过
-    //   MoveFocus 把输入焦点搬进工具条内容（即便窗口带 WS_EX_NOACTIVATE），即时归还会被它随后覆盖
-    //   —— 这是「划词后在原输入框按 Backspace 删不掉」此前的遗留根因。
-    //   延迟再抢两次（150ms/300ms），**仅当「当前前台仍是工具条」时**才归还 prev_fg，
-    //   避免把用户已切走的窗口抢回来（守卫式，不打扰）。
-    //   注：`*mut c_void` 非 Send，跨线程只传 `isize` 原子值，在 for 循环内重建 HWND。
-    let ph = win.hwnd().ok().map(|h| h.0 as isize);
-    if let Some(ph) = ph {
-        std::thread::spawn(move || {
-            for _ in 0..2 {
-                std::thread::sleep(Duration::from_millis(150));
-                unsafe {
-                    let fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
-                    if fg.0 as isize == ph {
-                        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(HWND(
-                            prev_fg as *mut _,
-                        ));
+    return_show_focus(show);
+    // Deferred work is executed on the main thread and revalidates the full lease.
+    // Pointer-down ends the lease: a user's toolbar click must never lose focus to this work.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for last in [false, true] {
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = handle.run_on_main_thread(move || {
+                return_show_focus(show);
+                if last {
+                    if let Ok(mut state) = PENDING_SESSION.lock() {
+                        state.finish_show(show);
                     }
                 }
-            }
-        });
-    }
+            });
+        }
+    });
     // 记录可见状态与屏幕矩形，供 mousehook 判定「点击在工具条外 → 自动隐藏」
     if let Ok(mut g) = POPUP_RECT.lock() {
         *g = Some((x, y, x + w, y + h));
@@ -454,7 +474,7 @@ fn expand_more(app: &AppHandle) {
 /// 通过 AUTO_CLOSE_TX 投递 ArmMsg{generation, deadline} 取代「每次弹窗起一个线程」，
 /// 避免频繁划词堆积大量短命线程（线程复用）。常驻线程到点再按 SHOW_GEN 判定是否仍有效。
 fn arm_auto_close(app: &AppHandle, timeout_ms: u64) {
-    let generation = SHOW_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = SHOW_GEN.load(Ordering::SeqCst);
     let ticket = PENDING_SESSION.lock().ok().and_then(|s| s.ticket());
     let msg = ArmMsg {
         generation,
@@ -524,15 +544,6 @@ fn accept_session_on_main(app: &AppHandle, session: crate::selection::Session) {
         "selection status=SESSION_READY method={:?}",
         session.method
     ));
-    let ticket = session.request.session_id;
-    crate::diag::log(&format!(
-        "selection stage=offer request={} session={} generation={} source_hwnd={} now_ms={}",
-        session.request.generation,
-        ticket,
-        crate::selection_runtime::generation(),
-        session.request.target.hwnd,
-        crate::selection_runtime::now_ms()
-    ));
     if let Ok(mut pending) = PENDING_SESSION.lock() {
         pending.offer(session);
     }
@@ -540,10 +551,11 @@ fn accept_session_on_main(app: &AppHandle, session: crate::selection::Session) {
 }
 fn popup_is_foreground() -> bool {
     let hwnd = POPUP_HWND.load(Ordering::Acquire);
-    hwnd != 0
-        && unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize == hwnd
-        }
+    native_identity(hwnd).is_some_and(|t| {
+        t.pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
+    }) && unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize == hwnd
+    }
 }
 fn source_alive(state: &crate::selection::ToolbarSelection) -> bool {
     state
@@ -570,24 +582,91 @@ pub(crate) fn arm_action(root: isize) -> bool {
 pub(crate) fn pending_ticket() -> Option<u64> {
     PENDING_SESSION.lock().ok().and_then(|s| s.ticket())
 }
-/// A foreground event caused by that native click may move focus to popup and back to its source.
-/// All other foreground changes still revoke the generation, including unarmed app windows.
-pub(crate) fn preserves_foreground(hwnd: isize) -> bool {
-    if !popup_visible() {
-        return false;
+fn native_identity(hwnd: isize) -> Option<crate::selection::Target> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+    unsafe {
+        let h = HWND(hwnd as *mut _);
+        if !IsWindow(Some(h)).as_bool() {
+            return None;
+        }
+        let mut pid = 0;
+        let thread = GetWindowThreadProcessId(h, Some(&mut pid));
+        (pid != 0 && thread != 0).then_some(crate::selection::Target { hwnd, pid, thread })
     }
+}
+fn return_show_focus(show: crate::selection::PopupShow) {
+    let generation = crate::selection_runtime::generation();
+    let now = crate::selection_runtime::now_ms();
+    let foreground =
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize };
+    let allowed = SHOW_GEN.load(Ordering::SeqCst) == show.serial
+        && popup_visible()
+        && native_identity(show.popup.hwnd) == Some(show.popup)
+        && PENDING_SESSION.lock().ok().is_some_and(|state| {
+            state.can_return_focus(
+                show,
+                native_identity(foreground),
+                source_alive(&state),
+                generation,
+                now,
+            )
+        });
+    if allowed
+        && crate::selection_runtime::generation() == generation
+        && unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize }
+            == show.popup.hwnd
+    {
+        // No state mutex across an API capable of generating a reentrant WinEvent.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(HWND(
+                show.source.hwnd as *mut _,
+            ));
+        }
+    }
+}
+/// WinEvent callback: bounded native identity checks only; no formatting, I/O or COM.
+/// A stale/unrelated event is conservatively rejected, never a process-wide focus grant.
+pub(crate) fn preserves_foreground(hwnd: isize) -> (bool, Option<u64>, Option<u64>, bool) {
     let fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize };
+    let Ok(state) = PENDING_SESSION.try_lock() else {
+        return (false, None, None, false);
+    };
+    let generation = crate::selection_runtime::generation();
+    let now = crate::selection_runtime::now_ms();
     if fg != hwnd {
-        return false;
+        // Keep the synthetic ticket observation even for a rejected queued event.
+        // This does not relax the conservative foreground decision.
+        return (
+            false,
+            state.ticket(),
+            state.current_show(generation, now).map(|s| s.serial),
+            source_alive(&state),
+        );
     }
-    PENDING_SESSION.lock().ok().is_some_and(|state| {
-        state.allows_popup_focus(
-            crate::selection_runtime::generation(),
-            crate::selection_runtime::now_ms(),
-        ) && source_alive(&state)
-            && (hwnd == POPUP_HWND.load(Ordering::Acquire)
-                || state.target().is_some_and(|t| t.hwnd == hwnd))
-    })
+    let popup = hwnd == POPUP_HWND.load(Ordering::Acquire);
+    let identity = native_identity(hwnd);
+    let verified_popup = popup
+        && identity.is_some_and(|t| {
+            t.pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
+                && state
+                    .current_show(generation, now)
+                    .map_or(true, |show| show.popup == t)
+        });
+    let alive = source_alive(&state);
+    let preserved = alive
+        && state.retains(
+            identity.filter(|_| !popup),
+            verified_popup && state.allows_popup_focus(generation, now),
+            true,
+            generation,
+            now,
+        );
+    (
+        preserved,
+        state.ticket(),
+        state.current_show(generation, now).map(|s| s.serial),
+        alive,
+    )
 }
 fn take_pending_action(ticket: u64, consume: bool) -> Option<crate::selection::ToolbarAction> {
     let mut state = PENDING_SESSION.lock().ok()?;
@@ -607,7 +686,6 @@ fn take_pending_action(ticket: u64, consume: bool) -> Option<crate::selection::T
         crate::selection_trace::session("ticket-action", action.session());
     }
     crate::selection_trace::event("ticket-check", Some(ticket), rejection);
-    crate::diag::log(&format!("selection stage=action ticket={ticket} generation={generation} now_ms={now} source_alive={alive} popup_foreground={popup} accepted={}",result.is_some()));
     result
 }
 pub(crate) fn clear_pending_text() {

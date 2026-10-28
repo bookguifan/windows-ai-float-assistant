@@ -589,3 +589,164 @@ fn diagnostic_rejections_agree_with_action_gate_without_consuming_anything() {
         );
     }
 }
+
+#[test]
+fn show_time_popup_focus_must_not_expire_before_first_native_click() {
+    let mut state = ToolbarSelection::empty();
+    state.offer(Session::new(
+        request(),
+        "synthetic selection".into(),
+        Method::NativeEdit,
+    ));
+    state.begin_show(1, popup_target(), 1, 99).unwrap();
+    // show() can temporarily foreground the popup before the first pointer-down.
+    state.expire(None, true, true, 1, 100);
+    assert_eq!(state.ticket(), Some(1));
+    assert!(state.arm(None, true, true, 1, 101));
+    assert!(state
+        .take_action(1, None, true, true, 1, 102, true)
+        .is_some());
+}
+
+fn popup_target() -> Target {
+    Target {
+        hwnd: 99,
+        pid: 100,
+        thread: 101,
+    }
+}
+fn showing() -> (ToolbarSelection, PopupShow) {
+    let mut s = toolbar(Method::NativeEdit);
+    let show = s.begin_show(7, popup_target(), 1, 100).unwrap();
+    (s, show)
+}
+#[test]
+fn show_return_is_exact_identity_bounded_and_not_an_action_grant() {
+    let (s, show) = showing();
+    assert!(s.can_return_focus(show, Some(popup_target()), true, 1, 101));
+    for fg in [
+        Some(target()),
+        None,
+        Some(Target {
+            hwnd: 98,
+            ..popup_target()
+        }),
+        Some(Target {
+            pid: 999,
+            ..popup_target()
+        }),
+    ] {
+        assert!(!s.can_return_focus(show, fg, true, 1, 101));
+    }
+    assert!(!s.can_return_focus(show, Some(popup_target()), false, 1, 101));
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 2, 101));
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 1, 450));
+    let (mut s, _) = showing();
+    assert!(s.take_action(1, None, true, true, 1, 101, true).is_none());
+}
+#[test]
+fn show_survives_only_popup_or_source_not_unrelated_own_windows() {
+    for fg in [
+        Some(Target {
+            hwnd: 97,
+            ..popup_target()
+        }),
+        None,
+    ] {
+        let (mut s, _) = showing();
+        s.expire(fg, false, true, 1, 101);
+        assert_eq!(s.ticket(), None);
+    }
+    let (mut s, _) = showing();
+    s.expire(Some(target()), false, true, 1, 101);
+    assert_eq!(s.ticket(), Some(1));
+    s.expire(None, true, true, 1, 102); // verified popup WebView activation
+    assert_eq!(s.ticket(), Some(1));
+}
+#[test]
+fn old_show_and_timer_cannot_change_replacement_or_restore_focus() {
+    let (mut s, old) = showing();
+    let mut r = request();
+    r.generation = 2;
+    r.session_id = 2;
+    r.created_ms = 110;
+    s.offer(Session::new(r, "new selection".into(), Method::Uia));
+    let new = s.begin_show(8, popup_target(), 2, 120).unwrap();
+    s.finish_show(old);
+    s.clear_if(old.ticket); // old auto-close's ticket guard
+    assert_eq!(s.current_show(2, 121), Some(new));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 2, 121));
+    assert_eq!(s.ticket(), Some(2));
+}
+#[test]
+fn hide_failure_source_death_generation_change_and_expiry_end_show() {
+    for (alive, gen, now) in [(false, 1, 101), (true, 2, 101), (true, 1, 8010)] {
+        let (mut s, old) = showing();
+        s.expire(None, true, alive, gen, now);
+        assert_eq!(s.ticket(), None);
+        assert!(!s.can_return_focus(old, Some(popup_target()), true, gen, now));
+    }
+    for fail in [true, false] {
+        let (mut s, old) = showing();
+        if fail {
+            s.clear_if(old.ticket);
+        } else {
+            s.clear();
+        }
+        assert_eq!(s.current_show(1, 101), None);
+    }
+}
+#[test]
+fn click_and_settings_handoff_end_show_and_do_not_allow_repeat_consumption() {
+    let (mut s, old) = showing();
+    assert!(s.arm(None, true, true, 1, 101));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 1, 102));
+    let action = s.take_action(1, None, true, true, 1, 103, true).unwrap();
+    assert!(s.take_action(1, None, true, true, 1, 104, true).is_none());
+    let mut settings = SettingsSelection::empty();
+    assert!(settings.prepare_action(action, 1, 105, 200));
+    assert_eq!(settings.preview(200, 106), Some("中文 😀\n  code <&>\n"));
+    assert_eq!(s.current_show(1, 106), None);
+}
+#[test]
+fn finished_show_cannot_be_reused_and_unarmed_popup_expires() {
+    let (mut s, show) = showing();
+    s.finish_show(show);
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 1, 101));
+    s.expire(None, true, true, 1, 102);
+    assert_eq!(s.ticket(), None);
+}
+
+#[test]
+fn same_ticket_new_show_rejects_old_return_and_old_completion() {
+    let (mut s, old) = showing();
+    let new = s.begin_show(8, popup_target(), 1, 110).unwrap();
+    s.finish_show(old);
+    assert_eq!(s.current_show(1, 111), Some(new));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 1, 111));
+    assert!(s.can_return_focus(new, Some(popup_target()), true, 1, 111));
+}
+#[test]
+fn malformed_popup_and_stale_source_cannot_start_show() {
+    for popup in [
+        Target {
+            hwnd: 0,
+            ..popup_target()
+        },
+        Target {
+            pid: 0,
+            ..popup_target()
+        },
+        Target {
+            thread: 0,
+            ..popup_target()
+        },
+        target(),
+    ] {
+        let mut s = toolbar(Method::Uia);
+        assert!(s.begin_show(7, popup, 1, 100).is_none());
+    }
+    let mut s = toolbar(Method::Uia);
+    assert!(s.begin_show(7, popup_target(), 2, 100).is_none());
+    assert!(s.begin_show(7, popup_target(), 1, 8010).is_none());
+}
