@@ -115,6 +115,7 @@ windows = { version = "0.61", features = [
   # （签名含 *const SECURITY_ATTRIBUTES，见 crate 源码 Win32/System/Threading/mod.rs:249/299）。
   # 这是同一 crate 的特性开关，不新增任何第三方依赖 —— §11 单实例互斥需要它。
   "Win32_Security",
+  "Win32_Security_Cryptography", # OS SHA256 for explicitly opted-in synthetic diagnostics
   "Win32_System_Console",
   "Win32_System_DataExchange",
   "Win32_System_Memory",

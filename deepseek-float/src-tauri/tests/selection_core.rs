@@ -522,3 +522,278 @@ fn external_windows_wrong_labels_hidden_pages_and_ai_pages_cannot_invoke_toolbar
         ));
     }
 }
+
+// Characterization of the whole pure Session/Ticket chain, not a clipboard GUI PASS.
+#[test]
+fn copy_ticket_keeps_exact_full_or_partial_selection_without_normalizing_raw() {
+    for method in [Method::Uia, Method::NativeEdit] {
+        for raw in [
+            "  N01 Unicode Edit synthetic 中文 😀.\r\n  code <&> preserved.  ",
+            "  中文 😀\n    code <&>  ",
+            "N01 Unicode Edit synthetic 中文 😀.",
+        ] {
+            let mut t = ToolbarSelection::empty();
+            let s = Session::new(request(), raw.into(), method);
+            assert_eq!(
+                s.raw.encode_utf16().collect::<Vec<_>>(),
+                raw.encode_utf16().collect::<Vec<_>>()
+            );
+            t.offer(s);
+            assert!(t.arm(Some(target()), false, true, 1, 100));
+            let s = t
+                .take_action(1, Some(target()), false, true, 1, 101, true)
+                .unwrap()
+                .into_session(1, 102)
+                .unwrap();
+            assert_eq!(s.raw, raw);
+            assert_eq!(
+                s.raw.encode_utf16().collect::<Vec<_>>(),
+                raw.encode_utf16().collect::<Vec<_>>()
+            );
+            assert!(t
+                .take_action(1, Some(target()), false, true, 1, 103, true)
+                .is_none());
+        }
+    }
+}
+
+#[test]
+fn diagnostic_rejections_agree_with_action_gate_without_consuming_anything() {
+    for (ticket, fg, popup, alive, g, n, reason) in [
+        (1, Some(target()), false, true, 1, 101, "accepted"),
+        (2, Some(target()), false, true, 1, 101, "ticket-replaced"),
+        (
+            1,
+            Some(target()),
+            false,
+            true,
+            1,
+            1100,
+            "native-click-expired",
+        ),
+        (1, Some(target()), false, false, 1, 101, "source-dead"),
+        (1, Some(target()), false, true, 2, 101, "session-stale"),
+        (1, None, false, true, 1, 101, "foreground-changed"),
+    ] {
+        let mut t = toolbar(Method::NativeEdit);
+        assert_eq!(
+            t.action_rejection(1, Some(target()), false, true, 1, 100),
+            "missing-native-arm"
+        );
+        assert!(t.arm(Some(target()), false, true, 1, 100));
+        assert_eq!(t.action_rejection(ticket, fg, popup, alive, g, n), reason);
+        assert_eq!(
+            t.take_action(ticket, fg, popup, alive, g, n, true)
+                .is_some(),
+            reason == "accepted"
+        );
+    }
+}
+
+#[test]
+fn show_time_popup_focus_must_not_expire_before_first_native_click() {
+    let mut state = ToolbarSelection::empty();
+    state.offer(Session::new(
+        request(),
+        "synthetic selection".into(),
+        Method::NativeEdit,
+    ));
+    state.begin_show(1, popup_target(), 1, 99).unwrap();
+    // show() can temporarily foreground the popup before the first pointer-down.
+    state.expire(None, true, true, 1, 100);
+    assert_eq!(state.ticket(), Some(1));
+    assert!(state.arm(None, true, true, 1, 101));
+    assert!(state
+        .take_action(1, None, true, true, 1, 102, true)
+        .is_some());
+}
+
+fn popup_target() -> Target {
+    Target {
+        hwnd: 99,
+        pid: 100,
+        thread: 101,
+    }
+}
+fn showing() -> (ToolbarSelection, PopupShow) {
+    let mut s = toolbar(Method::NativeEdit);
+    let show = s.begin_show(7, popup_target(), 1, 100).unwrap();
+    (s, show)
+}
+#[test]
+fn show_return_is_exact_identity_bounded_and_not_an_action_grant() {
+    let (s, show) = showing();
+    assert!(s.can_return_focus(show, Some(popup_target()), true, 1, 101));
+    for fg in [
+        Some(target()),
+        None,
+        Some(Target {
+            hwnd: 98,
+            ..popup_target()
+        }),
+        Some(Target {
+            pid: 999,
+            ..popup_target()
+        }),
+    ] {
+        assert!(!s.can_return_focus(show, fg, true, 1, 101));
+    }
+    assert!(!s.can_return_focus(show, Some(popup_target()), false, 1, 101));
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 2, 101));
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 1, 450));
+    let (mut s, _) = showing();
+    assert!(s.take_action(1, None, true, true, 1, 101, true).is_none());
+}
+#[test]
+fn show_survives_only_popup_or_source_not_unrelated_own_windows() {
+    for fg in [
+        Some(Target {
+            hwnd: 97,
+            ..popup_target()
+        }),
+        None,
+    ] {
+        let (mut s, _) = showing();
+        s.expire(fg, false, true, 1, 101);
+        assert_eq!(s.ticket(), None);
+    }
+    let (mut s, _) = showing();
+    s.expire(Some(target()), false, true, 1, 101);
+    assert_eq!(s.ticket(), Some(1));
+    s.expire(None, true, true, 1, 102); // verified popup WebView activation
+    assert_eq!(s.ticket(), Some(1));
+}
+#[test]
+fn old_show_and_timer_cannot_change_replacement_or_restore_focus() {
+    let (mut s, old) = showing();
+    let mut r = request();
+    r.generation = 2;
+    r.session_id = 2;
+    r.created_ms = 110;
+    s.offer(Session::new(r, "new selection".into(), Method::Uia));
+    let new = s.begin_show(8, popup_target(), 2, 120).unwrap();
+    s.finish_show(old);
+    s.clear_if(old.ticket); // old auto-close's ticket guard
+    assert_eq!(s.current_show(2, 121), Some(new));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 2, 121));
+    assert_eq!(s.ticket(), Some(2));
+}
+#[test]
+fn hide_failure_source_death_generation_change_and_expiry_end_show() {
+    for (alive, gen, now) in [(false, 1, 101), (true, 2, 101), (true, 1, 8010)] {
+        let (mut s, old) = showing();
+        s.expire(None, true, alive, gen, now);
+        assert_eq!(s.ticket(), None);
+        assert!(!s.can_return_focus(old, Some(popup_target()), true, gen, now));
+    }
+    for fail in [true, false] {
+        let (mut s, old) = showing();
+        if fail {
+            s.clear_if(old.ticket);
+        } else {
+            s.clear();
+        }
+        assert_eq!(s.current_show(1, 101), None);
+    }
+}
+#[test]
+fn click_and_settings_handoff_end_show_and_do_not_allow_repeat_consumption() {
+    let (mut s, old) = showing();
+    assert!(s.arm(None, true, true, 1, 101));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 1, 102));
+    let action = s.take_action(1, None, true, true, 1, 103, true).unwrap();
+    assert!(s.take_action(1, None, true, true, 1, 104, true).is_none());
+    let mut settings = SettingsSelection::empty();
+    assert!(settings.prepare_action(action, 1, 105, 200));
+    assert_eq!(settings.preview(200, 106), Some("中文 😀\n  code <&>\n"));
+    assert_eq!(s.current_show(1, 106), None);
+}
+#[test]
+fn finished_show_cannot_be_reused_and_unarmed_popup_expires() {
+    let (mut s, show) = showing();
+    s.finish_show(show);
+    assert!(!s.can_return_focus(show, Some(popup_target()), true, 1, 101));
+    s.expire(None, true, true, 1, 102);
+    assert_eq!(s.ticket(), None);
+}
+
+#[test]
+fn same_ticket_new_show_rejects_old_return_and_old_completion() {
+    let (mut s, old) = showing();
+    let new = s.begin_show(8, popup_target(), 1, 110).unwrap();
+    s.finish_show(old);
+    assert_eq!(s.current_show(1, 111), Some(new));
+    assert!(!s.can_return_focus(old, Some(popup_target()), true, 1, 111));
+    assert!(s.can_return_focus(new, Some(popup_target()), true, 1, 111));
+}
+#[test]
+fn malformed_popup_and_stale_source_cannot_start_show() {
+    for popup in [
+        Target {
+            hwnd: 0,
+            ..popup_target()
+        },
+        Target {
+            pid: 0,
+            ..popup_target()
+        },
+        Target {
+            thread: 0,
+            ..popup_target()
+        },
+        target(),
+    ] {
+        let mut s = toolbar(Method::Uia);
+        assert!(s.begin_show(7, popup, 1, 100).is_none());
+    }
+    let mut s = toolbar(Method::Uia);
+    assert!(s.begin_show(7, popup_target(), 2, 100).is_none());
+    assert!(s.begin_show(7, popup_target(), 1, 8010).is_none());
+}
+
+#[test]
+fn capture_read_requires_permission_before_and_after_provider_return() {
+    use std::cell::Cell;
+    let permitted = Cell::new(true);
+    let calls = Cell::new(0);
+    let read = || {
+        calls.set(calls.get() + 1);
+        "  中文 😀\r\n  code  "
+    };
+    assert_eq!(
+        read_current(|| permitted.get(), read),
+        Some("  中文 😀\r\n  code  ")
+    );
+    assert_eq!(calls.get(), 1);
+    permitted.set(false);
+    assert!(read_current(|| permitted.get(), read).is_none());
+    assert_eq!(
+        calls.get(),
+        1,
+        "disabled capture must not invoke a provider"
+    );
+    permitted.set(true);
+    assert!(read_current(
+        || permitted.get(),
+        || {
+            permitted.set(false);
+            "late text"
+        }
+    )
+    .is_none());
+}
+
+#[test]
+fn capture_disabled_then_reenabled_cannot_revive_a_previous_generation() {
+    use std::cell::Cell;
+    let current = Cell::new(1);
+    let r = request();
+    assert!(read_current(
+        || r.valid(Some(target()), current.get(), 100),
+        || {
+            current.set(2);
+            "late synthetic text"
+        }
+    )
+    .is_none());
+}

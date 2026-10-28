@@ -126,3 +126,82 @@ test('late ready snapshot after a higher revision focus revocation cannot revive
  let ready;const p=page(c=>c==='settings_ready'?new Promise(resolve=>ready=resolve):undefined);
  try{await tick();p.w.__dsfSettingsSelectionExpired('22');ready({text:'old synthetic',selection_ticket:'21',selection_revision:'21',prompts:[]});await tick();assert.equal(p.d.querySelector('#text-preview').classList.contains('preview-empty'),true);}finally{p.close();}
 });
+
+// A late unlock callback for A must never re-enable a consumed action for B.
+test('old toolbar unlock timer cannot re-enable a replacement ticket',()=>{
+ const p=toolbarPage();try{
+  const timers=[];p.w.setTimeout=(fn)=>{timers.push(fn);return timers.length;};
+  const copy=p.d.querySelector('[data-preset="copy"]');
+  p.w.__dsfResetFired('100');copy.click();
+  p.w.__dsfResetFired('101');copy.click();
+  timers[0]();copy.click();
+  assert.equal(p.calls.filter(c=>c.command==='popup_action').length,2,
+   'late A timer must not unlock B and dispatch another B action');
+ }finally{p.close();}
+});
+
+test('synthetic diagnostics bind late IPC resolution to original ticket without text',async()=>{
+ const p=toolbarPage();try{
+  let resolveAction;
+  p.w.__dsfSelectionTrace=true;
+  p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{
+   p.calls.push({command,args});
+   return command==='popup_action'?new Promise(r=>resolveAction=r):Promise.resolve();
+  };
+  p.w.__dsfResetFired('200');p.d.querySelector('[data-preset="copy"]').click();
+  p.w.__dsfResetFired('201');resolveAction();await tick();
+  const result=p.calls.find(c=>c.command==='popup_trace'&&c.args.stage==='resolved');
+  assert.equal(result.args.selectionTicket,'200');
+  assert.deepEqual(Object.keys(result.args).sort(),['action','selectionTicket','stage']);
+ }finally{p.close();}
+});
+
+
+test('resolved more menu permits the immediate settings click without a fixed lockout',async()=>{
+ const p=toolbarPage();try{
+  let done;
+  p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{
+   p.calls.push({command,args});
+   return command==='popup_action'&&args.preset==='open-more'?new Promise(r=>done=r):Promise.resolve(true);
+  };
+  p.w.__dsfResetFired('300');
+  p.d.querySelector('[data-preset="open-more"]').click();
+  done();await tick();
+  p.w.__dsfSetPrompts([]);
+  p.d.querySelector('[data-preset="open-settings"]').click();
+  assert.deepEqual(p.calls.filter(c=>c.command==='popup_action').map(c=>c.args.preset),['open-more','open-settings']);
+ }finally{p.close();}
+});
+
+test('smart selection default and explicit preferences render without a legacy control',async()=>{
+ for(const cfg of [{}, {privileged_capture:false}, {privileged_capture:true}]){
+  const p=page(c=>c==='config_get'?Promise.resolve(cfg):c==='safe_copy_status'?Promise.resolve({available:false,enabled:false}):undefined);
+  try{await tick();
+   const el=p.d.querySelector('[data-key="privileged"]');
+   assert.equal(el.checked,cfg.privileged_capture!==false);
+   assert.match(el.closest('.toggle-row').textContent,/智能划词增强/);
+   assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]'),null);
+   assert.match(p.d.querySelector('#safe-copy-hint').textContent,/待安全验收/);
+  }finally{p.close();}
+ }
+});
+
+
+test('pending more rejects duplicate dispatch and stale completion cannot unlock a new ticket',async()=>{
+ const p=toolbarPage();try{
+  let done;p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{p.calls.push({command,args});return command==='popup_action'&&args.preset==='open-more'?new Promise(r=>done=r):Promise.resolve(true);};
+  p.w.__dsfResetFired('400');const more=p.d.querySelector('[data-preset="open-more"]');more.click();more.click();
+  assert.equal(p.calls.filter(c=>c.command==='popup_action').length,1);
+  p.w.__dsfResetFired('401');const copy=p.d.querySelector('[data-preset="copy"]');copy.click();done();await tick();copy.click();
+  assert.equal(p.calls.filter(c=>c.command==='popup_action').length,2);
+ }finally{p.close();}
+});
+
+test('failed more IPC can be retried without reusing a consumed action',async()=>{
+ const p=toolbarPage();try{
+  p.w.console.error=()=>{};
+  p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{p.calls.push({command,args});return Promise.reject(Error('native menu failed'));};
+  p.w.__dsfResetFired('500');const more=p.d.querySelector('[data-preset="open-more"]');more.click();await tick();more.click();
+  assert.equal(p.calls.filter(c=>c.command==='popup_action').length,2);await tick();
+ }finally{p.close();}
+});

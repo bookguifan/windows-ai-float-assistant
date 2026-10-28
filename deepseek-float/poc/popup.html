@@ -6,9 +6,9 @@
     <title>DeepSeek 划词工具条</title>
     <style>
       /*
-       * 窗宽由 Rust 侧按内容动态 set_size；高也是动态的：收起=42，点击「⋮ 更多」后
-       * 由 Rust 侧扩高（42 + 自定义行数×FLY_ROW_H）以容纳下方浮层。
-       * html/body 高度取 100%（=窗口当前 set_size 高度），首行 .bar 固定 42px，
+       * 窗宽由 Rust 侧按内容动态 set_size；高也是动态的：收起=34，点击「⋮ 更多」后
+       * 由 Rust 侧扩高（34 + 自定义行数×FLY_ROW_H）以容纳下方浮层。
+       * html/body 高度取 100%（=窗口当前 set_size 高度），首行 .bar 固定 34px，
        * #more-box（浮层）display:none，展开时 visible 增为 flex。
        */
       html, body {
@@ -25,14 +25,14 @@
       .bar {
         flex: 0 0 auto;
         width: 100%;
-        height: 42px; /* 首行固定 42px，胶囊垂直居中（radius 21 = 高度一半） */
+        height: 34px; /* 与 Rust 的 POPUP_LOGICAL_H 一致 */
         box-sizing: border-box;
         display: flex;
         align-items: center;
-        gap: 3px; /* 与 popup.rs 的 BTN_GAP 一致，宽度估算才准确 */
+        gap: 2px; /* 与 popup.rs 的 BTN_GAP 一致，宽度估算才准确 */
         padding: 0 4px;
         background: #ffffff;
-        border-radius: 21px;
+        border-radius: 17px;
         box-shadow: inset 0 0 0 1px rgba(43, 92, 255, 0.26),
                     inset 0 -1px 4px rgba(43, 92, 255, 0.07);
         /* 整体不再横向滚动：复制 / ⋯ 两端固定，中间 #prompts 内部滚动 */
@@ -40,10 +40,10 @@
       }
       button {
         flex: 0 0 auto;
-        height: 30px;
-        padding: 0 6px; /* 12px 左右内边距，与 popup.rs::button_px 的估算一致 */
+        height: 26px;
+        padding: 0 4px; /* 8px 左右内边距，与 popup.rs::button_px 的估算一致 */
         border: 0;
-        border-radius: 15px;
+        border-radius: 13px;
         background: transparent;
         color: #2b2b2b;
         font-family: inherit;
@@ -54,18 +54,19 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 5px; /* 图标与文字的间距，与 popup.rs::button_px 的估算一致 */
+        gap: 4px; /* 图标与文字的间距，与 popup.rs::button_px 的估算一致 */
       }
       /*button:hover { background: rgba(43, 92, 255, 0.10); color: #2b5cff; }*/
       button:active { background: rgba(43, 92, 255, 0.20); }
       /* 复制 / ⋯ 是固定动作按钮，视觉与提示词按钮一致，但 ⋯ 只放图标 */
       button[data-preset="open-settings"] { padding: 0 8px; }
+      .bar > button[data-preset="open-more"] { width: 26px; padding: 0; }
       svg { width: 14px; height: 14px; flex-shrink: 0; }
       /* 中间提示词区（仅内置 4 项）：占据剩余空间并内部横向滚动，复制/⋯ 因此始终固定可见 */
       #prompts {
         display: flex;
         align-items: center;
-        gap: 3px;
+        gap: 2px;
         flex: 1 1 auto;
         min-width: 0;
         overflow-x: auto;
@@ -77,7 +78,7 @@
        * 用绝对定位右对齐到「⋯」下方，宽度按内容(窄)，与顶栏同窗但互不遮挡。 */
       #more-box {
         position: absolute;
-        top: 44px; /* 顶栏下方 */
+        top: 36px; /* 34px 顶栏 + 2px 间距 */
         right: 6px;
         width: max-content;
         min-width: 168px;
@@ -251,16 +252,32 @@
       // 复位一次性锁的确定性入口：由 Rust 侧 show_at_cursor 每次弹窗 show 成功后
       // 通过 win.eval("__dsfResetFired()") 复位。
       let selectionTicket = null;
-      window.__dsfResetFired = (ticket) => { fired = false; selectionTicket = ticket == null ? null : String(ticket); };
+      let actionEpoch = 0;
+      window.__dsfResetFired = (ticket) => { actionEpoch++; fired = false; selectionTicket = ticket == null ? null : String(ticket); };
 
+      function traceClick(stage, preset, ticket = selectionTicket) {
+        if (!window.__dsfSelectionTrace) return;
+        const action = ['copy', 'open-more', 'open-settings'].includes(preset) ? preset : 'prompt';
+        tauri.core.invoke('popup_trace', { stage, action, selectionTicket: ticket }).catch(() => {});
+      }
       function fire(preset) {
-        if (fired || selectionTicket === null) return;
+        traceClick('click', preset);
+        if (fired || selectionTicket === null) {
+          traceClick(fired ? 'busy' : 'no-ticket', preset);
+          return;
+        }
         fired = true;
+        const epoch = ++actionEpoch;
+        const ticket = selectionTicket;
+        const unlock = () => { if (actionEpoch === epoch) fired = false; };
         try {
-          tauri.core.invoke("popup_action", { preset, selectionTicket }).catch((e) => console.error("[popup] popup_action:", e));
-          // 「⋮ 更多」只负责扩高、不关闭：尽快解锁，让用户能接着点浮层里的项。
-          if (preset === "open-more") setTimeout(() => { fired = false; }, 250);
-          else setTimeout(() => { fired = false; }, 400); // 兜底解锁
+          traceClick('dispatch', preset, ticket);
+          tauri.core.invoke("popup_action", { preset, selectionTicket: ticket }).then(
+            () => { traceClick('resolved', preset, ticket); if (preset === 'open-more') unlock(); },
+            (e) => { traceClick('rejected', preset, ticket); if (preset === 'open-more') unlock(); console.error("[popup] popup_action:", e); }
+          );
+          // 菜单完成后立即接受下一项，尚未完成时拒绝重复派发；旧 IPC 不解锁新票据。
+          if (preset !== "open-more") setTimeout(unlock, 400); // 兜底解锁
         } catch (e) {
           console.error("[popup] invoke popup_action failed:", e);
           fired = false;

@@ -26,8 +26,8 @@ pub struct AppConfig {
     /// 全屏时隐藏悬浮球。
     #[serde(default)]
     pub hide_on_fullscreen: bool,
-    /// 提权划词（UI Automation）。
-    #[serde(default)]
+    /// 智能划词增强（UIA / 标准 Unicode Edit），缺字段默认开启；保留显式关闭。
+    #[serde(default = "default_smart_selection")]
     pub privileged_capture: bool,
     /// 兼容旧字段；首版公开构建忽略旧true值，规范化为false。
     #[serde(default, deserialize_with = "deserialize_clipboard_fallback")]
@@ -53,6 +53,10 @@ pub struct AppConfig {
     pub custom_sites: Vec<crate::panel_site::Site>,
 }
 
+fn default_smart_selection() -> bool {
+    true
+}
+
 fn deserialize_clipboard_fallback<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<bool, D::Error> {
@@ -74,7 +78,7 @@ impl Default for AppConfig {
             ball_y: None,
             autostart: false,
             hide_on_fullscreen: false,
-            privileged_capture: false,
+            privileged_capture: default_smart_selection(),
             clipboard_fallback_enabled: false,
             hotkey: default_hotkey(),
             panel_url: None,
@@ -284,6 +288,32 @@ fn commit_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn smart_selection_defaults_on_but_preserves_explicit_choices_and_restart() {
+        assert!(AppConfig::default().privileged_capture);
+        assert!(
+            serde_json::from_str::<AppConfig>("{}")
+                .unwrap()
+                .privileged_capture
+        );
+        let dir =
+            std::env::temp_dir().join(format!("dsfloat-smart-default-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        for enabled in [false, true] {
+            let mut cfg: AppConfig = serde_json::from_value(serde_json::json!({
+                "privileged_capture": enabled, "clipboard_fallback_enabled": true
+            }))
+            .unwrap();
+            assert_eq!(cfg.privileged_capture, enabled);
+            commit_at(&mut cfg, &path, |_| {}).unwrap();
+            let fresh: AppConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(fresh.privileged_capture, enabled);
+            assert!(!fresh.clipboard_fallback_enabled);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn public_build_ignores_legacy_enabled_fallback_and_persists_disabled() {
         let mut cfg: AppConfig =

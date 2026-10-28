@@ -101,6 +101,34 @@ pub fn ball_ready() {
     crate::diag::log("ball_ready: 收到悬浮球首帧就绪握手信号（Rust 侧随后套椭圆区域显形）");
 }
 
+/// Synthetic-only telemetry; rejects arbitrary stages/actions and external documents.
+#[tauri::command]
+pub fn popup_trace(
+    window: tauri::WebviewWindow,
+    stage: String,
+    action: String,
+    selection_ticket: Option<String>,
+) -> Result<(), String> {
+    if !crate::selection_trace::enabled() {
+        return Ok(());
+    }
+    let url = window.url().map_err(|_| "工具条地址不可用")?;
+    if !crate::selection::local_page(
+        window.label(),
+        &url,
+        "popup",
+        window.is_visible().unwrap_or(false),
+    ) {
+        return Err("只能由本地工具条记录合成诊断".into());
+    }
+    crate::selection_trace::frontend(
+        &stage,
+        &action,
+        selection_ticket.and_then(|s| s.parse().ok()),
+    );
+    Ok(())
+}
+
 /// 工具条按钮点击：preset 为 copy / open-settings / 提示词 id。
 #[tauri::command]
 pub fn popup_action(
@@ -121,6 +149,7 @@ pub fn popup_action(
     let ticket = selection_ticket
         .parse::<u64>()
         .map_err(|_| "选区凭据无效")?;
+    crate::selection_trace::event("ipc-action", Some(ticket), "received");
     crate::popup::on_action(&app, &preset, ticket);
     Ok(())
 }
@@ -211,8 +240,15 @@ pub fn config_set_fullscreen(enable: bool) -> bool {
 /// 设置提权划词（UI Automation）开关（持久化；trigger_selection 实时读取）。
 #[tauri::command]
 pub fn config_set_privileged(enable: bool) -> bool {
-    crate::config::update(|c| c.privileged_capture = enable);
-    true
+    crate::config::try_update(|c| {
+        // Revoke under the config write lock, before another enable/read can observe
+        // the new preference. Failed disk writes retain the config but cancel old work.
+        if !enable {
+            crate::selection_runtime::invalidate();
+        }
+        c.privileged_capture = enable;
+    })
+    .is_ok()
 }
 
 /// 保留旧命令兼容；首版公开构建拒绝开启，只允许持久化关闭。
@@ -613,6 +649,42 @@ pub fn result_open_exports_dir() -> Result<(), String> {
 
 #[cfg(test)]
 mod public_release_tests {
+    // A child test process isolates config/cache/environment from the user and other tests.
+    #[test]
+    fn failed_disable_revokes_inflight_requests_without_changing_config() {
+        const CHILD: &str = "BETA2_ISOLATED_CONFIG_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            let before = crate::config::load();
+            let generation = crate::selection_runtime::generation();
+            assert!(!super::config_set_privileged(false));
+            assert_ne!(
+                crate::selection_runtime::generation(),
+                generation,
+                "explicit disable must revoke before a potentially failing config write"
+            );
+            assert_eq!(crate::config::load(), before);
+            assert_eq!(
+                std::fs::read(std::env::var_os("LOCALAPPDATA").unwrap()).unwrap(),
+                b"synthetic blocker"
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("beta2-disable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("not-a-directory");
+        std::fs::write(&blocker, b"synthetic blocker").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ipc::public_release_tests::failed_disable_revokes_inflight_requests_without_changing_config", "--nocapture"])
+            .env(CHILD, "1").env("LOCALAPPDATA", &blocker).output().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            result.status.success(),
+            "isolated config test failed: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     #[test]
     fn direct_backend_enable_is_rejected_before_configuration_io() {
         assert!(super::config_set_clipboard_fallback(true).is_err());

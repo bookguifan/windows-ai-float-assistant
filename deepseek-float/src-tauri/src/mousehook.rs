@@ -34,12 +34,27 @@ unsafe extern "system" fn foreground_changed(
     hwnd: windows::Win32::Foundation::HWND,
     _: i32,
     _: i32,
-    _: u32,
-    _: u32,
+    event_thread: u32,
+    event_ms: u32,
 ) {
-    if !crate::popup::preserves_foreground(hwnd.0 as isize) {
-        crate::selection_runtime::invalidate();
+    let generation = crate::selection_runtime::generation();
+    let captured_ms = crate::selection_runtime::now_ms();
+    let (preserved, ticket, show, alive) = crate::popup::preserves_foreground(hwnd.0 as isize);
+    if !preserved {
+        crate::selection_runtime::invalidate_if(generation);
     }
+    crate::selection_trace::foreground(
+        hwnd.0 as isize,
+        event_thread,
+        event_ms,
+        generation,
+        crate::selection_runtime::generation(),
+        captured_ms,
+        preserved,
+        ticket,
+        show,
+        alive,
+    );
 }
 
 /// 鼠标钩子产生的事件。
@@ -111,15 +126,30 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let root = GetAncestor(hit, GA_ROOT);
                     let mut owner = 0;
                     GetWindowThreadProcessId(root, Some(&mut owner));
-                    if owner == GetCurrentProcessId()
-                        && crate::popup::point_in_popup(info.pt.x, info.pt.y)
-                    {
-                        crate::popup::arm_action(root.0 as isize);
+                    let visible = crate::popup::popup_visible();
+                    let inside = crate::popup::point_in_popup(info.pt.x, info.pt.y);
+                    let own = owner == GetCurrentProcessId();
+                    let mut armed = false;
+                    if own && inside {
+                        armed = crate::popup::arm_action(root.0 as isize);
                     } else {
                         crate::selection_runtime::invalidate();
                         if let Ok(mut target) = DOWN_TARGET.lock() {
                             *target = crate::selection_runtime::target();
                         }
+                    }
+                    if visible {
+                        crate::selection_trace::click(crate::selection_trace::Click {
+                            root: root.0 as isize,
+                            x: info.pt.x,
+                            y: info.pt.y,
+                            inside,
+                            own,
+                            armed,
+                            ticket: crate::popup::pending_ticket(),
+                            generation: crate::selection_runtime::generation(),
+                            now_ms: crate::selection_runtime::now_ms(),
+                        });
                     }
                     *g = (owner != GetCurrentProcessId()).then_some((info.pt.x, info.pt.y));
                 }
@@ -174,6 +204,7 @@ where
     if STARTED.swap(true, Ordering::SeqCst) {
         return true;
     }
+    crate::selection_trace::start();
     crate::diag::log("mousehook::start 被调用");
 
     // 控制 worker：只转发到有界选区调度器，关闭事件不等待 UIA。
@@ -253,6 +284,7 @@ where
 
 /// 退出清理：给泵线程投递 WM_QUIT，循环退出时自动 UnhookWindowsHookEx。
 pub fn stop() {
+    crate::selection_trace::stop();
     crate::selection_runtime::stop();
     let id = PUMP_THREAD_ID.load(Ordering::SeqCst);
     if id != 0 && !STOPPED.swap(true, Ordering::SeqCst) {

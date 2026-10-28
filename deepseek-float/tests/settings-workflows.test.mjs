@@ -174,11 +174,11 @@ test('the newest prompt edit is saved even if an older in-flight snapshot fails'
 });
 
 
-test('public build locks fallback off even for legacy enabled config and forged change events', async () => {
+test('release capability locks fallback off even for legacy enabled config and forged change events', async () => {
   const p = page(c => c === 'config_get' ? Promise.resolve({clipboard_fallback_enabled:true}) : undefined);
   try {
     await tick();
-    const box = p.d.querySelector('[data-key="clipboard-fallback"]');
+    const box = p.d.querySelector('[data-key="safe-copy"]');
     assert.equal(box.checked, false);
     assert.equal(box.disabled, true);
     box.disabled = false;
@@ -191,16 +191,16 @@ test('public build locks fallback off even for legacy enabled config and forged 
   } finally { p.close(); }
 });
 
-test('public fallback control is disabled for missing, false and legacy true settings', async () => {
+test('experimental control stays disabled for missing, false and legacy true settings', async () => {
   for (const cfg of [{}, {clipboard_fallback_enabled:false}, {clipboard_fallback_enabled:true}]) {
     const p = page(c => c === 'config_get' ? Promise.resolve(cfg) : undefined);
     try {
       await tick();
-      const box = p.d.querySelector('[data-key="clipboard-fallback"]');
-      assert.ok(box, 'independent opt-in control exists');
+      const box = p.d.querySelector('[data-key="safe-copy"]');
+      assert.ok(box, 'experimental capability entry exists');
       assert.equal(box.checked, false);
       assert.equal(box.disabled, true);
-      assert.match(box.closest('.toggle-row').textContent, /本公开构建已禁用/);
+      assert.match(box.closest('.toggle-row').textContent, /待安全验收/);
       box.checked = !box.checked;
       box.dispatchEvent(new p.w.Event('change'));
       await tick();
@@ -214,7 +214,7 @@ test('disabled fallback never invokes persistence even when the DOM disabled fla
   const p = page(c => c === 'config_set_clipboard_fallback' ? Promise.reject('must not be invoked') : undefined);
   try {
     await tick();
-    const box = p.d.querySelector('[data-key="clipboard-fallback"]');
+    const box = p.d.querySelector('[data-key="safe-copy"]');
     assert.ok(box);
     box.disabled = false;
     box.checked = true; box.dispatchEvent(new p.w.Event('change'));
@@ -231,11 +231,50 @@ test('delayed legacy config cannot reenable the public fallback control', async 
   let resolve;
   const p = page(c => c === 'config_get' ? new Promise(r => {resolve=r;}) : undefined);
   try {
-    const box = p.d.querySelector('[data-key="clipboard-fallback"]');
+    const box = p.d.querySelector('[data-key="safe-copy"]');
     box.checked = true; box.dispatchEvent(new p.w.Event('change')); await tick();
     resolve({clipboard_fallback_enabled:true}); await tick();
     assert.equal(box.checked, false);
     assert.equal(box.disabled, true);
     assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
   } finally { p.close(); }
+});
+
+test('smart selection off persists and restore refresh respects the explicit choice',async()=>{
+ let enabled=true;
+ const p=page((c,args)=>c==='config_get'?Promise.resolve({privileged_capture:enabled}):c==='config_set_privileged'?(enabled=args.enable,Promise.resolve(true)):undefined);
+ try{await tick();const box=p.d.querySelector('[data-key="privileged"]');assert.equal(box.checked,true);box.click();await tick();
+  assert.equal(enabled,false);assert.equal(p.calls.filter(c=>c.command==='config_set_privileged').length,1);
+  p.w.__dsfSettingsDataRestored({prompts:initial});await tick();await tick();assert.equal(box.checked,false);
+  assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]'),null);
+ }finally{p.close();}
+});
+
+test('smart selection save denial rolls the displayed preference back',async()=>{
+ const p=page(c=>c==='config_get'?Promise.resolve({privileged_capture:true}):c==='config_set_privileged'?Promise.resolve(false):undefined);
+ try{await tick();const box=p.d.querySelector('[data-key="privileged"]');box.click();await tick();assert.equal(box.checked,true);}finally{p.close();}
+});
+
+
+test('pending smart selection save prevents duplicate preference writes', async () => {
+  let finish;
+  const p = page(c => c === 'config_get' ? Promise.resolve({privileged_capture:true}) : c === 'config_set_privileged' ? new Promise(r => {finish=r;}) : undefined);
+  try {
+    await tick(); const box=p.d.querySelector('[data-key="privileged"]');
+    box.click(); assert.equal(box.disabled,true);
+    box.click(); assert.equal(p.calls.filter(c=>c.command==='config_set_privileged').length,1);
+    finish(true); await tick(); assert.equal(box.disabled,false); assert.equal(box.checked,false);
+  } finally {p.close();}
+});
+
+test('late config read cannot overwrite a newer saved smart selection preference', async () => {
+  const pendingReads=[]; let stale=false;
+  const p=page(c=>c==='config_get' ? (stale ? new Promise(r=>{pendingReads.push(r);}) : Promise.resolve({privileged_capture:true})) : undefined);
+  try {
+    await tick(); stale=true; p.w.__dsfSettingsDataRestored({prompts:initial}); await tick();
+    assert.ok(pendingReads.length>0);
+    const box=p.d.querySelector('[data-key="privileged"]'); box.click(); await tick();
+    assert.equal(box.checked,false); pendingReads.forEach(resolve=>resolve({privileged_capture:true})); await tick();
+    assert.equal(box.checked,false);
+  } finally {p.close();}
 });

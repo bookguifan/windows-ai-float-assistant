@@ -375,6 +375,7 @@ pub fn run() {
             crate::ipc::context_menu_close,
             crate::ipc::ball_ready,
             crate::ipc::popup_action,
+            crate::ipc::popup_trace,
             crate::ipc::settings_save,
             crate::ipc::settings_run,
             crate::ipc::settings_ready,
