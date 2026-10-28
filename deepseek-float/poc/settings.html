@@ -318,6 +318,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
       let sitesLoaded = false;
       let editingSite = null;
       let featuresGeneration = 0;
+      let smartSelectionRevision = 0;
+      let smartSelectionSaving = false;
       let panelSwitchRevision = 0;
       let backupBusy = false;
 
@@ -814,6 +816,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         const generation = ++featuresGeneration;
         const sitesRevision = sitesSaver.revision();
         const urlRevision = panelSwitchRevision;
+        const smartRevision = smartSelectionRevision;
         if (!sitesLoaded) { document.getElementById('sites-save-status').textContent = '正在读取站点清单…'; document.getElementById('sites-load-retry').hidden = true; }
         try {
           const cfg = await tauri.core.invoke("config_get");
@@ -825,7 +828,9 @@ input.url-box { width: 100%; box-sizing: border-box; }
           }
           setFeatureToggle("autostart", cfg && cfg.autostart);
           setFeatureToggle("fullscreen", cfg && cfg.hide_on_fullscreen);
-          setFeatureToggle("privileged", !!cfg && cfg.privileged_capture !== false);
+          if (!smartSelectionSaving && smartRevision === smartSelectionRevision) {
+            setFeatureToggle("privileged", !!cfg && cfg.privileged_capture !== false);
+          }
           refreshSafeCopy();
           const pu = document.getElementById("panel-url-input");
           if (pu && urlRevision === panelSwitchRevision) pu.value = (cfg && cfg.panel_url) || "https://chat.deepseek.com/";
@@ -875,6 +880,25 @@ input.url-box { width: 100%; box-sizing: border-box; }
           }
           const on = el.checked;
           if (el.disabled) return;
+          if (key === "privileged") {
+            if (smartSelectionSaving) return;
+            ++smartSelectionRevision;
+            smartSelectionSaving = true;
+            el.disabled = true;
+            try {
+              const saved = await tauri.core.invoke("config_set_privileged", { enable: on });
+              if (saved === false) throw new Error('智能划词设置保存失败');
+            } catch (error) {
+              el.checked = !on;
+              console.error("[settings] smart selection save:", error);
+            } finally {
+              // Also reject reads started while the preference save was in flight.
+              ++smartSelectionRevision;
+              smartSelectionSaving = false;
+              el.disabled = false;
+            }
+            return;
+          }
           try {
             if (key === "autostart") {
               const ok = await tauri.core.invoke("config_set_autostart", { enable: on });
@@ -887,9 +911,6 @@ input.url-box { width: 100%; box-sizing: border-box; }
               }
             } else if (key === "fullscreen") {
               await tauri.core.invoke("config_set_fullscreen", { enable: on });
-            } else if (key === "privileged") {
-              const saved = await tauri.core.invoke("config_set_privileged", { enable: on });
-              if (saved === false) throw new Error('智能划词设置保存失败');
             }
           } catch (e) {
             console.error("[settings] config_set_*:", e);

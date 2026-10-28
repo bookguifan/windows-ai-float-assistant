@@ -254,3 +254,27 @@ test('smart selection save denial rolls the displayed preference back',async()=>
  const p=page(c=>c==='config_get'?Promise.resolve({privileged_capture:true}):c==='config_set_privileged'?Promise.resolve(false):undefined);
  try{await tick();const box=p.d.querySelector('[data-key="privileged"]');box.click();await tick();assert.equal(box.checked,true);}finally{p.close();}
 });
+
+
+test('pending smart selection save prevents duplicate preference writes', async () => {
+  let finish;
+  const p = page(c => c === 'config_get' ? Promise.resolve({privileged_capture:true}) : c === 'config_set_privileged' ? new Promise(r => {finish=r;}) : undefined);
+  try {
+    await tick(); const box=p.d.querySelector('[data-key="privileged"]');
+    box.click(); assert.equal(box.disabled,true);
+    box.click(); assert.equal(p.calls.filter(c=>c.command==='config_set_privileged').length,1);
+    finish(true); await tick(); assert.equal(box.disabled,false); assert.equal(box.checked,false);
+  } finally {p.close();}
+});
+
+test('late config read cannot overwrite a newer saved smart selection preference', async () => {
+  const pendingReads=[]; let stale=false;
+  const p=page(c=>c==='config_get' ? (stale ? new Promise(r=>{pendingReads.push(r);}) : Promise.resolve({privileged_capture:true})) : undefined);
+  try {
+    await tick(); stale=true; p.w.__dsfSettingsDataRestored({prompts:initial}); await tick();
+    assert.ok(pendingReads.length>0);
+    const box=p.d.querySelector('[data-key="privileged"]'); box.click(); await tick();
+    assert.equal(box.checked,false); pendingReads.forEach(resolve=>resolve({privileged_capture:true})); await tick();
+    assert.equal(box.checked,false);
+  } finally {p.close();}
+});

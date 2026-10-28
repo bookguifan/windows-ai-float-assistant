@@ -98,3 +98,8 @@ SHA256 为 `2D09F1B7F03428A48171EB7A0FC245E9D8E438B19B663418882A399DC7DEEAC4` �
 智能划词增强对新安装/缺字段默认开启，保留显式关闭；普通设置移除旧版回退入口，发行实验回退继续灰显“待安全验收”。后端旧字段及研究源码保留，发行禁用规则不变。历史 N05 60→33 首个差异节点仍 UNKNOWN，后续 58 单位全链一致的局部 PASS 不覆盖原失败；N03 PARTIAL、N04 完整矩阵待验、N07 前轮局部 PASS、WM_COPY UNKNOWN、R01–R03 历史风险和启动 P1 均保留。
 
 本轮不启动原生 GUI、不提交/推送/合并。开发合并需新 SHA 远端 CI、独立崩溃 Issue 和完整 PR 披露；Beta.2 继续 NO-GO。
+
+
+## PR 补审追踪（2026-10-28）
+
+启动异常已独立建立 [P1 Issue #2](https://github.com/bookguifan/windows-ai-float-assistant/issues/2)，保持 OPEN；原始业务栈 UNKNOWN，调查暂缓。新增的智能划词保存串行化、旧配置读取拒绝及配置写锁内 generation 撤销已有 RED/GREEN 自动化证据，见[PR准入补审](beta2-selection-merge-readiness.md#pr-准入补审2026-10-28)。这些结果不关闭 N01、N05、WM_COPY 或原生验收缺口；Beta.2 发布仍 NO-GO。
