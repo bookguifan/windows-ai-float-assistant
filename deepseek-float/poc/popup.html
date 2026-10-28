@@ -273,12 +273,11 @@
         try {
           traceClick('dispatch', preset, ticket);
           tauri.core.invoke("popup_action", { preset, selectionTicket: ticket }).then(
-            () => traceClick('resolved', preset, ticket),
-            (e) => { traceClick('rejected', preset, ticket); console.error("[popup] popup_action:", e); }
+            () => { traceClick('resolved', preset, ticket); if (preset === 'open-more') unlock(); },
+            (e) => { traceClick('rejected', preset, ticket); if (preset === 'open-more') unlock(); console.error("[popup] popup_action:", e); }
           );
-          // 「⋮ 更多」只负责扩高、不关闭：尽快解锁，让用户能接着点浮层里的项。
-          if (preset === "open-more") setTimeout(unlock, 250);
-          else setTimeout(unlock, 400); // 兜底解锁
+          // 菜单完成后立即接受下一项，尚未完成时拒绝重复派发；旧 IPC 不解锁新票据。
+          if (preset !== "open-more") setTimeout(unlock, 400); // 兜底解锁
         } catch (e) {
           console.error("[popup] invoke popup_action failed:", e);
           fired = false;

@@ -53,8 +53,11 @@ pub fn target() -> Option<Target> {
         })
     }
 }
+pub fn capture_enabled() -> bool {
+    crate::config::load().privileged_capture || crate::safe_copy::state().enabled
+}
 pub fn valid(r: &Request) -> bool {
-    !STOP.load(Ordering::Acquire) && r.valid(target(), generation(), now_ms())
+    !STOP.load(Ordering::Acquire) && capture_enabled() && r.valid(target(), generation(), now_ms())
 }
 pub fn request(point: (i32, i32)) -> Option<Request> {
     let target = target()?;
@@ -99,7 +102,12 @@ fn start(app: AppHandle) {
             *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
             let cfg = crate::config::load();
             if cfg.privileged_capture || crate::safe_copy::state().enabled {
-                let read = crate::uia::read(&r);
+                let Some(read) =
+                    crate::selection::read_current(|| valid(&r), || crate::uia::read(&r))
+                else {
+                    *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    continue;
+                };
                 crate::diag::log(&format!(
                     "selection status={} elapsed_ms={} request={} target_pid={} queue_ms={}",
                     read.status,

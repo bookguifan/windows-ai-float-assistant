@@ -144,21 +144,14 @@ input.url-box { width: 100%; box-sizing: border-box; }
           </div>
           <div class="toggle-row">
             <div class="meta">
-              <span class="t-label">UIA 划词增强</span>
+              <span class="t-label">智能划词增强</span>
               <span class="t-hint">优先 UIA；失败时尝试标准 Unicode Edit 原生选区读取，不模拟复制、不读取密码控件，不提升 Windows 权限</span>
             </div>
             <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动剪贴板划词回退（实验性）</span><span class="t-hint" id="safe-copy-hint">本发行构建已禁用；仅显式启用研究特性的调试构建可授权。默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
+            <div class="meta"><span class="t-label">自动复制回退（实验性）</span><span class="t-hint" id="safe-copy-hint">待安全验收：本发行构建已禁用；仅显式启用研究特性的调试构建可授权。默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
             <label class="switch"><input type="checkbox" data-key="safe-copy" disabled aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
-          </div>
-          <div class="toggle-row">
-            <div class="meta">
-              <span class="t-label">旧版自动复制回退（本公开构建已禁用）</span>
-              <span class="t-hint">此旧入口不可启用；实验性 Ctrl+C 仅用于显式启用研究特性的调试构建，发行构建不可授权。用户主动复制不受影响。</span>
-            </div>
-            <label class="switch"><input type="checkbox" data-key="clipboard-fallback" aria-label="自动复制回退：本构建已禁用" disabled /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
             <div class="meta">
@@ -832,10 +825,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
           }
           setFeatureToggle("autostart", cfg && cfg.autostart);
           setFeatureToggle("fullscreen", cfg && cfg.hide_on_fullscreen);
-          setFeatureToggle("privileged", cfg && cfg.privileged_capture);
+          setFeatureToggle("privileged", !!cfg && cfg.privileged_capture !== false);
           refreshSafeCopy();
-          setFeatureToggle("clipboard-fallback", false);
-          document.querySelector('[data-key="clipboard-fallback"]').disabled = true;
           const pu = document.getElementById("panel-url-input");
           if (pu && urlRevision === panelSwitchRevision) pu.value = (cfg && cfg.panel_url) || "https://chat.deepseek.com/";
           syncUrlPreset();
@@ -864,7 +855,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         el.disabled=!safeCopyAvailable;
         document.querySelector('#safe-copy-hint').textContent=safeCopyAvailable
           ?'实验性调试能力；仅本次运行授权。Ctrl+C 与多格式恢复仍有未关闭风险，不可用于发布验收。'
-          :'本发行构建已禁用自动 Ctrl+C 回退，配置、备份及授权不能开启。UIA、标准 Unicode Edit 原生读取和主动复制保留。';
+          :'待安全验收：本发行构建已禁用自动 Ctrl+C 回退，配置、备份及授权不能开启。UIA、标准 Unicode Edit 原生读取和主动复制保留。';
       }
       async function refreshSafeCopy(){
         const revision=safeCopyRevision;
@@ -882,11 +873,6 @@ input.url-box { width: 100%; box-sizing: border-box; }
             catch{try{await tauri.core.invoke('safe_copy_revoke');}catch{}el.checked=false;}finally{el.disabled=!safeCopyAvailable;}
             return;
           }
-          if (key === "clipboard-fallback") {
-            el.checked = false;
-            el.disabled = true;
-            return;
-          }
           const on = el.checked;
           if (el.disabled) return;
           try {
@@ -902,7 +888,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
             } else if (key === "fullscreen") {
               await tauri.core.invoke("config_set_fullscreen", { enable: on });
             } else if (key === "privileged") {
-              await tauri.core.invoke("config_set_privileged", { enable: on });
+              const saved = await tauri.core.invoke("config_set_privileged", { enable: on });
+              if (saved === false) throw new Error('智能划词设置保存失败');
             }
           } catch (e) {
             console.error("[settings] config_set_*:", e);

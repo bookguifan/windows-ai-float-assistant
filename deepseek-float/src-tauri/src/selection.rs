@@ -529,3 +529,13 @@ pub fn local_page(label: &str, url: &tauri::Url, expected: &str, visible: bool) 
         && url.port() == Some(5173);
     (app || dev) && url.path() == format!("/poc/{expected}.html")
 }
+
+/// Gate a potentially blocking read with the current permission/request on both sides.
+/// None is a rejection, not a successful empty selection.
+pub fn read_current<T>(mut current: impl FnMut() -> bool, read: impl FnOnce() -> T) -> Option<T> {
+    if !current() {
+        return None;
+    }
+    let result = read();
+    current().then_some(result)
+}

@@ -1487,6 +1487,27 @@ mod tests {
     }
 
     #[test]
+    fn smart_selection_backup_choices_roundtrip_without_unlocking_copy() {
+        for enabled in [false, true] {
+            let mut local = sample_snapshot();
+            local.config.privileged_capture = enabled;
+            let mut data = sample_data();
+            data.settings.privileged_capture = enabled;
+            data.settings.clipboard_fallback_enabled = Some(true);
+            let decoded = decode_backup(&serialize(data)).unwrap();
+            for mode in [RestoreMode::Merge, RestoreMode::Overwrite] {
+                let plan = plan_restore(&local, &decoded.data, mode);
+                assert_eq!(plan.config.privileged_capture, enabled);
+                assert!(!plan.config.clipboard_fallback_enabled);
+                let fresh: crate::config::AppConfig =
+                    serde_json::from_value(serde_json::to_value(&plan.config).unwrap()).unwrap();
+                assert_eq!(fresh.privileged_capture, enabled);
+                assert!(!fresh.clipboard_fallback_enabled);
+            }
+        }
+    }
+
+    #[test]
     fn clipboard_fallback_backup_merge_and_overwrite_both_disable_legacy_choice() {
         for local_value in [false, true] {
             for incoming in [None, Some(false), Some(true)] {

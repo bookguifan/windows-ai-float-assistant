@@ -240,7 +240,13 @@ pub fn config_set_fullscreen(enable: bool) -> bool {
 /// 设置提权划词（UI Automation）开关（持久化；trigger_selection 实时读取）。
 #[tauri::command]
 pub fn config_set_privileged(enable: bool) -> bool {
-    crate::config::update(|c| c.privileged_capture = enable);
+    if crate::config::try_update(|c| c.privileged_capture = enable).is_err() {
+        return false;
+    }
+    // Revocation remains effective even if the user quickly re-enables the preference.
+    if !enable {
+        crate::selection_runtime::invalidate();
+    }
     true
 }
 

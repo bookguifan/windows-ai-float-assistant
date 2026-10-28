@@ -750,3 +750,50 @@ fn malformed_popup_and_stale_source_cannot_start_show() {
     assert!(s.begin_show(7, popup_target(), 2, 100).is_none());
     assert!(s.begin_show(7, popup_target(), 1, 8010).is_none());
 }
+
+#[test]
+fn capture_read_requires_permission_before_and_after_provider_return() {
+    use std::cell::Cell;
+    let permitted = Cell::new(true);
+    let calls = Cell::new(0);
+    let read = || {
+        calls.set(calls.get() + 1);
+        "  中文 😀\r\n  code  "
+    };
+    assert_eq!(
+        read_current(|| permitted.get(), read),
+        Some("  中文 😀\r\n  code  ")
+    );
+    assert_eq!(calls.get(), 1);
+    permitted.set(false);
+    assert!(read_current(|| permitted.get(), read).is_none());
+    assert_eq!(
+        calls.get(),
+        1,
+        "disabled capture must not invoke a provider"
+    );
+    permitted.set(true);
+    assert!(read_current(
+        || permitted.get(),
+        || {
+            permitted.set(false);
+            "late text"
+        }
+    )
+    .is_none());
+}
+
+#[test]
+fn capture_disabled_then_reenabled_cannot_revive_a_previous_generation() {
+    use std::cell::Cell;
+    let current = Cell::new(1);
+    let r = request();
+    assert!(read_current(
+        || r.valid(Some(target()), current.get(), 100),
+        || {
+            current.set(2);
+            "late synthetic text"
+        }
+    )
+    .is_none());
+}

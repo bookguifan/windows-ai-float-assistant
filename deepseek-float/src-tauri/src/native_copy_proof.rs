@@ -179,6 +179,17 @@ mod tests {
         );
     }
     #[test]
+    fn exact_slice_roundtrips_unicode_spaces_and_both_newline_conventions() {
+        for raw in [
+            "  single line  ",
+            "  中文 😀\r\n    code <&>  ",
+            "\t中文 😀\n  second line\n",
+        ] {
+            let units: Vec<_> = raw.encode_utf16().collect();
+            assert_eq!(selected(&units, 0, units.len() as u32).unwrap(), raw);
+        }
+    }
+    #[test]
     fn empty_out_of_range_and_split_surrogate_are_rejected() {
         assert!(selected(&[0xD83D, 0xDE00], 0, 1).is_err());
         assert!(selected(&[65, 66], 0, 3).is_err());
