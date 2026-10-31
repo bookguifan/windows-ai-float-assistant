@@ -39,10 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow};
 
 /// 结果卡窗 label（第 6 个常驻窗口）。
 pub const RESULT_LABEL: &str = "result";
@@ -435,42 +432,46 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(RESULT_LABEL) {
         return Some(w);
     }
-    match WebviewWindowBuilder::new(app, RESULT_LABEL, WebviewUrl::App("poc/result.html".into()))
-        .title("DeepSeek 结果卡")
-        .inner_size(CARD_W, CARD_MIN_H)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        // 同 popup / shot：undecorated + resizable 是 TAURI_DRAG_RESIZE_*（1411/1412）的成因。
-        .resizable(false)
-        .shadow(false)
-        // ★ 与 popup 相反：卡片**必须** focusable(true) —— 正文要能选中/复制、输入框要能打字、
-        //   要收得到 Esc（W-V6）。「不抢焦点」由「show 后不 set_focus」保证（R4）。
-        .focusable(true)
-        .visible(false)
-        .on_page_load(|webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let token = crate::workflow::current();
-                let _ = webview.eval(crate::workflow::initialize_script(token));
-                let app = webview.app_handle().clone();
-                std::thread::spawn(move || {
-                    if SESSION.lock().map(|s| s.turns.is_empty()).unwrap_or(true) {
-                        return;
-                    }
-                    render(
-                        &app,
-                        &CardView {
-                            request: Some(token),
-                            turn: TurnMode::Follow,
-                            ..Default::default()
-                        },
-                        None,
-                    );
-                });
-            }
-        })
-        .build()
+    match crate::isolation::webview_builder(
+        app,
+        RESULT_LABEL,
+        WebviewUrl::App("poc/result.html".into()),
+    )
+    .title("DeepSeek 结果卡")
+    .inner_size(CARD_W, CARD_MIN_H)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // 同 popup / shot：undecorated + resizable 是 TAURI_DRAG_RESIZE_*（1411/1412）的成因。
+    .resizable(false)
+    .shadow(false)
+    // ★ 与 popup 相反：卡片**必须** focusable(true) —— 正文要能选中/复制、输入框要能打字、
+    //   要收得到 Esc（W-V6）。「不抢焦点」由「show 后不 set_focus」保证（R4）。
+    .focusable(true)
+    .visible(false)
+    .on_page_load(|webview, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            let token = crate::workflow::current();
+            let _ = webview.eval(crate::workflow::initialize_script(token));
+            let app = webview.app_handle().clone();
+            std::thread::spawn(move || {
+                if SESSION.lock().map(|s| s.turns.is_empty()).unwrap_or(true) {
+                    return;
+                }
+                render(
+                    &app,
+                    &CardView {
+                        request: Some(token),
+                        turn: TurnMode::Follow,
+                        ..Default::default()
+                    },
+                    None,
+                );
+            });
+        }
+    })
+    .build()
     {
         Ok(w) => {
             log("卡片窗创建成功（常驻，visible=false，transparent + always_on_top + focusable）");

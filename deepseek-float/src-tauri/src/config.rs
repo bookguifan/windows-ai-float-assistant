@@ -66,6 +66,9 @@ fn deserialize_clipboard_fallback<'de, D: serde::Deserializer<'de>>(
 
 impl AppConfig {
     pub(crate) fn enforce_release_policy(&mut self) {
+        if crate::isolation::active() {
+            self.autostart = false;
+        }
         self.clipboard_fallback_enabled =
             crate::release_policy::automatic_copy_allowed(self.clipboard_fallback_enabled);
     }
@@ -161,10 +164,7 @@ fn default_hotkey() -> Option<String> {
 const FILE_NAME: &str = "config.json";
 
 pub(crate) fn store_path() -> Option<PathBuf> {
-    let local = std::env::var("LOCALAPPDATA").ok()?;
-    let dir = PathBuf::from(local).join("com.deepseekfloat.desktop");
-    let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(FILE_NAME))
+    crate::isolation::business_dir().map(|dir| dir.join(FILE_NAME))
 }
 
 fn cache() -> &'static std::sync::Mutex<Option<AppConfig>> {
@@ -198,7 +198,9 @@ fn load_from_disk() -> AppConfig {
     let Ok(raw) = std::fs::read_to_string(&p) else {
         return AppConfig::default();
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    let mut config: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
+    config.enforce_release_policy();
+    config
 }
 
 /// 局部更新：只改给出的字段，其余沿用当前值。用于各独立开关的单独保存。

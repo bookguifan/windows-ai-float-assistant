@@ -3,10 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow};
 
 const LABEL: &str = "context-menu";
 const WIDTH: f64 = 200.0;
@@ -90,18 +87,19 @@ pub(crate) fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(LABEL) {
         return Some(w);
     }
-    let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("poc/menu.html".into()))
-        .title("悬浮助手快捷操作")
-        .inner_size(WIDTH, HEIGHT)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(false)
-        .focusable(true)
-        .visible(false)
-        .build();
+    let built =
+        crate::isolation::webview_builder(app, LABEL, WebviewUrl::App("poc/menu.html".into()))
+            .title("悬浮助手快捷操作")
+            .inner_size(WIDTH, HEIGHT)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false)
+            .focusable(true)
+            .visible(false)
+            .build();
     match built {
         Ok(win) => {
             crate::diag::log("context-menu: 窗口创建成功，等待页面握手");

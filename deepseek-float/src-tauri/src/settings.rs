@@ -9,7 +9,7 @@
 //! 与 popup 的差异：这是**装饰性、可缩放**的常规窗口（类比 panel），
 //! 关闭按钮走 prevent_close + hide 模式，保留窗口与已加载的提示词列表。
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow};
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -30,7 +30,7 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(SETTINGS_LABEL) {
         return Some(w);
     }
-    let build = WebviewWindowBuilder::new(
+    let build = crate::isolation::webview_builder(
         app,
         SETTINGS_LABEL,
         WebviewUrl::App("poc/settings.html".into()),

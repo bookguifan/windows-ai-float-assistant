@@ -22,10 +22,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow};
 
 use crate::{capture, inject};
 
@@ -170,21 +167,25 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
         return Some(w);
     }
-    match WebviewWindowBuilder::new(app, POPUP_LABEL, WebviewUrl::App("poc/popup.html".into()))
-        .title("DeepSeek 划词工具条")
-        .inner_size(POPUP_DEFAULT_W, POPUP_LOGICAL_H)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        // 不给 resize 子窗口类任何机会：undecorated + resizable 正是 panel 上
-        // 那个 TAURI_DRAG_RESIZE_* 子窗口类（Error 1411/1412）的成因。
-        .resizable(false)
-        .shadow(false)
-        // 免打断工具条：显示时不抢走当前应用的焦点（否则用户刚划的选区会因失焦而丢）
-        .focusable(false)
-        .visible(false)
-        .build()
+    match crate::isolation::webview_builder(
+        app,
+        POPUP_LABEL,
+        WebviewUrl::App("poc/popup.html".into()),
+    )
+    .title("DeepSeek 划词工具条")
+    .inner_size(POPUP_DEFAULT_W, POPUP_LOGICAL_H)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // 不给 resize 子窗口类任何机会：undecorated + resizable 正是 panel 上
+    // 那个 TAURI_DRAG_RESIZE_* 子窗口类（Error 1411/1412）的成因。
+    .resizable(false)
+    .shadow(false)
+    // 免打断工具条：显示时不抢走当前应用的焦点（否则用户刚划的选区会因失焦而丢）
+    .focusable(false)
+    .visible(false)
+    .build()
     {
         Ok(w) => {
             crate::diag::log(&format!(

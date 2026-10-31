@@ -11,10 +11,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow};
 
 /// 遮罩窗 label（第 5 个常驻窗口：ball / panel / popup / settings / shot）。
 pub const SHOT_LABEL: &str = "shot";
@@ -57,21 +54,25 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(SHOT_LABEL) {
         return Some(w);
     }
-    match WebviewWindowBuilder::new(app, SHOT_LABEL, WebviewUrl::App("poc/shot.html".into()))
-        .title("DeepSeek 截图遮罩")
-        .inner_size(800.0, 600.0) // 占位；begin() 会覆盖为显示器物理矩形
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        // 同 popup：undecorated + resizable 是 TAURI_DRAG_RESIZE_* 子窗口类（Error 1411/1412）的成因。
-        .resizable(false)
-        .shadow(false)
-        // ★ 与 popup 相反：popup 是 focusable(false)（怕抢焦点丢选区），
-        //   遮罩则**必须** focusable(true) —— 要接管焦点才收得到 Esc。
-        .focusable(true)
-        .visible(false)
-        .build()
+    match crate::isolation::webview_builder(
+        app,
+        SHOT_LABEL,
+        WebviewUrl::App("poc/shot.html".into()),
+    )
+    .title("DeepSeek 截图遮罩")
+    .inner_size(800.0, 600.0) // 占位；begin() 会覆盖为显示器物理矩形
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // 同 popup：undecorated + resizable 是 TAURI_DRAG_RESIZE_* 子窗口类（Error 1411/1412）的成因。
+    .resizable(false)
+    .shadow(false)
+    // ★ 与 popup 相反：popup 是 focusable(false)（怕抢焦点丢选区），
+    //   遮罩则**必须** focusable(true) —— 要接管焦点才收得到 Esc。
+    .focusable(true)
+    .visible(false)
+    .build()
     {
         Ok(w) => {
             crate::diag::log(

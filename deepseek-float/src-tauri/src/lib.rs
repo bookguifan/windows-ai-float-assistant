@@ -21,6 +21,7 @@ mod fullscreen;
 mod hotkey;
 mod inject;
 mod ipc;
+pub mod isolation;
 mod lifecycle;
 mod mousehook;
 mod workflow;

@@ -877,6 +877,9 @@ fn merge_bool_setting(
 }
 
 pub(crate) fn export_dialog(app: &AppHandle) -> Result<Option<BackupExportResult>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     let snapshot = {
         let _read = crate::data_store::read_guard();
         snapshot_under_data_lock()?
@@ -898,6 +901,9 @@ pub(crate) fn export_dialog(app: &AppHandle) -> Result<Option<BackupExportResult
 }
 
 pub(crate) fn import_preview_dialog(app: &AppHandle) -> Result<Option<BackupPreview>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     let Some(path) = open_file_dialog(app)? else {
         return Ok(None);
     };
@@ -1310,6 +1316,9 @@ pub(crate) fn recover_interrupted_restore() -> Result<(), String> {
 
 #[cfg(windows)]
 fn save_file_dialog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     use std::os::windows::ffi::OsStringExt;
     use windows::{
         core::{PCWSTR, PWSTR},
@@ -1371,6 +1380,9 @@ fn save_file_dialog(_app: &AppHandle) -> Result<Option<PathBuf>, String> {
 
 #[cfg(windows)]
 fn open_file_dialog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     use std::os::windows::ffi::OsStringExt;
     use windows::{
         core::{PCWSTR, PWSTR},

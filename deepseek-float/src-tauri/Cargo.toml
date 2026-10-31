@@ -37,6 +37,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 custom-protocol = ["tauri/custom-protocol"]
 # Research only. Even this feature cannot unlock release builds.
 experimental-clipboard-fallback = []
+beta2-isolation = []
+
+[[bin]]
+name = "beta2-path-probe"
+path = "src/bin/beta2-path-probe.rs"
+required-features = ["beta2-isolation"]
+
+[dev-dependencies]
+tauri = { version = "2.11.3", features = ["test"] }
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
