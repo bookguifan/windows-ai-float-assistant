@@ -62,6 +62,8 @@ The frozen console probe and a subsequent native run must use different fresh ro
 
 These counts were extracted from this closeout run, not copied from the historical matrix. Ignored native tests remain unexecuted. The final full default suite and Release isolation matrix were run after the privacy-test change. No native assistant was started in this closeout round.
 
+Both integration targets exercise ASCII case aliases and independently canonicalize the requested root before comparing physical paths. This preserves exact-root and containment assertions while accommodating Windows path spellings such as hosted-runner TEMP aliases; raw, case-sensitive prefix comparison is not a physical containment check.
+
 ## Native evidence and attribution (2026-11-01)
 
 The final diagnostic candidate was started once under explicit authorization. The ball was visible with a valid PID-associated HWND, and application logs recorded the first-frame ball_ready handshake. The user selected the normal application exit; a retained process handle and Process.ExitCode both returned 0. WebView2 children cleared approximately 1.5 seconds later. All 4,304 production-directory entries, including config/favorites/prompts hashes, matched; autostart baselines matched. The new identifier-derived Known Folder was absent before and after. This run did not reproduce the previously confirmed empty default-directory creation defect.

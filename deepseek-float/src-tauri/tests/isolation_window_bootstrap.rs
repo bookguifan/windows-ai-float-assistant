@@ -14,6 +14,7 @@ fn configured_ball_is_deferred_before_default_identifier_mkdir() {
         .as_nanos();
     let parent =
         std::env::temp_dir().join(format!("beta2-bootstrap-{}-{unique}", std::process::id()));
+    let parent = std::path::PathBuf::from(parent.to_str().unwrap().to_ascii_uppercase());
     std::fs::create_dir(&parent).unwrap();
     let root = parent.join("isolated");
     let forbidden = parent.join("forbidden-default-identifier");
@@ -27,6 +28,10 @@ fn configured_ball_is_deferred_before_default_identifier_mkdir() {
         identifier,
     )
     .unwrap();
+    // Assert against the independently resolved request, including TEMP aliases.
+    let canonical = std::fs::canonicalize(&root).unwrap();
+    let text = canonical.to_str().unwrap();
+    let root = std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
     let mut context = mock_context::<MockRuntime, _>(noop_assets());
     context.config_mut().identifier = identifier.into();
     context.config_mut().app.windows.push(

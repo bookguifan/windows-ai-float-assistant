@@ -39,7 +39,8 @@ fn probe(root: &std::path::Path) -> Output {
 }
 #[test]
 fn actual_stores_context_and_webview2_bindings_are_inside_root() {
-    let root = fresh();
+    // Exercise a Windows case alias even when the caller's TEMP is canonical.
+    let root = PathBuf::from(fresh().to_str().unwrap().to_ascii_uppercase());
     let output = probe(&root);
     assert!(
         output.status.success(),
@@ -47,6 +48,12 @@ fn actual_stores_context_and_webview2_bindings_are_inside_root() {
         String::from_utf8_lossy(&output.stderr)
     );
     let map: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // The resolver expands OS aliases (including 8.3 TEMP names). Compare with
+    // the independently resolved requested directory, not its raw input spelling.
+    let canonical = std::fs::canonicalize(&root).unwrap();
+    let text = canonical.to_str().unwrap();
+    let physical_root = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
+    assert_eq!(PathBuf::from(map["root"].as_str().unwrap()), physical_root);
     assert_eq!(map["native_app_started"], false);
     assert_eq!(map["automatic_ctrl_c"], false);
     assert_eq!(map["fresh_config_written_by_real_store"], true);
@@ -67,7 +74,10 @@ fn actual_stores_context_and_webview2_bindings_are_inside_root() {
         "temp",
     ] {
         let actual = PathBuf::from(map[key].as_str().unwrap());
-        assert!(actual.starts_with(&root), "{key}: {actual:?}");
+        assert!(
+            actual.starts_with(&physical_root),
+            "{key}: {actual:?}, requested root: {root:?}, physical root: {physical_root:?}"
+        );
     }
     assert_eq!(
         map["configured_windows"][0]["data_directory"],
