@@ -64,6 +64,40 @@ Step 5 'release 构建 (custom-protocol · CARGO_INCREMENTAL=0)'
 # ★ 规避 README L267 的坑：受限终端里 LTO 写临时目录会「compiler unexpectedly panicked
 #   (os error 5)」。release 本就不需要增量，这里强制关闭以稳定构建。
 $env:CARGO_INCREMENTAL = '0'
+
+# Preserve explicit Rust flags and remap source roots so the EXE does not expose
+# the build machine's workspace or Cargo cache paths.
+$CargoHome = if ($env:CARGO_HOME) {
+  $env:CARGO_HOME
+} elseif ($env:HOME) {
+  Join-Path $env:HOME '.cargo'
+} else {
+  Join-Path $env:USERPROFILE '.cargo'
+}
+$CargoHome = [System.IO.Path]::GetFullPath($CargoHome)
+$RustFlags = [System.Collections.Generic.List[string]]::new()
+if ($null -ne $env:CARGO_ENCODED_RUSTFLAGS) {
+  foreach ($Flag in $env:CARGO_ENCODED_RUSTFLAGS.Split([char]31)) {
+    if ($Flag) { $RustFlags.Add($Flag) }
+  }
+} else {
+  $ConfiguredRustFlags = if ($env:RUSTFLAGS) { $env:RUSTFLAGS } else { $env:CARGO_BUILD_RUSTFLAGS }
+  if ($ConfiguredRustFlags) {
+    foreach ($Flag in ($ConfiguredRustFlags -split '\s+')) {
+      if ($Flag) { $RustFlags.Add($Flag) }
+    }
+  }
+}
+foreach ($Mapping in @(
+  @{ Prefix = $Project; Replacement = '/src' },
+  @{ Prefix = $Project.Replace('\', '/'); Replacement = '/src' },
+  @{ Prefix = $CargoHome; Replacement = '/cargo' },
+  @{ Prefix = $CargoHome.Replace('\', '/'); Replacement = '/cargo' }
+)) {
+  $RustFlags.Add("--remap-path-prefix=$($Mapping.Prefix)=$($Mapping.Replacement)")
+}
+$env:CARGO_ENCODED_RUSTFLAGS = [string]::Join([char]31, $RustFlags)
+
 if ($UseSccache) {
   $env:RUSTC_WRAPPER = 'sccache'
 }

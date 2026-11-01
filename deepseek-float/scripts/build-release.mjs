@@ -31,6 +31,33 @@ import { fileURLToPath } from "node:url";
 
 // ★ 仓库根（deepseek-float/）：脚本自身在 scripts/ 下，向上一层。
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const RUSTFLAG_SEPARATOR = String.fromCharCode(31);
+
+/** Preserve explicit Rust flags while removing machine-specific source roots. */
+function releaseRustflags() {
+  let flags;
+  if (process.env.CARGO_ENCODED_RUSTFLAGS !== undefined) {
+    flags = process.env.CARGO_ENCODED_RUSTFLAGS
+      .split(RUSTFLAG_SEPARATOR)
+      .filter(Boolean);
+  } else {
+    const configured = process.env.RUSTFLAGS || process.env.CARGO_BUILD_RUSTFLAGS || "";
+    flags = configured.trim().split(/\s+/).filter(Boolean);
+  }
+
+  const cargoHome = path.resolve(
+    process.env.CARGO_HOME || path.join(process.env.HOME || os.homedir(), ".cargo"),
+  );
+  for (const [prefix, replacement] of [
+    [root, "/src"],
+    [cargoHome, "/cargo"],
+  ]) {
+    for (const variant of new Set([prefix, prefix.replaceAll("\\", "/")])) {
+      flags.push(`--remap-path-prefix=${variant}=${replacement}`);
+    }
+  }
+  return flags.join(RUSTFLAG_SEPARATOR);
+}
 
 // Windows 上 pnpm/npm 是 `.cmd` 垫片，node 的 execFile 无法直接 exec ⇒ 经 shell 解析。
 // 其它平台保持直接 exec（shell 反而可能改变参数解析行为）。
@@ -99,7 +126,10 @@ run(
     "--manifest-path",
     "src-tauri/Cargo.toml",
   ],
-  { CARGO_INCREMENTAL: "0" },
+  {
+    CARGO_INCREMENTAL: "0",
+    CARGO_ENCODED_RUSTFLAGS: releaseRustflags(),
+  },
 );
 
 // ③ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源。
@@ -180,7 +210,11 @@ if (noDeliver) {
   deliverArtifacts();
 }
 
-console.log("\n✓ 发布构建完成（bundle.active=false，已交付 release/deepseek-float.exe + release/HASH.txt）。");
+console.log(
+  noDeliver
+    ? "\n✓ Release 构建完成（未刷新 release/ 交付目录）。"
+    : "\n✓ 发布构建完成（bundle.active=false，已交付 release/deepseek-float.exe + release/HASH.txt）。",
+);
 process.exit(0);
 
 // ---- E3：代码签名（可选，非致命）----
