@@ -1,90 +1,118 @@
-# Beta.2.0 开发收口与预发布准备（2026-11-01）
+# Beta.2.0 功能完善与预发布准备（2026-11-01）
 
-PR [#3](https://github.com/bookguifan/windows-ai-float-assistant/pull/3) 已合并；main 合并提交为 `05eaf6b37381a12fc5f676011b16a2ef1bed3f2c`，合并前最终源提交为 `3d2bc215268ef8e400fbd6dad142c22fc5f7db50`。后续本地分支为 `feature/beta2-final-polish`。开发合并与发布授权分开，**Beta.2.0 发布仍 NO-GO**。
+PR [#3](https://github.com/bookguifan/windows-ai-float-assistant/pull/3) 已合并至 main，合并提交为 05eaf6b37381a12fc5f676011b16a2ef1bed3f2c。[main CI #10](https://github.com/bookguifan/windows-ai-float-assistant/actions/runs/41273704896) 已成功。当前开发分支为 feature/beta2-final-polish，本轮仅本地提交，不推送、不合并、不创建 Tag 或 Release。**Beta.2.0 发布继续 NO-GO。**
 
-本文为当前状态入口；带日期的旧报告继续保留各自当时的 FAIL、BLOCKED 与授权边界，不把历史结果改写为通过。
+新候选代码基线为干净提交 **686258ef7b2e43b6b9ad72420ae0ed9d894b44f3**。后续本文件的文档提交不改变编译输入。本轮助手候选原生启动次数 **0**，真实系统剪贴板操作次数 **0**，原生文件选择器/备份恢复操作次数 **0**。
 
-## 已合并修复与更新日志草稿
+## 更新日志草稿
 
-- 测试隔离根统一派生配置、收藏、提示词、诊断、日志、WebView2、备份和临时路径；无效参数直接拒绝，不回退正式数据。正式 Release 默认路径保持不变。
-- 测试特性下延后 Tauri 配置窗口创建，显式绑定 WebView2 数据目录，避免自动创建 identifier 派生空目录。保留球窗首帧握手和超时兜底。
-- 划词显示事务绑定会话/票据/代次；旧异步结果、旧解锁定时器不得覆盖新动作；设置偏好保存串行化并处理写盘失败。
-- Release 自动 Ctrl+C 回退继续固定禁用，不能由旧配置、备份、IPC 或实验特性开启。主动复制保留。
+- 已合并隔离修复：统一派生配置、收藏、提示词、日志、诊断、WebView2、备份和临时目录；无效参数 fail closed。隔离构建延后配置窗口创建并显式绑定 WebView2 数据目录，避免 identifier 派生空目录。普通 Release 默认路径不变。
+- **723105b**：主线程启动完成回调读取最新手动显隐代次；迟到的显形不覆盖用户主动隐藏。无新操作时 Ready/三秒超时仍正常显形。
+- **a4b0272**：修复主动纯文本复制的 NULL owner。先准备 UTF-16 内存，再创建私有 message-only 窗口，使用有效 HWND 打开并发布；CloseClipboard 后销毁窗口。成功后内存交给系统，失败时释放自有资源，无无限重试。
+- **686258e**：补强 A01 旧菜单请求失败、快速刷新与最新票据回归；补强备份文件读写、超限拒绝、失败清理、事务回滚及页面忙碌/取消/失败重试。
+- Release 自动 Ctrl+C 回退继续固定禁用；旧配置、备份、IPC 和实验特性不能开启。没有升级依赖或修改锁文件。
 
-## 完善分支：启动显形保留新用户选择
+主动复制缺陷依据 [Microsoft OpenClipboard 文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openclipboard)：NULL owner 后 EmptyClipboard 将 owner 置空，导致 SetClipboardData 失败。新测试将真实生产 writer 编译接入内存 Win32 facade；旧 writer 为 2 passed / 3 failed，修复后 5 passed。该证据是模拟 API 合约回归，未冒充原生复制成功。
 
-本地修复提交 `723105b9ad08bf8af328d675aa48f8c3650ce2d7`：后台等待首帧完成后原本无条件显形，可能覆盖等待或排队期间用户刚执行的隐藏。现在在主线程完成回调中读取现有手动显隐代次；代次变化则保留新选择，没有新操作时 Ready/三秒超时仍正常显形。仅修改 ballready.rs 与 windows.rs，不改变数据路径、依赖或 Release 剪贴板策略。
+## 本轮自动化结果
 
-5 个新增测试直接调用生产 completion helper：Ready 与超时无新操作仍显形、两条路径发生 Show→Hide 不被覆盖、排队后代次变化不被旧回调覆盖。保持旧行为的生产 helper 上，RED 为 8 passed / 3 个预期失败（显形 1 次而预期 0）；修复后首帧子集 11 passed。该修复不解释 Issue #2 的最初业务 panic，也未取得新版本的原生 HWND 验证。
-
-| 新分支实际执行 | 结果 |
+| 实际执行 | 结果与范围 |
 |---|---|
-| cargo test --locked --offline | 436 passed / 0 failed / 12 ignored，11 个结果目标，含 doc tests；各目标可能复用模块 |
-| 隔离路径 / Tauri MockRuntime 集成 | 7 passed；不启动应用 |
-| Debug / guarded Release 安全策略 | 各 4 passed；自动 Ctrl+C 继续禁用 |
-| fmt / 普通与隔离特性 all-target strict Clippy | exit 0 |
-| 普通 Release check / build（custom-protocol） | exit 0 |
-| git diff --check / 源码稳定性 | 通过，测试/构建期间业务源码无变化 |
-| 前端 / Playwright | 源码未变，复用精确 PR HEAD 的 392 项检查 / 22 测试；未声称重跑 |
-| 本地独立代码复核 | 无阻断发现；未冒充 GitHub 第三方审批 |
+| cargo test --locked --offline | **444 passed / 0 failed / 12 ignored**；不同目标会复用模块，ignored/native 未执行项不计通过 |
+| 隔离路径 / Tauri MockRuntime 集成 | **7 passed**；仅控制台探针和 mock runtime，不启动应用 |
+| Debug / Release 安全策略 | **各 4 passed**；Release 带实验特性也不能开启自动 Ctrl+C |
+| cargo fmt --check | exit 0 |
+| 普通与 beta2-isolation all-target strict Clippy | exit 0；首次 mock 公开 API 告警通过收紧到 crate 可见修正，未关闭 lint |
+| 普通 Release cargo check / build | exit 0；features 仅 custom-protocol |
+| 前端检查、Vite build | exit 0 |
+| 前端单元 | **232 项自定义断言 + 164 个 Node 测试通过**，本轮实际重跑 |
+| Playwright | **22 passed**，本轮实际重跑 |
+| 独立代码复核 / git diff --check / 变更文件敏感模式扫描 | 无阻断发现；差异检查通过。范围内检查不等于完整安全证明 |
+| 隔离诊断 Release / 静态路径探针 | exit 0；EXE/PDB 匹配；关键路径在探针根内，缺参 exit 78 |
 
-新普通 Release 构建基线为 main `05eaf6b` 加上述修复的当时未提交差异，构建后将相同源码固化为 `723105b`；保留实际构建时的 dirty 标记、源码清单和补丁，不称它是先从干净提交重建的产物。
+A01 页面 27 项、备份 Rust 21 项 / 页面 11 项、剪贴板 facade 5 项均为上述矩阵的子集，不能再相加作为独立测试总数。备份测试操作真实临时文件和生产事务函数，不读写正式业务数据。
 
-- EXE SHA256：`cb3a8290756c806995f091a8fbf4ccd7479704a9b945b22a2395a75e5e3b0fd9`。
-- PDB SHA256：`3f7afd919d687fbe7eeac48a7f05d7b107c524866ca15ac6a8588938fa0a1478`；GUID/Age `9ab09db8-ba28-4bcc-ac20-5411574c1ee6 / 1`，与 EXE 匹配，仅本地保留。
-- 配方：普通 Release、custom-protocol、opt-level=s、LTO、codegen-units=1、strip=true、CARGO_INCREMENTAL=0；无 beta2-isolation 特性。新产物启动次数 0，**不是可按旧隔离计划启动的测试候选**。
-- 旧冻结隔离 EXE/PDB 摘要未变；没有覆盖旧候选。下次原生复测应先生成绑定新源码的新隔离候选，再另行取得一次明确启动授权。
-- 基本产物隐私扫描：仍有构建机 Cargo registry 源路径前缀（178 次 ASCII 匹配）；CodeView 仅引用 PDB 文件名，未命中所查常见私钥/令牌模式。路径片段仅本地留证，不入库。该产物不分发；最终发行构建应受控 remap 构建机路径后重新检查，不以 strip 或这次模式扫描宣称完整隐私验收通过。
+A01 未复现新的生产缺陷，生产生命周期逻辑未改。会话/票据/代次保护保持：前台切换使旧操作失效；Alt+Tab 不要求立即隐藏，仍由原计时器隐藏；旧定时器/异步结果不能覆盖新动作。新增页面测试证明旧“更多”失败不会解锁新请求，连续 20 次刷新仍复用同一工具条并只派发最新票据。原生窗口数量、八秒隐藏和跨应用选区仍待验。
 
-## 原生基础验收
+备份未发现需要改写事务实现的新缺陷。新增覆盖导出文件 roundtrip、超限输入、目标替换失败清理、最后一份文件写入失败回滚、损坏 journal 拒绝并保留证据，以及取消导出后重试、恢复失败解锁控件且要求新预览。既有版本兼容、非法 URL/记录、合并/覆盖和崩溃恢复回归保留。
 
-本次仅启动冻结隔离候选一次。WebView2、球窗有效 HWND/可见性和明确 ball_ready 首帧握手通过。设置页由人工打开，AX 读取内容；人工将无害的全屏隐藏从 false 改为 true，磁盘重新读取确认保存，随后关闭设置并使用应用菜单退出。保留句柄和 Process.ExitCode 两路均为 0，受控子进程无残留，无对应 Application Error 1000 / WER 1001。正式 config/favorites/prompts 的 SHA256 和自启项不变，未新增 identifier Known Folder。
+## 新隔离诊断候选
 
-设置操作记为 MANUAL_PASS。截图/坐标输入工具不可用不等于产品设置功能失败；没有用 HWND 存在代替 UI Ready。观察器等待人工期间有一次超时，随后对同一 PID/启动时间/映像重取句柄，没有第二次启动。
+- 源码：686258ef7b2e43b6b9ad72420ae0ed9d894b44f3，构建开始工作区干净，编译输入 SHA256 清单前后相同。
+- EXE SHA256：**2b14672f17e5e0ba077fd62cdd0a13de6511d9f23a1987332d886538d0033f08**。
+- PDB SHA256：**eff5b910b8935a5a17ccd63e3b28ac42b5bb8a2226e3d48c69c873c410285a03**。
+- PDB GUID/Age：**ea17fda2-2abc-43ea-9932-7637210f63d3 / 1**，与 EXE RSDS 匹配。
+- features：custom-protocol,beta2-isolation；独立 identifier：com.deepseekfloat.beta2.isolated.polish202611010da96344。
+- 配方：Windows x64 MSVC，opt-level=s、LTO、codegen-units=1、CARGO_INCREMENTAL=0、release debug=1、strip=none。诊断 PDB 只保留本地。
+- Node **24.15.0**，Rust/Cargo **1.98.1**，本机 Windows **10.0.19045 x64**，WebView2 Runtime **156.0.4314.58**。构建成功不等于覆盖其他 Windows 版本或 ARM。
+- 旧冻结候选未覆盖；新候选只用于隔离诊断，不是可分发资产。
 
-该候选 EXE SHA256 为 `3db108b71f284c99a9e0945fea4e05f0824392c165432e06e46233c8c39f0aed`，来自已记录的 dirty-source 隔离构建，不能宣称它等同于干净的合并提交产物，也不覆盖后续生产代码修改的原生验证。
+本地证据目录以 float-beta2-final-polish- 加唯一标识命名，位于系统 Temp，未入库；保存候选身份、构建日志、编译输入清单、校验、测试日志、路径探针、单次启动计划和证据摘要。不将本机绝对个人路径或 PDB 提交公开仓库。
 
-Huorong 图标缓存事件仍为 **UNATTRIBUTED_WRITE / ACCEPTED_NONBLOCKING_RISK**。维护者明确接受其作为个人开源项目开发合并的非阻断风险；原始全局事件流保留，没有确定候选写入者或外部写入者，不宣称严格取证隔离 PASS。当前实用契约为：测试候选及受控子进程持久化写入不得逃逸隔离根，正式业务数据和自启不得修改。发现明确危险写入仍须停止。
+控制台探针实际检查三份 store、诊断日志、WebView2 绑定、配置窗口延后创建、单实例名称，以及自启/外部导出禁用保护。探针有自己的数据根；原生计划另保留一个此前不存在的唯一根，不能复用探针根。原生启动时仍须从实际日志和子进程命令行核对生效路径。
 
-## 自动化证据基线
+| 隔离根内相对目标 | 用途 |
+|---|---|
+| config/config.json、config/favorites.json、config/prompts.json | 三份业务数据 |
+| config/.backup-restore-journal | 恢复事务日志 |
+| logs/ | 插件应用日志 |
+| diagnostics/ | d1-debug.log、poc2-state.log、panic.log、last_crash.json |
+| webview2/ | 新 WebView2 用户数据 |
+| backups/ | 测试备份路径；交互式导出/恢复仍禁用 |
+| temp/ | 测试临时文件 |
 
-[CI #9](https://github.com/bookguifan/windows-ai-float-assistant/actions/runs/41256361017) 对精确 PR HEAD `3d2bc21` 成功：Rust 431 passed / 12 ignored；隔离 Debug/Release 各 7；普通 Release bootstrap 1；Debug/Release 安全策略各 4；前端 232 项自定义断言与 160 个 Node 测试；Playwright 22。普通 Release 构建/check、严格 Clippy、fmt 及前端检查成功。不同矩阵有重叠，不汇总成独立原生场景数。
+构建和探针前后的正式三份业务文件 SHA256 一致，亦与已有基线一致；没有把该静态结果记作尚未执行的原生隔离验收。
 
-合并触发的 [main CI #10](https://github.com/bookguifan/windows-ai-float-assistant/actions/runs/41273704896) 对应 `05eaf6b`，其最终状态单独记录。源码未改的前端/Playwright结果可复用；后续 Rust 修改须运行受影响回归及必要编译检查。ignored/native 未执行项不计 PASS。
+## 下一次单次原生回归
 
-## 剩余问题与最短验收计划
+必须另行取得明确授权，最多启动一次，不自动重试。启动前重核冻结身份、新根及祖先重解析点、正式三份文件备份/哈希、自启基线、冲突实例，以及 HWND/PID、UI Ready 和保留进程句柄退出码观察能力。截图不可用不单独阻断，不能把 HWND 存在当 UI Ready。
 
-| 优先级 / 项目 | 当前事实 | 下一步 |
-|---|---|---|
-| P0/P1 启动 Issue #2 | OPEN；曾在首帧握手后异常退出，原业务 panic 栈 UNKNOWN；成功一次不能证明修复 | 下次另行授权时，用匹配符号保留首次异常线程栈，正常退出和子进程清理一起记录 |
-| P1 A01 / N01 | 历史首次点击/生命周期 FAIL 保留，自动化状态机和旧计时器覆盖不等于原生 PASS | 合成文本，首次操作、计时自动隐藏、切前台后旧票据失效、旧计时器不隐藏新工具条、迟到结果不覆盖新预览；Alt+Tab 不要求立即隐藏 |
-| P1 N05 | 模型有 Unicode/raw 文本与竞争保护覆盖，历史完整文本不匹配仍未闭环 | 先获明确合成剪贴板授权；中文/英文/多行逐 UTF-16 比较，图片/富文本失败不覆盖、无无限重试；不读取用户未知当前剪贴板 |
-| P1 备份与恢复 | 临时文件事务和前端预览/取消有自动化覆盖；原生完整流程未验 | 只用临时配置/收藏，导出合法备份、预览、取消、合并/覆盖和故障回滚，不恢复真实数据 |
-| P2 交互 | 本次设置保存/关闭和正常退出通过，其他拖动/全屏切换等范围未完整验 | 以可复现缺陷为准，不为完成清单重构 |
-| 历史正式 config 改写 | 本次无新变化；历史写入者 UNKNOWN | 保留问题和现有证据，不恢复、不重置，不以本次成功关闭 |
-| 发布映射/隐私/许可 | 已有 LICENSE、第三方 notices、资源权利与发行许可清单；最终包未冻结 | 对最终源码/配置打包一次，校验清单和隐私、记录 EXE/PDB/源码映射；诊断 PDB 不公开 |
+1. 严格使用本地 native-root-plan.json 中的 EXE、参数和唯一根；仅子进程启用 meta 诊断。
+2. 记录 PID、启动时间、startup_id、首个 HRESULT、ball_ready 首帧握手、窗口身份、WebView2 子进程及实际数据目录。
+3. 托盘可操作后尽快 Show→Hide，观察至少五秒。隐藏使用空区域逻辑，不能单凭 IsWindowVisible 判断。
+4. **只有 ball_hide 后出现“手动显隐选择已更新，跳过启动显形”日志且保持隐藏，才能将本次迟到完成场景记 PASS。** 若启动已完成，只能记普通隐藏通过，竞态原生项为 NOT_EXERCISED/UNKNOWN。当前无延迟开关，不为取得 PASS 新增生产行为；确定性时序覆盖来自真实 helper 单测。
+5. 同一实例重新显示后打开设置，确认可见/可交互；只在隔离配置中切换一次“全屏隐藏”，保存并重新读盘确认。工具不能操作时可保留人工记录为 MANUAL_PASS。
+6. 正常关闭设置并通过应用退出，记录真实退出码、WebView2 子树清理及对应 Error 1000/WER1001；比较正式业务配置、自启和目录。
+7. 0x8000FFFF、ball_ready 超时、无效 HWND、正式配置写入等立即停止后续验收；不重启，不把人工终止记正常退出。
 
-本轮一次启动额度已用完。新代码构建后的原生验证不得借旧候选结果标 PASS，需下一轮明确授权。发布门禁可在维护者明确接受已知非关键问题后调整，不能默默把未测改为通过。
+上述计划不包含 A01、真实剪贴板或原生备份恢复授权。
 
-## 安装与升级说明草稿
+## 已知问题与剩余发布门禁
 
-目标发布标识沿用仓库约定的 `v0.1.0-beta.2`；“Beta.2.0”为本轮任务名称，不擅自把产品版本升级成 `2.0.0`。当前 package/Tauri/Cargo 包版本 `0.1.0` 与该预发布标识的关系须在最终发行说明明确记录。
+| 项目 | 当前事实 / 最短下一步 |
+|---|---|
+| Issue #2 启动 P1 | 保持 OPEN；历史业务 panic 栈 UNKNOWN，单次成功不能证明间歇性问题已修复。新迟到显形修复仍待上述原生回归 |
+| A01 / N01 | 自动化保护通过，历史原生首次点击/生命周期 FAIL 保留；另验合成选区、计时隐藏、失效票据、旧结果和连续选区 |
+| N05 | 新主动复制修复只有模拟回归，历史完整文本不匹配/WM_COPY 原生证据未闭环；先另获合成剪贴板授权，再逐 UTF-16 核验中英文、多行、Unicode、忙碌与快速操作 |
+| 剪贴板系统失败边界 | 分配/锁定/创建 owner/Open/Empty 失败及授权拒绝发生在破坏前，模拟测试保留原文本/HTML/RTF/DIB；**Empty 成功后 Set 再失败仍可能留空，不保证任意格式事务回滚** |
+| 备份/恢复原生门禁 | 当前隔离构建有意禁用外部文件对话框，不静默放开。另行授权在无真实数据的独立 Windows 测试环境使用普通 Release，验合成收藏/设置/完整备份、取消、预览、合并/覆盖及非法文件；失败回滚保留真实临时事务故障注入证据 |
+| 交互范围 | 页面测试覆盖设置、收藏、拖动等前端流程；托盘、全屏恢复、快速开关和拖动的真实桌面表现未在新候选验证，不为清单额外重构 |
+| 历史正式 config 改写 | 写入者 UNKNOWN，本轮哈希未新增变化；不恢复、不重置，不以构建成功关闭历史问题 |
+| Huorong 缓存事件 | 仍为 UNATTRIBUTED_WRITE / ACCEPTED_NONBLOCKING_RISK，不继续追查全部系统缓存。契约是候选及受控子进程持久写入不得逃逸隔离根，正式业务数据与自启不得修改 |
+| 发行隐私 | 普通 Release EXE 有 178 处本机构建用户路径匹配，诊断候选有 176 处；所查私钥/GitHub token 模式无命中。扫描非完整安全证明，两者均不分发；最终构建应受控 remap 后复查 |
+| 最终包与许可 | 依赖和锁文件不变，现有 LICENSE、第三方 notices、WebView2/Rust 许可与 MPL 源码材料保留；新发行 ZIP 尚未冻结审查，不能只交付 EXE |
+| 最终版本映射 | 最终发行源码、普通 Release 配置、EXE SHA256、私有 PDB GUID/Age 和打包清单必须绑定；诊断测试特性不能混入发行版 |
 
-1. 预发布包准备好后，先核对其 SHA256，完整解压到新程序目录，保留 LICENSE、第三方 notices 和资源许可材料。
-2. 退出旧助手，避免单实例唤醒旧版本。保留原程序和用户配置；不要删除或清理 AppData/WebView2 来升级。
-3. 如需迁移，先在设置页通过显式导出生成备份；备份不含网站登录态、设备自启和自动剪贴板授权。恢复先预览，出错不覆盖真实数据。正式升级前还须完成上表的原生备份验收。
-4. Windows x64 需可用的 WebView2 Runtime 和 VC++ x64 Runtime。绿色包不代替系统运行库安装器。是否签名及系统兼容范围须在实际发行说明披露。
-5. 网站登录、选区兼容与外部站点页面变化仍有已知限制。遇启动异常保留日志、记录版本和步骤，不反复清理数据重试。
+旧候选 3db108b7… 的 WebView2/球窗/UI Ready、人工设置保存、正常退出及子进程清理曾通过，真实退出码 0，正式配置/自启未变化。该候选早于本分支启动和复制修复，不代替新候选结果；旧报告与原始事件流保留。
 
-当前没有新的可下载 Beta.2 包；README 既有 Beta.1 下载和校验信息继续对应 Beta.1。
+## 安装、升级与发布构建说明
+
+目标发布标识沿用仓库约定 **v0.1.0-beta.2**；“Beta.2.0”是本轮任务名称，package/Tauri/Cargo 产品版本仍为 0.1.0，不擅自改为 2.0.0。当前没有新 Beta.2 下载包，既有 Beta.1 链接继续对应旧版本。
+
+1. 普通发行构建必须先构建前端，再使用 custom-protocol，显式 CARGO_INCREMENTAL=0，**不得带 beta2-isolation 或测试 identifier**。本轮普通 Release check/build 已通过，诊断变体另行保留。
+2. 最终包应包含完整 LICENSE、THIRD_PARTY_NOTICES、SOURCES、组件/来源/校验索引及相对许可目录；不得含 PDB、日志、用户配置、WebView2 profile、测试缓存或密钥。最终 EXE 和完整包分别计算 SHA256。
+3. 核验哈希后完整解压到新程序目录，退出旧助手，保留旧程序、核心配置和收藏。不要删除 AppData 或清理 WebView2 来升级，也不要依赖测试目录覆盖实现正式迁移。
+4. 迁移使用显式备份与恢复预览；备份不含网站登录态、设备自启或自动复制授权。原生备份验收未完成前，不建议在唯一一份真实数据上恢复。
+5. 目标为 Windows x64，需要可用 WebView2 和 VC++ x64 Runtime；绿色包不代替系统运行库安装。当前验证环境见上，其他系统版本和 ARM 兼容性未证明，签名状态需最终披露。
+6. 发布说明列出启动间歇性问题、跨应用选区兼容、外部站点变化和未闭环项；遇异常保留日志，不反复清理用户数据重试。
 
 ## 发布检查清单
 
-- [x] PR #3 合并，源码与原生证据范围有记录，已接受的非阻断风险已披露。
-- [x] Release 自动 Ctrl+C 仍禁用；无依赖升级或正式配置重置。
-- [ ] 完成主要原生功能门禁及启动 P1 的可接受处置。
-- [ ] 从最终源码与配置生成候选，记录 dirty 状态、差异、构建命令、EXE/PDB SHA256 与 GUID/Age。
-- [ ] 新候选正常启动/设置/退出及子进程清理，正式数据不变。
-- [ ] 检查发行 ZIP 清单：无 PDB、日志、配置、WebView2 profile、密钥和本机私密路径；许可证材料齐备。
-- [ ] 核对最终版本、更新日志、已知问题、升级说明和测试结果。
-- [ ] 维护者另行授权 Tag / 资产上传 / 预发布。当前不发布。
+- [x] PR #3 / main CI #10 成功，继续在本地功能分支完善。
+- [x] 最小主动复制 owner 修复、针对性 A01/备份回归，全量自动化和普通 Release 构建通过。
+- [x] 新隔离候选身份、干净代码提交、路径探针和单次原生计划准备完成，旧候选未覆盖。
+- [x] Release 自动 Ctrl+C 仍禁用；正式业务文件哈希不变；本轮无真实剪贴板或原生恢复操作。
+- [ ] 单独授权并完成新候选原生显示/隐藏/UI Ready/设置/退出/子进程与数据隔离回归。
+- [ ] 对 Issue #2、A01、N05、原生备份等门禁取得真实结果或维护者明确的处置。
+- [ ] 最终普通发行构建 remap/隐私、完整许可证包和 EXE/PDB/源码映射复核。
+- [ ] 维护者另行授权推送、合并、Tag / 资产上传 / 预发布。本轮不发布。
