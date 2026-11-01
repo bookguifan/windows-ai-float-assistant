@@ -165,8 +165,9 @@ test('successful restore refreshes prompt, site, and shortcut controls in place'
     assert.equal(p.d.getElementById('hotkey-input').value, 'Ctrl+Alt+1');
     assert.equal(p.d.querySelector('#features input[data-key="fullscreen"]').checked, true);
     assert.ok(p.calls.some(c => c.command === 'config_get'));
-    assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]').checked, false);
-    assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]').disabled, true);
+    assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]'), null);
+    assert.equal(p.d.querySelector('[data-key="privileged"]').checked, false);
+    assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
     assert.ok(p.calls.some(c => c.command === 'hotkey_status'));
   } finally { p.close(); }
 });

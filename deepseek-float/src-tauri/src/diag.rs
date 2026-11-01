@@ -258,13 +258,8 @@ pub fn now_rfc3339() -> String {
 }
 
 /// 日志文件路径（`%LOCALAPPDATA%\com.deepseekfloat.desktop\d1-debug.log`）。
-fn log_path() -> Option<std::path::PathBuf> {
-    let local = std::env::var("LOCALAPPDATA").ok()?;
-    Some(
-        std::path::Path::new(&local)
-            .join("com.deepseekfloat.desktop")
-            .join(FILE_NAME),
-    )
+pub(crate) fn log_path() -> Option<std::path::PathBuf> {
+    crate::isolation::diagnostics_dir().map(|dir| dir.join(FILE_NAME))
 }
 
 /// 建目录 + 超限轮转（进程内只做一次）。

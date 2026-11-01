@@ -1,4 +1,4 @@
-//! Local favorites and Markdown exports. All paths honor LOCALAPPDATA.
+//! Local favorites and Markdown exports. Isolated builds use the shared business root.
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -32,6 +32,11 @@ pub struct Favorite {
     pub created_at: u64,
 }
 pub fn root() -> Result<PathBuf, String> {
+    if crate::isolation::active() {
+        return crate::isolation::business_dir()
+            .ok_or_else(|| "Isolated business directory is not initialized".into());
+    }
+    // Preserve production read-only lookup and non-Unicode LOCALAPPDATA support.
     std::env::var_os("LOCALAPPDATA")
         .map(|p| PathBuf::from(p).join("com.deepseekfloat.desktop"))
         .ok_or_else(|| "无法定位本地收藏目录".into())
@@ -179,9 +184,15 @@ fn export_at(dir: &Path, title: &str, body: &str) -> Result<PathBuf, String> {
     Err("同名导出过多，请清理导出目录".into())
 }
 pub fn export(title: &str, body: &str) -> Result<String, String> {
+    if crate::isolation::active() {
+        return Err("Interactive exports are disabled in isolated mode".into());
+    }
     export_at(&root()?.join("exports"), title, body).map(|p| p.to_string_lossy().into_owned())
 }
 pub fn export_favorite(id: u64) -> Result<String, String> {
+    if crate::isolation::active() {
+        return Err("Interactive exports are disabled in isolated mode".into());
+    }
     let item = list()?
         .into_iter()
         .find(|f| f.id == id)
@@ -196,6 +207,9 @@ pub fn export_favorite(id: u64) -> Result<String, String> {
     )
 }
 pub fn open_exports() -> Result<(), String> {
+    if crate::isolation::active() {
+        return Err("Interactive exports are disabled in isolated mode".into());
+    }
     let dir = root()?.join("exports");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::process::Command::new("explorer.exe")

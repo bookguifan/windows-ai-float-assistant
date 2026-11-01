@@ -9,7 +9,7 @@
 //! 与 popup 的差异：这是**装饰性、可缩放**的常规窗口（类比 panel），
 //! 关闭按钮走 prevent_close + hide 模式，保留窗口与已加载的提示词列表。
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow};
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -30,7 +30,7 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(SETTINGS_LABEL) {
         return Some(w);
     }
-    let build = WebviewWindowBuilder::new(
+    let build = crate::isolation::webview_builder(
         app,
         SETTINGS_LABEL,
         WebviewUrl::App("poc/settings.html".into()),
@@ -95,6 +95,8 @@ pub fn open(app: &AppHandle) {
 }
 /// Only an explicit toolbar action may delegate a currently verified selection.
 pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::ToolbarAction) {
+    crate::selection_trace::session("settings-handoff-input", action.session());
+    let source_request = action.session().request.clone();
     clear_selection(app);
     let window = ensure(app);
     let now = crate::selection_runtime::now_ms();
@@ -110,7 +112,7 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
                 );
             }
         }
-        let preview = window
+        let preview: String = window
             .as_ref()
             .and_then(|w| w.hwnd().ok())
             .and_then(|h| state.preview(h.0 as isize, now))
@@ -120,6 +122,13 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
             .collect();
         (preview, state.ticket(), state.revision())
     };
+    crate::selection_trace::text(
+        "settings-preview",
+        &source_request,
+        ticket.unwrap_or(0),
+        &preview,
+    );
+    crate::selection_trace::settings("settings-handoff", ticket, revision);
     crate::popup::hide(app);
     if let Some(w) = window {
         show(app, &w, preview, ticket, revision);
@@ -128,10 +137,7 @@ pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::Too
 fn show(app: &AppHandle, w: &WebviewWindow, preview: String, ticket: Option<u64>, revision: u64) {
     let prompts = crate::prompts::load(app);
     let payload = serde_json::json!({"text":preview,"prompts":prompts,"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()});
-    crate::diag::log(&format!(
-        "selection stage=settings-show revision={revision} ticket={ticket:?} now_ms={}",
-        crate::selection_runtime::now_ms()
-    ));
+    crate::selection_trace::settings("settings-show", ticket, revision);
     let js = format!(
         "if(window.__dsfSettingsInit)window.__dsfSettingsInit({});",
         payload
@@ -238,9 +244,7 @@ pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<
             s.revision(),
         )
     };
-    crate::diag::log(&format!(
-        "selection stage=settings-ready revision={revision} ticket={ticket:?} now_ms={now}"
-    ));
+    crate::selection_trace::settings("settings-ready", ticket, revision);
     Some(
         serde_json::json!({"text":text,"prompts":crate::prompts::load(app),"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()}),
     )

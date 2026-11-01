@@ -98,16 +98,38 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      - name: clippy (isolated test feature, all targets)
+        env:
+          TAURI_CONFIG: '{"identifier":"com.deepseekfloat.beta2.isolated.ci"}'
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features beta2-isolation -- -D warnings
+
       # R17-P2：`#[cfg(debug_assertions)]` 门控的探针在 release 下会变成 dead_code ——
       # 这类告警只有 release 才会暴露（R16 曾漏掉 7 处）。故 release 也进门禁。
       # R20：必须带上 `--features custom-protocol` —— 这是**交付用的那份特性组合**
-      # （不带它产物是 dev 模式空壳，见 docs/release-checklist.md §2.5）。顺带兜住
+      # （不带它产物是 dev 模式空壳，见 Cargo.toml 的 custom-protocol 配置说明）。顺带兜住
       # 「Cargo.toml 里这个 features 条目被误删」的情况：删了这里会直接失败。
       - name: cargo check (release, production features)
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol
 
+      - name: Ordinary Release build (no test feature)
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol --bin deepseek-float
+
+      - name: Ordinary Release window bootstrap
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol --test isolation_window_bootstrap
+
       - name: test
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --test selection_core --test copy_engine --test native_copy_proof --test uia_strategy --test release_selection_policy --test native_selection_policy
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --test selection_core --test copy_engine --test native_copy_proof --test uia_strategy --test release_selection_policy --test native_selection_policy --test isolation_window_bootstrap
+
+      - name: Isolated path and Tauri bootstrap regressions (mock runtime, no native app)
+        env:
+          TAURI_CONFIG: '{"identifier":"com.deepseekfloat.beta2.isolated.ci"}'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features beta2-isolation --test isolation_paths --test isolation_window_bootstrap
+      - name: Release isolated paths and Tauri bootstrap (no native app)
+        env:
+          TAURI_CONFIG: '{"identifier":"com.deepseekfloat.beta2.isolated.ci"}'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol,beta2-isolation --test isolation_paths --test isolation_window_bootstrap
 
       - name: Experimental debug policy tests (no clipboard operations)
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features experimental-clipboard-fallback --test release_selection_policy
@@ -117,4 +139,4 @@ jobs:
 
       # ★ 注意：`pnpm e2e:shell`（脱离 dev server 验证产物能独立运行）**不在 CI 里** ——
       # 它要拉起 GUI + WebView2 + CDP 调试端口，需要真实桌面会话。请把它留给本机
-      # 发布前的 `docs/release-checklist.md` §0/§2.5（那是当前唯一的守门人）。
+      # 单独授权的本机回归。当前隔离、合并与发布门禁见 `docs/beta2-isolation-regression.md`。

@@ -57,10 +57,7 @@ pub const MAX_INSTRUCTION_CHARS: usize = 2000;
 const FILE_NAME: &str = "prompts.json";
 
 pub(crate) fn store_path() -> Option<PathBuf> {
-    let local = std::env::var("LOCALAPPDATA").ok()?;
-    let dir = PathBuf::from(local).join("com.deepseekfloat.desktop");
-    let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(FILE_NAME))
+    crate::isolation::business_dir().map(|dir| dir.join(FILE_NAME))
 }
 
 /// 内置提示词统一前置的系统性约束：要求模型忽略历史对话、仅依据本次指令作答。

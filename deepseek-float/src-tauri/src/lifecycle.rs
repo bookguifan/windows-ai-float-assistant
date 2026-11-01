@@ -18,6 +18,21 @@ use tauri_plugin_log::Builder as LogBuilder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    if let Err(error) =
+        crate::isolation::initialize(std::env::args_os(), &context.config().identifier)
+    {
+        eprintln!("Isolation initialization failed: {error}");
+        std::process::exit(78);
+    }
+    let isolated_windows = match crate::isolation::configure_context(&mut context) {
+        Ok(windows) => windows,
+        Err(error) => {
+            eprintln!("Isolation context configuration failed: {error}");
+            std::process::exit(78);
+        }
+    };
+
     // ★ 第一层止血：忽略本进程控制台的 Ctrl+C（CTRL_C_EVENT）。
     // 历史：划词抓取曾用 SendInput 合成 **Ctrl+C**。dev 下二进制是 console 子系统
     // （main.rs 只在 release 才设 windows_subsystem="windows"），当前台是终端/conhost 时，
@@ -63,8 +78,7 @@ pub fn run() {
     // ★ 带上版本指纹 + 时间戳：用户报障时可据此溯源产物（构建号/打包档位），
     //   否则一根日志行无法判断他跑的是哪个版本的 exe。
     {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            let dir = std::path::Path::new(&local).join("com.deepseekfloat.desktop");
+        if let Some(dir) = crate::isolation::diagnostics_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let ts = crate::diag::now_rfc3339();
             let line = format!(
@@ -84,8 +98,7 @@ pub fn run() {
     // 点击崩溃多为 WebView2 原生层 abort（Tauri v2 不隔离 webview 进程 → 宿主直接 exit -1），
     // 这种不会走 Rust 的 Result/if-let，只会静默终止进程；此 hook 便于在用户桌面捕获真实根因。
     std::panic::set_hook(Box::new(|info| {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            let dir = std::path::Path::new(&local).join("com.deepseekfloat.desktop");
+        if let Some(dir) = crate::isolation::diagnostics_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let bt = std::backtrace::Backtrace::force_capture();
             let msg = format!(
@@ -103,7 +116,9 @@ pub fn run() {
     }));
 
     Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
+            crate::isolation::create_configured_windows(app, &isolated_windows)
+                .map_err(std::io::Error::other)?;
             // Recover an interrupted multi-file restore before any config or prompt cache is read.
             crate::backup::recover_interrupted_restore().map_err(std::io::Error::other)?;
 
@@ -121,9 +136,23 @@ pub fn run() {
                 } else {
                     LevelFilter::Warn
                 };
+                let log_builder = LogBuilder::default().level(plugin_level);
+                let log_builder = if crate::isolation::active() {
+                    let path = crate::isolation::log_dir().ok_or_else(|| {
+                        std::io::Error::other("Isolated log directory is not initialized")
+                    })?;
+                    log_builder.targets([tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Folder {
+                            path,
+                            file_name: None,
+                        },
+                    )])
+                } else {
+                    log_builder
+                };
                 if let Err(e) = app
                     .handle()
-                    .plugin(LogBuilder::default().level(plugin_level).build())
+                    .plugin(log_builder.build())
                 {
                     crate::diag::warn(&format!("[M1] log plugin init failed (non-fatal): {e}"));
                 }
@@ -137,21 +166,18 @@ pub fn run() {
             ));
 
             // ---- 路线 A 登录态落盘日志（面板窗口 = 内嵌 DeepSeek 网页端）----
-            let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-            let diag_path = std::path::Path::new(&local)
-                .join("com.deepseekfloat.desktop")
-                .join("poc2-state.log");
-            let _ =
-                std::fs::create_dir_all(diag_path.parent().unwrap_or(std::path::Path::new(".")));
-            let _ = std::fs::write(&diag_path, "[M1] setup entered; route A active\n"); // 清空并写入 setup 标记
-            let sink: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(
+            let state_log = crate::isolation::diagnostics_dir().and_then(|dir| {
+                let _ = std::fs::create_dir_all(&dir);
+                let diag_path = dir.join("poc2-state.log");
+                let _ = std::fs::write(&diag_path, "[M1] setup entered; route A active\n");
+                crate::diag::log(&format!("[M1] state_log={}", diag_path.display()));
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&diag_path)
-                    .ok(),
-            ));
-            crate::diag::log(&format!("[M1] state_log={}", diag_path.display()));
+                    .open(diag_path)
+                    .ok()
+            });
+            let sink: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(state_log));
 
             // =====================================================================
             // ★ (#004-B) 悬浮球显形路径**前移**：消掉「启动 ~4.6s 才见球」
@@ -197,13 +223,13 @@ pub fn run() {
             // 默认隐藏但 webview 仍会加载（会话在隐藏期间保持），唤出时无需重载 → 持久化登录不丢。
             //
             // ⚠️ 严禁给面板单独设置 additional_browser_args（例如 --disable-gpu）——这会直接导致面板创建失败：
-            //   1) tauri.conf.json 中的 ball 窗口先于本 setup() 创建（tauri::app::setup 源码顺序：
+            //   1) 普通构建中 ball 先于 setup() 创建；隔离构建在 setup 开头显式创建（tauri::app::setup 源码顺序：
             //      先 WebviewWindowBuilder::from_config(...).build() 建 config 窗口，再执行 setup hook）；
             //   2) ball 已用「默认 browser args」在共享的 WebView2 user data 目录上创建 CoreWebView2Environment；
             //   3) WebView2 规则：同一 user data 目录上的多个 Environment 必须 CoreWebView2EnvironmentOptions 一致，
             //      否则第二次 CreateCoreWebView2EnvironmentWithOptions 失败（wry::WebContext::new 文档明确警告，
             //      失败 HRESULT = 0x8007139F / ERROR_INVALID_STATE）；
-            //   4) ball 与 panel 的 data_directory 均为 None → 同一个目录 → 面板若带 --disable-gpu 必然创建失败
+            //   4) ball 与 panel 必须使用同一个 data_directory（隔离模式显式指定） → 面板若带 --disable-gpu 必然创建失败
             //      → get_webview_window("panel") 返回 None → 左键提示「面板窗口未创建」。
             // 结论：ball / panel 必须共用同一套默认参数，才能共享 WebView2 环境与持久化登录 cookie。
             // 若日后仍遇 WebView2 窗口类反注册 abort（Error 1411/1412，仅见于退出/销毁路径），
@@ -292,7 +318,9 @@ pub fn run() {
             //   ② 旧逻辑在「配置为开 && 注册表有值」时**无条件** `set_autostart(true)` 重写 exe 路径
             //      （本意是升级自愈），于是**反复把 dev 构建路径写回注册表** —— 用户即使手动改也会被
             //      覆盖回去。故 dev 构建下**不再重写**；若发现一条指向本开发产物的脏项则**主动清理**。
-            if crate::autostart::registration_supported() {
+            if crate::isolation::active() {
+                crate::config::update(|c| c.autostart = false);
+            } else if crate::autostart::registration_supported() {
                 // 可独立运行的构建：沿用原对账逻辑 ——
                 // 配置为开：一致 → 重写一次以刷新 exe 路径（升级 / 移动安装目录后自愈）；
                 // 配置为开但注册表中已不存在（用户已在任务管理器 / 系统设置里禁用）→
@@ -375,6 +403,7 @@ pub fn run() {
             crate::ipc::context_menu_close,
             crate::ipc::ball_ready,
             crate::ipc::popup_action,
+            crate::ipc::popup_trace,
             crate::ipc::settings_save,
             crate::ipc::settings_run,
             crate::ipc::settings_ready,
@@ -416,7 +445,7 @@ pub fn run() {
             crate::ipc::result_new_session,
             crate::ipc::result_open_external
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, event| {
             // 退出前清理鼠标钩子（泵线程收 WM_QUIT 后自动 Unhook）。
@@ -635,4 +664,194 @@ fn setup_stress(app: tauri::AppHandle) {
             std::process::exit(0);
         }
     });
+}
+
+#[cfg(test)]
+mod isolation_integration_tests {
+    fn function<'a>(source: &'a str, signature: &str) -> &'a str {
+        let tail = source.split_once(signature).expect("function exists").1;
+        let start = tail.find('{').unwrap();
+        let mut depth = 0;
+        for (offset, ch) in tail[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &tail[start..=start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unclosed function")
+    }
+    #[test]
+    fn persistence_uses_resolver_without_legacy_fallback() {
+        for source in [include_str!("config.rs"), include_str!("prompts.rs")] {
+            let body = function(source, "fn store_path()");
+            assert!(body.contains("crate::isolation::business_dir()"));
+            assert!(!body.contains("LOCALAPPDATA"));
+        }
+        let body = function(include_str!("favorites.rs"), "fn root()");
+        assert!(body.contains("crate::isolation::business_dir()"));
+        assert!(body.contains("crate::isolation::active()"));
+    }
+    #[test]
+    fn isolation_initializes_before_hooks_and_context_before_builder() {
+        let body = function(include_str!("lifecycle.rs"), "pub fn run()");
+        let generated = body
+            .find("let mut context = tauri::generate_context!();")
+            .unwrap();
+        let init = body
+            .find("crate::isolation::initialize(std::env::args_os(), &context.config().identifier)")
+            .unwrap();
+        // Context exposes the embedded identifier before initialize can prepare or seed a root.
+        assert!(body
+            .trim_start_matches('{')
+            .trim_start()
+            .starts_with("let mut context = tauri::generate_context!();"));
+        assert!(generated < init);
+        let initialize = function(include_str!("isolation.rs"), "pub fn initialize(");
+        let validation = initialize
+            .find("validate_identifier(identifier, active())?")
+            .unwrap();
+        assert!(validation < initialize.find("IsolationPaths::prepare(").unwrap());
+        assert!(init < body.find("SetConsoleCtrlHandler").unwrap());
+        assert!(init < body.find("crate::single_instance::acquire()").unwrap());
+        assert!(init < body.find("crate::diag::warn(").unwrap());
+        let context = body
+            .find("crate::isolation::configure_context(&mut context)")
+            .unwrap();
+        assert!(init < context);
+        assert!(context < body.find("SetConsoleCtrlHandler").unwrap());
+        assert!(context < body.find("crate::single_instance::acquire()").unwrap());
+        assert!(context < body.find("Builder::default()").unwrap());
+        assert!(body.contains(".build(context)"));
+        assert!(body.contains("std::process::exit(78)"));
+    }
+    #[test]
+    fn diagnostics_and_beacons_have_no_legacy_fallback() {
+        let source = include_str!("lifecycle.rs");
+        let source = source
+            .split("#[cfg(test)]\nmod isolation_integration_tests")
+            .next()
+            .unwrap();
+        assert!(!source.contains("std::env::var(\"LOCALAPPDATA\")"));
+        assert_eq!(
+            source
+                .matches("crate::isolation::diagnostics_dir()")
+                .count(),
+            3
+        );
+        let body = function(include_str!("diag.rs"), "fn log_path()");
+        assert!(body.contains("crate::isolation::diagnostics_dir()"));
+        assert!(!body.contains("LOCALAPPDATA"));
+    }
+    #[test]
+    fn all_dynamic_windows_use_shared_builder() {
+        for source in [
+            include_str!("context_menu.rs"),
+            include_str!("popup.rs"),
+            include_str!("result.rs"),
+            include_str!("screenshot.rs"),
+            include_str!("settings.rs"),
+            include_str!("windows.rs"),
+        ] {
+            assert!(source.contains("crate::isolation::webview_builder("));
+            assert!(!source.contains("WebviewWindowBuilder::new("));
+            assert!(!source.contains("WebviewWindowBuilder,"));
+        }
+    }
+    #[test]
+    fn autostart_guards_precede_registry_access_including_disable() {
+        let source = include_str!("autostart.rs");
+        for signature in [
+            "fn is_autostart()",
+            "fn registered_command()",
+            "fn dirty_self_registration()",
+            "fn set_autostart(",
+        ] {
+            let body = function(source, signature);
+            assert!(
+                body.trim_start_matches('{')
+                    .trim_start()
+                    .starts_with("if crate::isolation::active()"),
+                "{signature}"
+            );
+        }
+        assert!(
+            function(source, "fn registration_supported()").contains("!crate::isolation::active()")
+        );
+        assert!(function(source, "fn set_autostart(").contains("return !enable;"));
+    }
+    #[test]
+    fn interactive_exports_and_imports_reject_before_side_effects() {
+        let backup = include_str!("backup.rs");
+        for signature in [
+            "fn export_dialog(",
+            "fn import_preview_dialog(",
+            "fn save_file_dialog(app:",
+            "fn open_file_dialog(app:",
+        ] {
+            let body = function(backup, signature);
+            assert!(
+                body.trim_start_matches('{')
+                    .trim_start()
+                    .starts_with("if crate::isolation::active()"),
+                "{signature}"
+            );
+            assert!(body.contains("return Err("));
+        }
+        for signature in ["fn export(", "fn export_favorite(", "fn open_exports()"] {
+            let body = function(include_str!("favorites.rs"), signature);
+            assert!(
+                body.trim_start_matches('{')
+                    .trim_start()
+                    .starts_with("if crate::isolation::active()"),
+                "{signature}"
+            );
+            assert!(body.contains("return Err("));
+        }
+    }
+    #[test]
+    fn singleton_names_and_os_failures_fail_closed_when_isolated() {
+        let source = include_str!("single_instance.rs");
+        assert!(!source.contains("com.deepseekfloat.desktop.singleton"));
+        for signature in ["fn acquire()", "fn wake_primary()"] {
+            assert!(function(source, signature).contains("crate::isolation::singleton_names()"));
+        }
+        let body = function(source, "fn isolation_error(");
+        assert!(body.contains("if crate::isolation::active()"));
+        assert!(body.contains("std::process::exit(78)"));
+        assert!(source.matches("isolation_error(&format!").count() >= 5);
+    }
+    #[test]
+    fn plugin_folder_override_is_isolated_and_restore_journal_uses_config_root() {
+        let body = function(include_str!("lifecycle.rs"), "pub fn run()");
+        let branch = function(body, "let log_builder = if crate::isolation::active()");
+        assert!(branch.contains("crate::isolation::log_dir()"));
+        assert!(branch.contains("TargetKind::Folder"));
+        assert!(branch.contains(".targets(["));
+        assert!(body.contains("else {\n                    log_builder\n                }"));
+        let backup = include_str!("backup.rs");
+        assert!(function(backup, "fn data_root()").contains("crate::config::store_path()"));
+        assert!(function(backup, "fn recover_interrupted_restore()")
+            .contains("crate::config::store_path()"));
+    }
+
+    #[test]
+    fn isolated_config_and_startup_keep_autostart_disabled() {
+        let config = include_str!("config.rs");
+        let policy = function(config, "fn enforce_release_policy(");
+        assert!(policy.contains("if crate::isolation::active()"));
+        assert!(policy.contains("self.autostart = false;"));
+        assert!(function(config, "fn load_from_disk()").contains("enforce_release_policy()"));
+        let lifecycle = function(include_str!("lifecycle.rs"), "pub fn run()");
+        assert!(lifecycle.contains("if crate::isolation::active() {\n                crate::config::update(|c| c.autostart = false);\n            } else if crate::autostart::registration_supported()"));
+    }
+    #[test]
+    fn probe_can_inspect_actual_diagnostic_binding() {
+        assert!(include_str!("diag.rs").contains("pub(crate) fn log_path()"));
+    }
 }

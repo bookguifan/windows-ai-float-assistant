@@ -10,9 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, Runtime, WebviewUrl, WebviewWindow};
 
 use crate::error::AppResult;
 
@@ -486,7 +484,7 @@ pub(crate) fn setup_panel(
 ) -> AppResult<()> {
     let sink_c = sink.clone();
     let panel_url = WebviewUrl::External("about:blank".parse().unwrap());
-    match WebviewWindowBuilder::new(app, "panel", panel_url)
+    match crate::isolation::webview_builder(app, "panel", panel_url)
         .title("DeepSeek 悬浮面板")
         .position(420.0, 140.0)
         .inner_size(440.0, 600.0)

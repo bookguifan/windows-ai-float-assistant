@@ -1,6 +1,18 @@
 fn main() {
     tauri_build::build();
 
+    // Tauri's test MockRuntime still links muda/TaskDialogIndirect. Integration-test
+    // EXEs need Common Controls v6 too; Tauri embeds its app manifest only in bins.
+    // These arguments apply to test targets, never the shipping application.
+    let test_manifest =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/windows-test.manifest");
+    println!("cargo:rerun-if-changed={}", test_manifest.display());
+    println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
+        test_manifest.display()
+    );
+
     // ★★ 硬性约束（E1，2026-09-23 审计排雷）：release 构建必须开启 `custom-protocol`，
     //    否则 `tauri::generate_context!` 走 dev 模式 —— 前端资源不内嵌、exe 脱离 dev server
     //    即白屏（R20 真机事故）。详见 Cargo.toml 的 [features] 注释。

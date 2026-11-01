@@ -13,8 +13,13 @@ use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE,
 };
 
-const MUTEX_NAME: &str = "Local\\com.deepseekfloat.desktop.singleton.mutex";
-const EVENT_NAME: &str = "Local\\com.deepseekfloat.desktop.singleton.event";
+/// Isolated builds must never continue without their own OS synchronization objects.
+fn isolation_error(message: &str) {
+    if crate::isolation::active() {
+        eprintln!("Isolated single-instance failure: {message}");
+        std::process::exit(78);
+    }
+}
 
 /// 单实例判定结果。
 pub enum Acquire {
@@ -40,11 +45,19 @@ static EVENT_HANDLE: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
 
 /// 获取单实例：返回 `Primary`（首实例）/ `Secondary`（后续实例）/ `None`（降级，不阻塞启动）。
 pub fn acquire() -> Option<Acquire> {
+    let (mutex_name, event_name) = match crate::isolation::singleton_names() {
+        Ok(names) => names,
+        Err(error) => {
+            isolation_error(&format!("singleton names unavailable: {error}"));
+            return None;
+        }
+    };
     unsafe {
-        let mutex_name = HSTRING::from(MUTEX_NAME);
+        let mutex_name = HSTRING::from(mutex_name.as_str());
         let h = match CreateMutexW(None, false, &mutex_name) {
             Ok(h) => h,
             Err(e) => {
+                isolation_error(&format!("CreateMutexW: {e}"));
                 crate::diag::warn(&format!(
                     "single-instance: CreateMutexW 失败，跳过单实例保护（不影响启动）: {e}"
                 ));
@@ -59,13 +72,16 @@ pub fn acquire() -> Option<Acquire> {
             return Some(Acquire::Secondary);
         }
         // 首实例：创建「自动复位」事件，供唤醒线程阻塞等待。
-        match CreateEventW(None, false, false, &HSTRING::from(EVENT_NAME)) {
+        match CreateEventW(None, false, false, &HSTRING::from(event_name.as_str())) {
             Ok(ev) => {
                 let _ = EVENT_HANDLE.set(ev.0 as isize);
             }
-            Err(e) => crate::diag::warn(&format!(
-                "single-instance: CreateEventW 失败，第二实例将无法唤醒本实例: {e}"
-            )),
+            Err(e) => {
+                isolation_error(&format!("CreateEventW: {e}"));
+                crate::diag::warn(&format!(
+                    "single-instance: CreateEventW 失败，第二实例将无法唤醒本实例: {e}"
+                ));
+            }
         }
         Some(Acquire::Primary)
     }
@@ -76,16 +92,25 @@ pub fn acquire() -> Option<Acquire> {
 /// 不用 `OpenEventW`（那会牵扯 `SYNCHRONIZATION_ACCESS_RIGHTS` / `EVENT_MODIFY_STATE`
 /// 常量的引入）；直接 `CreateEventW` 打开同名对象即返回同一内核对象。
 pub fn wake_primary() -> bool {
+    let (_, event_name) = match crate::isolation::singleton_names() {
+        Ok(names) => names,
+        Err(error) => {
+            isolation_error(&format!("singleton names unavailable: {error}"));
+            return false;
+        }
+    };
     unsafe {
-        match CreateEventW(None, false, false, &HSTRING::from(EVENT_NAME)) {
+        match CreateEventW(None, false, false, &HSTRING::from(event_name.as_str())) {
             Ok(ev) => match SetEvent(ev) {
                 Ok(()) => true,
                 Err(e) => {
+                    isolation_error(&format!("SetEvent: {e}"));
                     crate::diag::warn(&format!("single-instance: SetEvent 失败: {e}"));
                     false
                 }
             },
             Err(e) => {
+                isolation_error(&format!("CreateEventW (wake): {e}"));
                 crate::diag::warn(&format!("single-instance: 打开命名事件失败: {e}"));
                 false
             }
@@ -105,6 +130,7 @@ pub fn watch(app: tauri::AppHandle) {
             // 线程阻塞在 INFINITE 等待上，空闲 CPU 为 0。
             let r = unsafe { WaitForSingleObject(h, INFINITE) };
             if r.0 != WAIT_OBJECT_0.0 {
+                isolation_error(&format!("WaitForSingleObject: {:#x}", r.0));
                 // ★ 必须 break，不能 continue：句柄失效时 WaitForSingleObject 会**立即**返回
                 //   WAIT_FAILED(0xFFFFFFFF)，若在此 continue 就变成 100% 占满一核的忙等
                 //   （恰好与「空闲 CPU 接近 0%」的验收项相反）。线程退出后不再接收唤醒信号，

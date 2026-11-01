@@ -877,6 +877,9 @@ fn merge_bool_setting(
 }
 
 pub(crate) fn export_dialog(app: &AppHandle) -> Result<Option<BackupExportResult>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     let snapshot = {
         let _read = crate::data_store::read_guard();
         snapshot_under_data_lock()?
@@ -898,6 +901,9 @@ pub(crate) fn export_dialog(app: &AppHandle) -> Result<Option<BackupExportResult
 }
 
 pub(crate) fn import_preview_dialog(app: &AppHandle) -> Result<Option<BackupPreview>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     let Some(path) = open_file_dialog(app)? else {
         return Ok(None);
     };
@@ -1310,6 +1316,9 @@ pub(crate) fn recover_interrupted_restore() -> Result<(), String> {
 
 #[cfg(windows)]
 fn save_file_dialog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     use std::os::windows::ffi::OsStringExt;
     use windows::{
         core::{PCWSTR, PWSTR},
@@ -1371,6 +1380,9 @@ fn save_file_dialog(_app: &AppHandle) -> Result<Option<PathBuf>, String> {
 
 #[cfg(windows)]
 fn open_file_dialog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if crate::isolation::active() {
+        return Err("Interactive backup dialogs are disabled in isolated mode".into());
+    }
     use std::os::windows::ffi::OsStringExt;
     use windows::{
         core::{PCWSTR, PWSTR},
@@ -1484,6 +1496,27 @@ mod tests {
             data,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn smart_selection_backup_choices_roundtrip_without_unlocking_copy() {
+        for enabled in [false, true] {
+            let mut local = sample_snapshot();
+            local.config.privileged_capture = enabled;
+            let mut data = sample_data();
+            data.settings.privileged_capture = enabled;
+            data.settings.clipboard_fallback_enabled = Some(true);
+            let decoded = decode_backup(&serialize(data)).unwrap();
+            for mode in [RestoreMode::Merge, RestoreMode::Overwrite] {
+                let plan = plan_restore(&local, &decoded.data, mode);
+                assert_eq!(plan.config.privileged_capture, enabled);
+                assert!(!plan.config.clipboard_fallback_enabled);
+                let fresh: crate::config::AppConfig =
+                    serde_json::from_value(serde_json::to_value(&plan.config).unwrap()).unwrap();
+                assert_eq!(fresh.privileged_capture, enabled);
+                assert!(!fresh.clipboard_fallback_enabled);
+            }
+        }
     }
 
     #[test]

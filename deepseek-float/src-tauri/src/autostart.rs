@@ -15,7 +15,7 @@
 //!   此时根本没生效）—— 即用户截图所示现象。
 //! - 故本模块在这一类构建下：
 //!   ① `set_autostart(true)` **拒绝登记**（返回 false，前端据此回滚开关）；
-//!   ② `set_autostart(false)` **始终照常执行删除**，保证用户能把既有的脏项关掉；
+//!   ② 非隔离构建的 `set_autostart(false)` **照常执行删除**，保证用户能把既有的脏项关掉；
 //!   ③ 提供 [`dirty_self_registration`]：识别「注册表里的项指向本开发产物」的脏项，供启动期清理。
 
 use windows::core::HSTRING;
@@ -43,7 +43,7 @@ pub fn can_register_autostart(debug_build: bool, custom_protocol: bool) -> bool 
 
 /// 当前构建是否支持开机自启（把编译期 `cfg!` 结果喂给纯函数 [`can_register_autostart`]）。
 pub fn registration_supported() -> bool {
-    can_register_autostart(DEBUG_BUILD, HAS_CUSTOM_PROTOCOL)
+    !crate::isolation::active() && can_register_autostart(DEBUG_BUILD, HAS_CUSTOM_PROTOCOL)
 }
 
 /// 当前是否已注册开机自启。
@@ -51,6 +51,9 @@ pub fn registration_supported() -> bool {
 /// 直接读注册表 Run 项（真实状态），由 `config_get` 用来覆盖 `AppConfig::autostart`，
 /// 使设置页开关反映真实注册表状态（例如用户已在任务管理器里禁用了启动项）。
 pub fn is_autostart() -> bool {
+    if crate::isolation::active() {
+        return false;
+    }
     unsafe {
         let key = HSTRING::from(RUN_KEY);
         let value = HSTRING::from(VALUE_NAME);
@@ -69,6 +72,9 @@ pub fn is_autostart() -> bool {
 /// 不存在 / 非 `REG_SZ` / 读取失败 → `None`。仅用于识别「脏项归属」（见 [`dirty_self_registration`]），
 /// 不影响 `is_autostart` 的「存在性」语义。
 fn registered_command() -> Option<String> {
+    if crate::isolation::active() {
+        return None;
+    }
     unsafe {
         let key = HSTRING::from(RUN_KEY);
         let value = HSTRING::from(VALUE_NAME);
@@ -147,6 +153,9 @@ pub fn command_points_to(command: &str, exe: &str) -> bool {
 /// 安全边界：当注册表里的项指向**别处**（如另一份 release 安装）时返回 `None` —— 我们不擅自
 /// 删除不属于当前开发产物的自启项，尊重既有安装。可独立运行的构建下恒返回 `None`（本函数无意义）。
 pub fn dirty_self_registration() -> Option<String> {
+    if crate::isolation::active() {
+        return None;
+    }
     if registration_supported() {
         return None;
     }
@@ -161,6 +170,9 @@ pub fn dirty_self_registration() -> Option<String> {
 
 /// 设置开机自启开关。enable=true → 写入 Run 项；false → 删除。
 pub fn set_autostart(enable: bool) -> bool {
+    if crate::isolation::active() {
+        return !enable;
+    }
     // ★★ 2026-09-24 真机缺陷修复：**开发构建不得把自己登记为开机自启**（见模块头）。
     //   enable=true → 直接拒绝（前端据 `false` 回滚开关）；
     //   enable=false → **照常执行删除**（跳过本守卫），否则用户无法清掉既有的脏项。
