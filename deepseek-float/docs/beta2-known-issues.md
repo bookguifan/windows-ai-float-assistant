@@ -103,3 +103,11 @@ SHA256 为 `2D09F1B7F03428A48171EB7A0FC245E9D8E438B19B663418882A399DC7DEEAC4` �
 ## PR 补审追踪（2026-10-28）
 
 启动异常已独立建立 [P1 Issue #2](https://github.com/bookguifan/windows-ai-float-assistant/issues/2)，保持 OPEN；原始业务栈 UNKNOWN，调查暂缓。新增的智能划词保存串行化、旧配置读取拒绝及配置写锁内 generation 撤销已有 RED/GREEN 自动化证据，见[PR准入补审](beta2-selection-merge-readiness.md#pr-准入补审2026-10-28)。这些结果不关闭 N01、N05、WM_COPY 或原生验收缺口；Beta.2 发布仍 NO-GO。
+
+## 维护者实用验收与 PR #3 合并（2026-11-01）
+
+PR #3 已按维护者明确授权合并，main 为 `05eaf6b37381a12fc5f676011b16a2ef1bed3f2c`；后续分支 `feature/beta2-final-polish`。最终 PR HEAD `3d2bc21` 的 CI #9 成功。维护者接受 Huorong 事件为 `UNATTRIBUTED_WRITE / ACCEPTED_NONBLOCKING_RISK`，不要求个人项目额外第三方 Review。上文 Draft、未获授权及严格门禁未处置均是历史阶段记录；历史 FAIL/UNKNOWN 和原始事件流继续保留，不改成严格隔离 PASS。
+
+新增一次单独授权的冻结候选设置回归：WebView2、球窗/HWND、明确 ball_ready 通过；人工打开/保存“全屏隐藏” false→true/关闭设置，AX 与磁盘重读佐证，记 MANUAL_PASS；正常菜单退出，两路真实退出码均 0，受控 WebView2 无残留。正式 config/favorites/prompts SHA256、自启项不变，没有新 identifier Known Folder。没有执行 A01/N05/备份，也未重新启动。冻结候选不等于后续修改产物。
+
+当前发布计划、验证范围与安装升级草稿见 [Beta.2.0 发布准备](beta2-release-preparation.md)。Issue #2 仍 OPEN；Beta.2.0 发布仍 NO-GO，合并不等于发布。

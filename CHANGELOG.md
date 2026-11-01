@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### 2026-11-01 — Beta.2 开发合并与隔离修复
+
+- 完善分支修复启动首帧迟到显形覆盖用户隐藏选择，主线程执行前复核显隐代次；5 项新回归及 Rust/Release 检查通过，尚未进行新版本原生复测。
+
+- PR #3 合并测试专用统一隔离路径与 Tauri/WebView2 显式数据目录，避免测试窗口初始化创建根外 identifier 空目录；无效隔离参数 fail closed，普通 Release 路径不变。
+- 合并划词显示事务、旧异步/计时器隔离和设置保存改进；Release 自动 Ctrl+C 回退继续禁用。
+- 冻结隔离候选的球窗、WebView2、首帧 Ready、人工设置保存与正常退出通过，正式业务配置及自启未变。该结果不覆盖后续新构建。
+- 发布仍 NO-GO：启动 Issue #2、A01/N05 和原生备份等门禁保留；见 [Beta.2.0 发布准备](deepseek-float/docs/beta2-release-preparation.md)。未创建 Tag/Release。
+
 ### 2026-10-21 — 开源准备与低风险安全整改
 
 - 结果卡外链改为 Windows 原生 URL 关联打开，移除 `cmd /c start`；增加结构化 HTTP(S) 与控制字符校验，补充两项 Rust 校验测试（本轮未执行）。

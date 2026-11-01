@@ -109,3 +109,11 @@ A single successful startup is not a fix for an intermittent P1 and cannot close
 
 
 SOURCE-PROVENANCE.json and SOURCE-MANIFEST.csv describe the historical source import/publication overlay, including the then-current visibility and LF-only normalization claim. They are not a claim that later Git commits changed no implementation or that the current release artifact has been mapped. Preserve that import evidence; use Git history and the separate final release-artifact review for current provenance.
+
+## 维护者实用验收与 PR #3 合并（2026-11-01）
+
+PR #3 已按维护者明确授权合并，main 为 `05eaf6b37381a12fc5f676011b16a2ef1bed3f2c`；后续分支 `feature/beta2-final-polish`。最终 PR HEAD `3d2bc21` 的 CI #9 成功。维护者接受 Huorong 事件为 `UNATTRIBUTED_WRITE / ACCEPTED_NONBLOCKING_RISK`，不要求个人项目额外第三方 Review。上文 Draft、未获授权及严格门禁未处置均是历史阶段记录；历史 FAIL/UNKNOWN 和原始事件流继续保留，不改成严格隔离 PASS。
+
+新增一次单独授权的冻结候选设置回归：WebView2、球窗/HWND、明确 ball_ready 通过；人工打开/保存“全屏隐藏” false→true/关闭设置，AX 与磁盘重读佐证，记 MANUAL_PASS；正常菜单退出，两路真实退出码均 0，受控 WebView2 无残留。正式 config/favorites/prompts SHA256、自启项不变，没有新 identifier Known Folder。没有执行 A01/N05/备份，也未重新启动。冻结候选不等于后续修改产物。
+
+当前发布计划、验证范围与安装升级草稿见 [Beta.2.0 发布准备](beta2-release-preparation.md)。Issue #2 仍 OPEN；Beta.2.0 发布仍 NO-GO，合并不等于发布。
