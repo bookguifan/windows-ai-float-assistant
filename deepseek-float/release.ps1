@@ -1,122 +1,63 @@
 <#
 .SYNOPSIS
-  DeepSeek 悬浮助手 · 一键产出合规绿色版交付物
-  `deepseek-float/release/deepseek-float.exe` + 同目录 HASH.txt（SHA256）。
+  DeepSeek 悬浮助手 · 调用统一 Node 发布构建入口。
 
 .DESCRIPTION
-  把 README「发布前 checklist」收敛成单一幂等入口，按序执行：
-  前端构建 → 前端门禁(pnpm check) → fmt --check → clippy -D warnings → test --lib
-  → release 构建(custom-protocol, CARGO_INCREMENTAL=0) → 复制交付位 → 校验哈希。
-  任一步失败即打印红叉并以非 0 退出，绝不静默跳过。
+  发布依赖、版本、前端、Rust、安全策略、Release 构建与哈希逻辑均由
+  scripts/build-release.mjs 执行。本脚本只保留 PowerShell 兼容入口。
 
 .PARAMETER SkipFrontBuild
-  已确认 dist 为最新时跳过 pnpm build（仍需 pnpm check）。默认开启前端构建。
+  将 --no-frontend 转交给统一 Node 构建入口。
 
 .PARAMETER UseSccache
-  使用 sccache 缓存加速后续 release 增量编译（需已安装 sccache，未装则报错）。
-  默认关闭，避免强制安装系统工具。
+  使用已安装的 sccache；默认关闭。
+
+.PARAMETER NodePath
+  显式选择已安装的 node.exe。其版本和 pnpm 子进程版本仍由统一入口校验。
+
+.PARAMETER CheckToolchainOnly
+  只校验 Node、pnpm 版本及 pnpm 所用 Node，不运行构建。
 
 .EXAMPLE
   ./release.ps1
   ./release.ps1 -SkipFrontBuild
   ./release.ps1 -UseSccache
+  ./release.ps1 -NodePath 'C:\Tools\node\node.exe' -CheckToolchainOnly
 #>
 [CmdletBinding()]
 param(
   [switch]$SkipFrontBuild,
-  [switch]$UseSccache
+  [switch]$UseSccache,
+  [string]$NodePath,
+  [switch]$CheckToolchainOnly
 )
 
 $ErrorActionPreference = 'Stop'
-$Project   = Split-Path -Parent $MyInvocation.MyCommand.Path  # deepseek-float 根
-$Manifest  = Join-Path $Project 'src-tauri\Cargo.toml'
-$Exe       = Join-Path $Project 'src-tauri\target\release\deepseek-float.exe'
-$Deliver   = Join-Path $Project 'release\deepseek-float.exe'
-$HashFile  = Join-Path $Project 'release\HASH.txt'
+$Project = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-function Step($n, $msg) { Write-Host "`n[$n/8] $msg" -ForegroundColor Cyan }
-function Fail($msg)     { Write-Host "✗ $msg" -ForegroundColor Red; exit 1 }
-
-Set-Location $Project
-
-Step 1 '前端依赖 + 构建 (pnpm install && pnpm build)'
-if (-not $SkipFrontBuild) {
-  pnpm install; if ($LASTEXITCODE -ne 0) { Fail 'pnpm install 失败' }
-  pnpm build;   if ($LASTEXITCODE -ne 0) { Fail 'pnpm build 失败' }
-}
-npm run check; if ($LASTEXITCODE -ne 0) { Fail 'pnpm check（CSP/内联JS/版本）失败' }
-
-Step 2 'Rust 格式 (cargo fmt --check)'
-cargo fmt --manifest-path $Manifest --check
-if ($LASTEXITCODE -ne 0) {
-  Fail "代码未格式化。请先执行: cargo fmt --manifest-path `"$Manifest`""
-}
-
-Step 3 'Rust lint (clippy --all-targets -- -D warnings)'
-cargo clippy --manifest-path $Manifest --all-targets -- -D warnings
-if ($LASTEXITCODE -ne 0) { Fail 'clippy 不通过（-D warnings）' }
-
-Step 4 'Rust 单测 (cargo test --lib)'
-cargo test --manifest-path $Manifest --lib
-if ($LASTEXITCODE -ne 0) { Fail '单元测试失败' }
-
-Step 5 'release 构建 (custom-protocol · CARGO_INCREMENTAL=0)'
-# ★ 规避 README L267 的坑：受限终端里 LTO 写临时目录会「compiler unexpectedly panicked
-#   (os error 5)」。release 本就不需要增量，这里强制关闭以稳定构建。
-$env:CARGO_INCREMENTAL = '0'
-
-# Preserve explicit Rust flags and remap source roots so the EXE does not expose
-# the build machine's workspace or Cargo cache paths.
-$CargoHome = if ($env:CARGO_HOME) {
-  $env:CARGO_HOME
-} elseif ($env:HOME) {
-  Join-Path $env:HOME '.cargo'
-} else {
-  Join-Path $env:USERPROFILE '.cargo'
-}
-$CargoHome = [System.IO.Path]::GetFullPath($CargoHome)
-$RustFlags = [System.Collections.Generic.List[string]]::new()
-if ($null -ne $env:CARGO_ENCODED_RUSTFLAGS) {
-  foreach ($Flag in $env:CARGO_ENCODED_RUSTFLAGS.Split([char]31)) {
-    if ($Flag) { $RustFlags.Add($Flag) }
+if ($NodePath) {
+  if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+    throw "NodePath does not name an existing file: $NodePath"
   }
+  $NodeExecutable = (Resolve-Path -LiteralPath $NodePath).Path
 } else {
-  $ConfiguredRustFlags = if ($env:RUSTFLAGS) { $env:RUSTFLAGS } else { $env:CARGO_BUILD_RUSTFLAGS }
-  if ($ConfiguredRustFlags) {
-    foreach ($Flag in ($ConfiguredRustFlags -split '\s+')) {
-      if ($Flag) { $RustFlags.Add($Flag) }
-    }
-  }
+  $NodeExecutable = (Get-Command node -CommandType Application -ErrorAction Stop).Source
 }
-foreach ($Mapping in @(
-  @{ Prefix = $Project; Replacement = '/src' },
-  @{ Prefix = $Project.Replace('\', '/'); Replacement = '/src' },
-  @{ Prefix = $CargoHome; Replacement = '/cargo' },
-  @{ Prefix = $CargoHome.Replace('\', '/'); Replacement = '/cargo' }
-)) {
-  $RustFlags.Add("--remap-path-prefix=$($Mapping.Prefix)=$($Mapping.Replacement)")
-}
-$env:CARGO_ENCODED_RUSTFLAGS = [string]::Join([char]31, $RustFlags)
 
 if ($UseSccache) {
   $env:RUSTC_WRAPPER = 'sccache'
 }
-cargo build --locked --release --features custom-protocol --manifest-path $Manifest
-if ($LASTEXITCODE -ne 0) {
-  Fail 'release 构建失败。若为编译器 panic（os error 5 / 写临时目录被拒），请结束占用后在不受限环境重试。'
+
+$Arguments = @('scripts/build-release.mjs')
+if ($SkipFrontBuild) { $Arguments += '--no-frontend' }
+if ($CheckToolchainOnly) { $Arguments += '--check-toolchain-only' }
+
+$ExitCode = 0
+Push-Location $Project
+try {
+  & $NodeExecutable @Arguments
+  if ($null -ne $LASTEXITCODE) { $ExitCode = $LASTEXITCODE }
+} finally {
+  Pop-Location
 }
-
-Step 6 '交付到 release/'
-if (-not (Test-Path $Exe)) { Fail '未找到 release exe，构建产物缺失' }
-New-Item -ItemType Directory -Force -Path (Split-Path $Deliver) | Out-Null
-Copy-Item $Exe $Deliver -Force
-
-Step 7 '校验 (FullName / Length / LastWriteTime / SHA256)'
-$i = Get-Item $Deliver
-$sha = (Get-FileHash $Deliver -Algorithm SHA256).Hash
-Write-Host ("`n  FullName  : {0}`n  Length    : {1}`n  LastWrite : {2}`n  SHA256    : {3}" -f `
-  $i.FullName, $i.Length, $i.LastWriteTime, $sha) -ForegroundColor Green
-$sha | Set-Content -Path $HashFile
-
-Step 8 '完成'
-Write-Host "✓ 交付物就绪：$Deliver`n  哈希已写：$HashFile`n  （分发给用户只需拷贝这个 exe）" -ForegroundColor Green
+exit $ExitCode
