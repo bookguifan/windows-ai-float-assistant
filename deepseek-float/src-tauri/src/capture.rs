@@ -601,11 +601,29 @@ pub(crate) unsafe fn read_open_clipboard_text() -> Option<String> {
 #[path = "clipboard_write.rs"]
 mod clipboard_write;
 
-/// 把文本写回剪贴板（用于恢复旧内容）。失败静默返回 false。
+/// 把文本写回剪贴板（用于恢复旧内容）。失败会记录恢复状态并返回 false。
 unsafe fn write_clipboard_text(text: &str, restore: Option<&RestoreGuard<'_>>) -> bool {
-    clipboard_write::write_text(text, || {
+    match clipboard_write::write_text(text, || {
         restore.map_or(true, |guard| guard.permits_current())
-    })
+    }) {
+        Ok(()) => true,
+        Err(error) => {
+            match &error {
+                clipboard_write::WriteError::RestoreIncomplete(formats) => {
+                    crate::diag::warn(&format!(
+                        "clipboard-write: recovery incomplete; failed formats={formats:?}"
+                    ));
+                }
+                clipboard_write::WriteError::PublishFailedRestored => {
+                    crate::diag::warn(
+                        "clipboard-write: publish failed; original formats were restored",
+                    );
+                }
+                _ => crate::diag::log(&format!("clipboard-write: {error:?}")),
+            }
+            false
+        }
+    }
 }
 
 /// 把文本写入系统剪贴板（供划词工具条的「复制」动作使用）。

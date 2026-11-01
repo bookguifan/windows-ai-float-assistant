@@ -1,6 +1,6 @@
 // The production writer is compiled against this in-memory Win32 facade.
 // No Windows crate, windows, input, or system clipboard are used by this test.
-#![allow(non_snake_case, non_camel_case_types)]
+#![allow(non_snake_case, non_camel_case_types, clippy::missing_safety_doc)]
 extern crate self as windows;
 use std::{
     cell::RefCell,
@@ -19,7 +19,7 @@ pub mod core {
 #[derive(Default)]
 struct State {
     clipboard: Vec<(u32, Vec<u8>)>,
-    blocks: HashMap<usize, Box<[u16]>>,
+    blocks: HashMap<usize, Box<[u8]>>,
     transferred: HashSet<usize>,
     next: usize,
     opened: bool,
@@ -33,6 +33,7 @@ struct State {
     frees: usize,
     creates: usize,
     destroys: usize,
+    last_error: u32,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
@@ -64,6 +65,14 @@ pub mod Win32 {
         pub struct HGLOBAL(pub *mut c_void);
         #[derive(Clone, Copy, Default)]
         pub struct HWND(pub *mut c_void);
+        #[derive(Clone, Copy, Default)]
+        pub struct WIN32_ERROR(pub u32);
+        pub unsafe fn GetLastError() -> WIN32_ERROR {
+            crate::with(|s| WIN32_ERROR(s.last_error))
+        }
+        pub unsafe fn SetLastError(error: WIN32_ERROR) {
+            crate::with(|s| s.last_error = error.0);
+        }
         pub(crate) unsafe fn GlobalFree(h: Option<HGLOBAL>) -> Result<HGLOBAL, ()> {
             crate::with(|s| {
                 let id = h.unwrap().0 as usize;
@@ -81,29 +90,53 @@ pub mod Win32 {
         pub mod Memory {
             use crate::{c_void, with, Win32::Foundation::HGLOBAL};
             pub const GMEM_MOVEABLE: u32 = 2;
+            const CLIPBOARD_HANDLE_BASE: usize = 1usize << 48;
             pub(crate) unsafe fn GlobalAlloc(flags: u32, size: usize) -> Result<HGLOBAL, ()> {
                 assert_eq!(flags, GMEM_MOVEABLE);
                 with(|s| {
                     if s.fail == "allocate" {
                         return Err(());
                     }
-                    assert_eq!(size % 2, 0);
                     s.next += 1;
                     let id = s.next;
-                    s.blocks.insert(id, vec![0u16; size / 2].into_boxed_slice());
+                    s.blocks.insert(id, vec![0u8; size].into_boxed_slice());
                     Ok(HGLOBAL(id as *mut c_void))
                 })
             }
             pub(crate) unsafe fn GlobalLock(h: HGLOBAL) -> *mut c_void {
                 with(|s| {
+                    let id = h.0 as usize;
+                    if id >= CLIPBOARD_HANDLE_BASE {
+                        if s.fail == "snapshot_lock" {
+                            return std::ptr::null_mut();
+                        }
+                        let format = (id - CLIPBOARD_HANDLE_BASE) as u32;
+                        return s
+                            .clipboard
+                            .iter()
+                            .find(|(candidate, _)| *candidate == format)
+                            .map_or(std::ptr::null_mut(), |(_, bytes)| {
+                                bytes.as_ptr() as *mut c_void
+                            });
+                    }
                     if s.fail == "lock" {
                         return std::ptr::null_mut();
                     }
-                    s.blocks
-                        .get_mut(&(h.0 as usize))
-                        .unwrap()
-                        .as_mut_ptr()
-                        .cast()
+                    s.blocks.get_mut(&id).unwrap().as_mut_ptr().cast()
+                })
+            }
+            pub(crate) unsafe fn GlobalSize(h: HGLOBAL) -> usize {
+                with(|s| {
+                    let id = h.0 as usize;
+                    if id >= CLIPBOARD_HANDLE_BASE {
+                        let format = (id - CLIPBOARD_HANDLE_BASE) as u32;
+                        return s
+                            .clipboard
+                            .iter()
+                            .find(|(candidate, _)| *candidate == format)
+                            .map_or(0, |(_, bytes)| bytes.len());
+                    }
+                    s.blocks.get(&id).map_or(0, |bytes| bytes.len())
                 })
             }
             pub(crate) unsafe fn GlobalUnlock(_: HGLOBAL) -> Result<(), ()> {
@@ -115,6 +148,39 @@ pub mod Win32 {
                 with,
                 Win32::Foundation::{HANDLE, HWND},
             };
+            const CLIPBOARD_HANDLE_BASE: usize = 1usize << 48;
+            pub(crate) unsafe fn EnumClipboardFormats(previous: u32) -> u32 {
+                with(|s| {
+                    if s.fail == "enumerate" {
+                        s.last_error = 5;
+                        return 0;
+                    }
+                    let next = if previous == 0 {
+                        s.clipboard.first()
+                    } else {
+                        s.clipboard
+                            .iter()
+                            .position(|(format, _)| *format == previous)
+                            .and_then(|index| s.clipboard.get(index + 1))
+                    };
+                    s.last_error = 0;
+                    next.map_or(0, |(format, _)| *format)
+                })
+            }
+            pub(crate) unsafe fn GetClipboardData(format: u32) -> Result<HANDLE, ()> {
+                with(|s| {
+                    if s.fail == "snapshot_read" {
+                        return Err(());
+                    }
+                    s.clipboard
+                        .iter()
+                        .any(|(available, _)| *available == format)
+                        .then_some(HANDLE(
+                            (CLIPBOARD_HANDLE_BASE + format as usize) as *mut std::ffi::c_void,
+                        ))
+                        .ok_or(())
+                })
+            }
             pub(crate) unsafe fn OpenClipboard(owner: Option<HWND>) -> Result<(), ()> {
                 with(|s| {
                     s.opens += 1;
@@ -145,7 +211,12 @@ pub mod Win32 {
                 with(|s| {
                     assert!(s.opened);
                     s.publishes += 1;
-                    if s.owner == 0 || s.fail == "publish" {
+                    if s.owner == 0
+                        || s.fail == "publish"
+                        || (s.fail == "publish_once" && s.publishes == 1)
+                        || (s.fail == "restore_format_49152"
+                            && (s.publishes == 1 || (s.publishes > 1 && format == 49152)))
+                    {
                         return Err(());
                     }
                     let handle = handle.unwrap();
@@ -222,7 +293,7 @@ pub mod Win32 {
 #[path = "../src/clipboard_write.rs"]
 mod clipboard_write;
 fn write(text: &str) -> bool {
-    unsafe { clipboard_write::write_text(text, || true) }
+    unsafe { clipboard_write::write_text(text, || true).is_ok() }
 }
 #[test]
 fn explicit_copy_publishes_exact_chinese_english_multiline_and_unicode() {
@@ -265,7 +336,7 @@ fn prepublication_failures_preserve_original_text_html_rtf_and_image_without_ret
 #[test]
 fn rejected_restore_guard_never_empties_or_publishes() {
     reset("");
-    assert!(!unsafe { clipboard_write::write_text("replacement", || false) });
+    assert!(unsafe { clipboard_write::write_text("replacement", || false) }.is_err());
     with(|s| {
         assert_eq!(s.clipboard, original());
         assert_eq!((s.empties, s.publishes, s.closes, s.frees), (0, 0, 1, 1));
@@ -273,17 +344,126 @@ fn rejected_restore_guard_never_empties_or_publishes() {
     });
 }
 #[test]
-fn publish_failure_returns_false_and_releases_resources_without_retry() {
-    reset("publish");
-    assert!(!write("replacement"));
+fn publish_failure_restores_original_formats_and_releases_owned_resources() {
+    reset("publish_once");
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::PublishFailedRestored)
+    ));
     with(|s| {
         assert_eq!(
             (s.opens, s.empties, s.publishes, s.closes, s.frees),
-            (1, 1, 1, 1, 1)
+            (1, 1, 5, 1, 1)
+        );
+        assert_eq!(s.clipboard, original());
+        assert!(!s.opened && s.blocks.is_empty());
+    });
+}
+
+#[test]
+fn gdi_object_format_range_is_restored_after_text_publish_failure() {
+    for format in [0x0300, 0x03ff] {
+        reset("publish_once");
+        let gdi_payload = (format, vec![0x47, 0x44, 0x49]);
+        with(|s| s.clipboard.push(gdi_payload.clone()));
+
+        let mut expected = original();
+        expected.push(gdi_payload);
+        assert!(matches!(
+            unsafe { clipboard_write::write_text("replacement", || true) },
+            Err(clipboard_write::WriteError::PublishFailedRestored)
+        ));
+        with(|s| {
+            assert_eq!(s.clipboard, expected);
+            assert!(!s.opened && s.blocks.is_empty());
+        });
+    }
+}
+
+#[test]
+fn unsupported_private_format_is_rejected_before_the_clipboard_is_cleared() {
+    reset("");
+    with(|s| s.clipboard.push((0x0200, vec![9, 8, 7])));
+    let before = with(|s| s.clipboard.clone());
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::UnsupportedFormat(0x0200))
+    ));
+    with(|s| {
+        assert_eq!(s.clipboard, before);
+        assert_eq!((s.empties, s.publishes), (0, 0));
+        assert!(!s.opened && s.blocks.is_empty());
+    });
+}
+
+#[test]
+fn synthesized_bitmap_and_palette_are_recovered_from_the_preserved_dib() {
+    reset("publish_once");
+    with(|s| {
+        s.clipboard.push((2, vec![5, 5]));
+        s.clipboard.push((9, vec![6, 6]));
+    });
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::PublishFailedRestored)
+    ));
+    with(|s| {
+        assert_eq!(s.clipboard, original());
+        assert!(!s
+            .clipboard
+            .iter()
+            .any(|(format, _)| matches!(format, 2 | 9)));
+    });
+}
+
+#[test]
+fn incomplete_restore_is_reported_and_other_formats_are_still_restored() {
+    reset("restore_format_49152");
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::RestoreIncomplete(ref failed)) if failed == &[49152]
+    ));
+    with(|s| {
+        assert_eq!(
+            s.clipboard,
+            vec![
+                original()[0].clone(),
+                original()[2].clone(),
+                original()[3].clone()
+            ]
         );
         assert!(!s.opened && s.blocks.is_empty());
     });
 }
+
+#[test]
+fn format_enumeration_failure_preserves_original_clipboard() {
+    reset("enumerate");
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::EnumerationFailed)
+    ));
+    with(|s| {
+        assert_eq!(s.clipboard, original());
+        assert_eq!((s.empties, s.publishes), (0, 0));
+        assert!(!s.opened && s.blocks.is_empty());
+    });
+}
+
+#[test]
+fn snapshot_failure_preserves_original_clipboard_before_emptyclipboard() {
+    reset("snapshot_read");
+    assert!(matches!(
+        unsafe { clipboard_write::write_text("replacement", || true) },
+        Err(clipboard_write::WriteError::SnapshotFailed(13))
+    ));
+    with(|s| {
+        assert_eq!(s.clipboard, original());
+        assert_eq!((s.empties, s.publishes), (0, 0));
+        assert!(!s.opened && s.blocks.is_empty());
+    });
+}
+
 #[test]
 fn rapid_success_busy_success_cannot_publish_old_text_or_reuse_owned_memory() {
     reset("");
