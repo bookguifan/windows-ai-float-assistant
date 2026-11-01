@@ -8,7 +8,7 @@
 //! ## 修法
 //! 引入一个**一次性就绪闸门**：启动期 `windows::gate_ball_show` 在后台线程
 //! [`wait_ball_ready`] 上等待；`poc/ball.html` 在**首个渲染帧之后**经 `ipc::ball_ready`
-//! 调用 [`signal_ball_ready`] 置位。等待方一旦被唤醒（或到达兜底超时）才真正显形。
+//! 调用 [`signal_ball_ready`] 置位。等待结束后在主线程完成显形判定，保留期间更新的手动显隐选择。
 //!
 //! ## 设计要点
 //! - **一次就绪**：闸门只从「未就绪」单向翻转为「已就绪」，`signal` 幂等；
@@ -21,10 +21,10 @@
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// 等待 `ball_ready` 的**兜底超时**：超过此时长仍未收到握手信号，则强制显形。
+/// 等待 `ball_ready` 的**兜底超时**：届时未收到握手，也完成启动显形判定。
 ///
 /// 必要性：前端握手可能因页面加载失败 / IPC 桥不可用（`__TAURI_INTERNALS__` 改名等）
-/// 而**永不到达**；若无超时，球将永久不可见 —— 故 ~3s 后无论是否收到信号都必须显形。
+/// 而**永不到达**；若无超时，球将永久不可见。没有更新的手动显隐操作时，~3s 后仍须显形。
 pub(crate) const BALL_READY_TIMEOUT: Duration = Duration::from_millis(3000);
 
 /// 一次性「就绪」闸门：`signal` 置位并唤醒等待者；`wait` 阻塞至置位或超时。
@@ -99,9 +99,24 @@ pub(crate) fn signal_ball_ready() {
 
 /// 等待全局就绪闸门：阻塞至收到握手信号或 `timeout` 到期。
 ///
-/// 返回 `true` = 收到 `ball_ready`，`false` = 超时（调用方须**照常显形**，不能因超时把球藏起来）。
+/// 返回 `true` = 收到 `ball_ready`，`false` = 超时；两条路径都须完成显形判定，保留更新的手动选择。
 pub(crate) fn wait_ball_ready(timeout: Duration) -> bool {
     gate().wait(timeout)
+}
+
+/// Complete startup on the main thread, preserving newer explicit visibility choices.
+/// Read the current generation here, after any queue delay; the window owner supplies the reveal.
+/// The caller must serialize this decision and reveal with menu actions on the main thread.
+pub(crate) fn complete_ball_startup(
+    entry_generation: u64,
+    current_generation: impl FnOnce() -> u64,
+    show: impl FnOnce(),
+) -> bool {
+    if current_generation() != entry_generation {
+        return false;
+    }
+    show();
+    true
 }
 
 #[cfg(test)]
@@ -109,6 +124,102 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn startup_completion_shows_on_ready_without_new_action() {
+        let gate = BallReadyGate::new();
+        gate.signal();
+        assert!(gate.wait(Duration::ZERO));
+        let shows = std::cell::Cell::new(0);
+        let shown = complete_ball_startup(7, || 7, || shows.set(shows.get() + 1));
+        assert_eq!(shows.get(), 1);
+        assert!(shown);
+    }
+
+    #[test]
+    fn startup_completion_shows_on_timeout_without_new_action() {
+        let gate = BallReadyGate::new();
+        assert!(!gate.wait(Duration::ZERO));
+        let shows = std::cell::Cell::new(0);
+        let shown = complete_ball_startup(7, || 7, || shows.set(shows.get() + 1));
+        assert_eq!(shows.get(), 1);
+        assert!(shown);
+    }
+
+    fn assert_startup_completion_preserves_show_then_hide(ready: bool) {
+        let gate = BallReadyGate::new();
+        let generation = std::cell::Cell::new(7);
+        let entry_generation = generation.get();
+        let visible = std::cell::Cell::new(false);
+        // The same two generation advances as the menu's Show -> Hide actions.
+        visible.set(true);
+        generation.set(8);
+        visible.set(false);
+        generation.set(9);
+        if ready {
+            gate.signal();
+        }
+        assert_eq!(gate.wait(Duration::ZERO), ready);
+        let shows = std::cell::Cell::new(0);
+        let shown = complete_ball_startup(
+            entry_generation,
+            || generation.get(),
+            || {
+                shows.set(shows.get() + 1);
+                visible.set(true);
+            },
+        );
+        assert_eq!(shows.get(), 0, "a newer Hide must cancel startup reveal");
+        assert!(!shown);
+        assert!(!visible.get());
+    }
+
+    #[test]
+    fn startup_completion_ready_preserves_show_then_hide() {
+        assert_startup_completion_preserves_show_then_hide(true);
+    }
+
+    #[test]
+    fn startup_completion_timeout_preserves_show_then_hide() {
+        assert_startup_completion_preserves_show_then_hide(false);
+    }
+
+    #[test]
+    fn startup_completion_reads_generation_when_queued_callback_executes() {
+        for ready in [false, true] {
+            let gate = BallReadyGate::new();
+            if ready {
+                gate.signal();
+            }
+            assert_eq!(gate.wait(Duration::ZERO), ready);
+            let generation = std::cell::Cell::new(7);
+            let reads = std::cell::Cell::new(0);
+            let shows = std::cell::Cell::new(0);
+            let entry_generation = generation.get();
+            let queued_completion = || {
+                complete_ball_startup(
+                    entry_generation,
+                    || {
+                        reads.set(reads.get() + 1);
+                        generation.get()
+                    },
+                    || shows.set(shows.get() + 1),
+                )
+            };
+            assert_eq!(reads.get(), 0);
+            assert_eq!(shows.get(), 0);
+            // A newer menu action lands after queueing, before main-thread execution.
+            generation.set(8);
+            let shown = queued_completion();
+            assert_eq!(
+                shows.get(),
+                0,
+                "queued startup reveal must honor a newer action"
+            );
+            assert!(!shown);
+            assert_eq!(reads.get(), 1);
+        }
+    }
 
     // ---- 4+ 用例：闸门的核心性质（超时 / 先置位 / 跨线程唤醒 / 幂等 / 超时后再置位）----
 
