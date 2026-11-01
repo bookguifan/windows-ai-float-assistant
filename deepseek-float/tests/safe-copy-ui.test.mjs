@@ -205,3 +205,51 @@ test('failed more IPC can be retried without reusing a consumed action',async()=
   assert.equal(p.calls.filter(c=>c.command==='popup_action').length,2);await tick();
  }finally{p.close();}
 });
+
+test('late rejected more cannot unlock the replacement menu request',async()=>{
+ const p=toolbarPage();try{
+  const pending=[];p.w.console.error=()=>{};
+  p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{
+   p.calls.push({command,args});
+   return command==='popup_action'&&args.preset==='open-more'
+    ?new Promise((resolve,reject)=>pending.push({resolve,reject})):Promise.resolve(true);
+  };
+  const prompts=Array.from({length:6},(_,i)=>({id:`prompt-${i}`,label:`Prompt ${i}`}));
+  p.w.__dsfSetPrompts(prompts);p.w.__dsfResetFired('600');
+  const more=p.d.querySelector('[data-preset="open-more"]');more.click();
+  p.w.__dsfSetPrompts(prompts);p.w.__dsfResetFired('601');more.click();
+  pending[0].reject(Error('old menu request failed'));await tick();more.click();
+  assert.equal(p.calls.filter(c=>c.command==='popup_action').length,2,
+   'old rejection must leave the replacement menu request locked');
+  pending[1].resolve();await tick();p.w.__dsfShowMore();
+  p.d.querySelector('#more-box [data-preset="prompt-5"] span').click();
+  const actions=p.calls.filter(c=>c.command==='popup_action');
+  assert.deepEqual(actions.map(c=>[c.args.preset,c.args.selectionTicket]),
+   [['open-more','600'],['open-more','601'],['prompt-5','601']]);
+ }finally{p.close();}
+});
+
+test('rapid selection refresh replaces toolbar and overflow before dispatching the latest ticket',()=>{
+ const p=toolbarPage();try{
+  const bar=p.d.querySelector('#bar'),more=p.d.querySelector('#more-box');
+  for(let n=0;n<20;n++){
+   const prompts=Array.from({length:n%2?6:2},(_,i)=>({id:`selection-${n}-${i}`,label:`Prompt ${n}/${i}`}));
+   p.w.__dsfSetPrompts(prompts);p.w.__dsfResetFired(String(700+n));
+   assert.equal(p.d.querySelector('#bar'),bar);assert.equal(p.d.querySelector('#more-box'),more);
+   assert.equal(p.d.querySelectorAll('.bar').length,1);
+   assert.deepEqual([...bar.querySelectorAll('button')].map(b=>b.dataset.preset),
+    ['copy',...prompts.slice(0,4).map(p=>p.id),'open-more']);
+   assert.deepEqual([...more.querySelectorAll('button')].map(b=>b.dataset.preset),
+    [...prompts.slice(4).map(p=>p.id),'open-settings']);
+   assert.equal(p.d.body.classList.contains('menu-mode'),false);
+   assert.equal(more.classList.contains('visible'),false);
+   p.w.__dsfShowMore();
+  }
+  p.d.querySelector('#more-box [data-preset="selection-19-5"] span').click();
+  p.d.querySelector('#more-box [data-preset="selection-19-5"] span').click();
+  const actions=p.calls.filter(c=>c.command==='popup_action');
+  assert.equal(actions.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(actions[0].args)),
+   {preset:'selection-19-5',selectionTicket:'719'});
+ }finally{p.close();}
+});

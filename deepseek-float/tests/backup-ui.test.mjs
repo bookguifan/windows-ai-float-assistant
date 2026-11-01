@@ -171,3 +171,40 @@ test('successful restore refreshes prompt, site, and shortcut controls in place'
     assert.ok(p.calls.some(c => c.command === 'hotkey_status'));
   } finally { p.close(); }
 });
+
+test('pending export ignores rapid clicks and cancellation permits a fresh export', async () => {
+  let finish;
+  const p = page(c => c === 'backup_export' ? new Promise(resolve => { finish = resolve; }) : undefined);
+  try {
+    p.d.getElementById('backup-export').click();
+    p.d.getElementById('backup-export').click();
+    p.d.getElementById('backup-import').click();
+    assert.equal(p.calls.filter(c => c.command === 'backup_export').length, 1);
+    assert.equal(p.calls.filter(c => c.command === 'backup_import_preview').length, 0);
+    finish(null);
+    await tick();
+    assert.match(p.d.getElementById('backup-status').textContent, /取消/);
+    assert.equal(p.d.getElementById('backup-export').disabled, false);
+    p.d.getElementById('backup-export').click();
+    assert.equal(p.calls.filter(c => c.command === 'backup_export').length, 2);
+    finish(null);
+    await tick();
+    assert.equal(p.calls.filter(c => c.command === 'backup_restore').length, 0);
+  } finally { p.close(); }
+});
+
+test('failed restore releases controls and requires a new preview before retry', async () => {
+  const p = page(c => c === 'backup_import_preview' ? Promise.resolve(preview)
+    : c === 'backup_restore' ? Promise.reject('测试写入失败，已回滚') : undefined);
+  try {
+    await tick();
+    p.d.getElementById('backup-import').click(); await tick();
+    p.d.getElementById('backup-restore-confirm').click(); await tick();
+    assert.match(p.d.getElementById('backup-status').textContent, /已回滚/);
+    assert.equal(p.d.getElementById('backup-preview').hidden, true);
+    assert.equal(p.d.getElementById('backup-import').disabled, false);
+    assert.equal(p.d.querySelector('#features input[data-key="fullscreen"]').disabled, false);
+    p.d.getElementById('backup-restore-confirm').click(); await tick();
+    assert.equal(p.calls.filter(c => c.command === 'backup_restore').length, 1);
+  } finally { p.close(); }
+});

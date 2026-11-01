@@ -1898,6 +1898,84 @@ mod tests {
     }
 
     #[test]
+    fn export_file_roundtrips_and_failed_replacement_preserves_existing_destination() {
+        let root = temp_root("export-file-boundary");
+        let (bytes, _) = encode_backup(&sample_snapshot()).unwrap();
+        let path = root.join("saved-backup");
+        write_export(&path, &bytes).unwrap();
+        let destination = path.with_extension("json");
+        let saved = read_limited(&destination).unwrap();
+        assert_eq!(saved, bytes);
+        assert_eq!(decode_backup(&saved).unwrap().version, VERSION);
+
+        let oversized = vec![0; MAX_BACKUP_BYTES + 1];
+        assert!(write_export(&destination, &oversized).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+
+        let blocked = root.join("blocked.json");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep.txt"), b"untouched").unwrap();
+        assert!(write_export(&blocked, &bytes).is_err());
+        assert_eq!(fs::read(blocked.join("keep.txt")).unwrap(), b"untouched");
+        assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_backup_read_is_rejected_without_touching_store_files() {
+        let root = temp_root("oversized-backup-read");
+        let config = root.join("config.json");
+        fs::write(&config, b"original-config").unwrap();
+        let input = root.join("oversized.json");
+        File::create(&input)
+            .unwrap()
+            .set_len((MAX_BACKUP_BYTES + 1) as u64)
+            .unwrap();
+        assert!(read_limited(&input).is_err());
+        assert_eq!(fs::read(&config).unwrap(), b"original-config");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn last_file_restore_failure_rolls_back_all_files_and_invalid_manifest_fails_closed() {
+        let root = temp_root("restore-last-file-failure");
+        let updates: Vec<_> = STORE_FILES
+            .into_iter()
+            .map(|name| {
+                fs::write(root.join(name), format!("old-{name}")).unwrap();
+                (name, format!("new-{name}").into_bytes())
+            })
+            .collect();
+        assert!(apply_transaction_at(&root, &updates, Some(2)).is_err());
+        for name in STORE_FILES {
+            assert_eq!(
+                fs::read(root.join(name)).unwrap(),
+                format!("old-{name}").as_bytes()
+            );
+        }
+        assert!(!root.join(JOURNAL_DIR).exists());
+
+        let journal = prepare_journal(&root).unwrap();
+        fs::write(journal.join("manifest.json"), b"{broken-json").unwrap();
+        assert!(recover_journal_at(&root).is_err());
+        for name in STORE_FILES {
+            assert_eq!(
+                fs::read(root.join(name)).unwrap(),
+                format!("old-{name}").as_bytes()
+            );
+        }
+        assert!(
+            journal.exists(),
+            "invalid recovery evidence must remain available"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn export_filename_uses_required_timestamp_shape() {
         let name = default_backup_filename();
         assert!(name.starts_with("deepseek-float-backup-"));

@@ -319,17 +319,19 @@ pub(crate) fn ball_show<R: Runtime>(app: &AppHandle<R>) {
 ///    渲染照常进行、用户却看不到任何东西。
 /// 2. `poc/ball.html` 在**首个渲染帧之后**经 [`crate::ipc::ball_ready`] 命令送来回就绪信号。
 /// 3. 本函数起后台线程等待该信号（**≤ [`crate::ballready::BALL_READY_TIMEOUT`]（~3s）兜底超时**），
-///    收到或超时后调用 [`ball_show`]：套椭圆区域（`apply_ball_shape(true)`）令球「一露面即圆」，
-///    而此刻首帧早已绘制完成 ⇒ **不存在任何「空白窗口期」**。
+///    收到或超时后在主线程检查手动显隐代次；没有更新选择才调用 [`ball_show`] 套椭圆区域。
+///    握手用于减少首帧空白；超时兜底本身不证明页面已经完成绘制。
 ///
 /// ## 为什么必须保留超时兜底
 /// 前端握手可能因页面加载失败 / IPC 桥（`__TAURI_INTERNALS__`）不可用而**永不到达**；
-/// 若无超时则球将**永久不可见**（远比「空白」严重）。故 ~3s 后无论是否收到信号都必须显形。
+/// 若无超时则球将**永久不可见**（远比「空白」严重）。没有更新的手动选择时，~3s 后仍须显形。
 ///
 /// ## 与运行期显隐的关系
 /// 本函数是启动期**一次性**入口；运行期显隐仍走 [`reveal_ball`] / [`ball_hide`]。
-/// 等待期间 `BALL_LOGIC_HIDDEN` 置位（球此刻确为隐藏态），由 [`ball_show`] 复位为可见。
+/// 启动先置位 `BALL_LOGIC_HIDDEN`；等待或排队期间更新的手动选择优先于启动显形。
 pub(crate) fn gate_ball_show<R: Runtime>(app: &AppHandle<R>) {
+    // Capture intent before waiting; read it again only when the main-thread completion runs.
+    let entry_generation = crate::fullscreen::user_ball_visibility_generation();
     // 1) 隐藏主力：零面积空区域 ⇒ 整窗不可见、不吞点击（此刻起用户看不到球）。
     crate::ballstyle::apply_ball_shape(app, false);
     BALL_LOGIC_HIDDEN.store(true, Ordering::SeqCst);
@@ -355,18 +357,30 @@ pub(crate) fn gate_ball_show<R: Runtime>(app: &AppHandle<R>) {
         "[ball-ready] 已维持零面积空区域并预先显形（驱动首帧合成），等待 ball_ready 握手（≤3s 兜底）",
     );
 
-    // 3) 后台等待「首帧就绪」/ 超时，随后正式显形（套椭圆区域）。
+    // 3) 后台等待握手 / 超时，再将最终显形判定与菜单动作串行到主线程。
     let app2 = app.clone();
     thread::spawn(move || {
         let ready = crate::ballready::wait_ball_ready(crate::ballready::BALL_READY_TIMEOUT);
         if ready {
-            crate::diag::log("[ball-ready] 收到 ball_ready（首帧已绘制）→ 套椭圆区域显形");
+            crate::diag::log("[ball-ready] 收到 ball_ready → 准备主线程启动显形判定");
         } else {
             crate::diag::warn(
-                "[ball-ready] 等待 ball_ready 超时（~3s 兜底）→ 强制显形（请检查球页加载 / IPC 桥）",
+                "[ball-ready] 等待 ball_ready 超时（~3s 兜底）→ 准备显形判定（请检查球页加载 / IPC 桥）",
             );
         }
-        ball_show(&app2);
+        let app_on_main = app2.clone();
+        if let Err(error) = app2.run_on_main_thread(move || {
+            // Query the live generation inside this callback, never before queueing it.
+            if !crate::ballready::complete_ball_startup(
+                entry_generation,
+                crate::fullscreen::user_ball_visibility_generation,
+                || ball_show(&app_on_main),
+            ) {
+                crate::diag::log("[ball-ready] 手动显隐选择已更新，跳过启动显形");
+            }
+        }) {
+            crate::diag::warn(&format!("[ball-ready] 启动显形任务投递失败: {error}"));
+        }
     });
 }
 
