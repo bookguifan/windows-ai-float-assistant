@@ -6,7 +6,7 @@ Updated 2026-11-01. This is the current release summary; detailed historical tes
 
 - Planned release and tag: `v0.1.0-beta.2`. The only GitHub release currently published is `v0.1.0-beta.1`.
 - `package.json`, `Cargo.toml`, and `tauri.conf.json` remain `0.1.0`; the prerelease suffix belongs to the Git tag and release name.
-- PR #5 contains clipboard failure recovery and release-build path remapping. The repository cleanup and release-toolchain verification are being added to that branch; check that CI matches the final PR head before merging.
+- PR #5 contains clipboard failure recovery, release-build path remapping, and this repository/release-toolchain cleanup. Before merging, verify CI against the exact current PR head; the earlier successful run was for the previous head.
 - Beta.2.0 remains **NO-GO**. This branch is not a frozen distribution candidate, and no tag or release asset was created in this work.
 
 ## Build Entry
@@ -22,7 +22,7 @@ The ordinary build runs frontend checks and unit tests, Rust formatting, strict 
 - Eleven completed Beta.2 reports were moved under `docs/archive/beta2/`; their historical outcomes are retained. The current release summary and known-issues page remain at the top level. No tracked history or Windows license material was deleted; the 594-file `distribution/windows/` set remains pending final binary-to-component mapping.
 - `release.ps1` is now a compatibility wrapper around `scripts/build-release.mjs`; npm fallback was removed. The package scripts include four release-toolchain regression tests.
 - On this machine, the release entry check passed with Node `v24.22.1`, pnpm `9.15.9`, and `pnpm exec node` resolving to the same Node executable. `pnpm run check` passed. `pnpm run test:unit` passed 400 cases across 15 scripts. A local scan found no broken relative links in 30 Markdown files. `git diff --check` exited 0; Git reported only the repository's configured line-ending normalization notices.
-- Rust tests, Playwright, and a full Release build were not rerun for this cleanup: application Rust/TypeScript sources and dependencies did not change. PR #5's prior CI result belongs to its previous head; the new commit's CI is still required.
+- Rust tests, Playwright, and a full Release build were not rerun for this cleanup: application Rust/TypeScript sources and dependencies did not change. The successful PR #5 CI run documented earlier applies only to its old head; the latest head must have its own passing CI before merge.
 
 ## Windows Acceptance
 
