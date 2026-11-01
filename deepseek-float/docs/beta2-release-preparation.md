@@ -9,10 +9,36 @@ PR [#3](https://github.com/bookguifan/windows-ai-float-assistant/pull/3) 已合�
 - 已合并隔离修复：统一派生配置、收藏、提示词、日志、诊断、WebView2、备份和临时目录；无效参数 fail closed。隔离构建延后配置窗口创建并显式绑定 WebView2 数据目录，避免 identifier 派生空目录。普通 Release 默认路径不变。
 - **723105b**：主线程启动完成回调读取最新手动显隐代次；迟到的显形不覆盖用户主动隐藏。无新操作时 Ready/三秒超时仍正常显形。
 - **a4b0272**：修复主动纯文本复制的 NULL owner。先准备 UTF-16 内存，再创建私有 message-only 窗口，使用有效 HWND 打开并发布；CloseClipboard 后销毁窗口。成功后内存交给系统，失败时释放自有资源，无无限重试。
+- 本地未提交的 **feature/beta2-release-safety** 修改：在 EmptyClipboard 前快照可安全克隆的全局内存格式；无法确认的私有/非全局格式、读取失败或超限时先拒绝。发布失败时恢复快照，并区分完整恢复与恢复不完整，诊断日志列出失败格式。没有更改锁文件，也未启用 Release 自动 Ctrl+C 回退。
 - **686258e**：补强 A01 旧菜单请求失败、快速刷新与最新票据回归；补强备份文件读写、超限拒绝、失败清理、事务回滚及页面忙碌/取消/失败重试。
 - Release 自动 Ctrl+C 回退继续固定禁用；旧配置、备份、IPC 和实验特性不能开启。没有升级依赖或修改锁文件。
 
 主动复制缺陷依据 [Microsoft OpenClipboard 文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openclipboard)：NULL owner 后 EmptyClipboard 将 owner 置空，导致 SetClipboardData 失败。新测试将真实生产 writer 编译接入内存 Win32 facade；旧 writer 为 2 passed / 3 failed，修复后 5 passed。该证据是模拟 API 合约回归，未冒充原生复制成功。
+
+## 剪贴板发布失败回滚（2026-11-01，本地未提交）
+
+当前 HEAD 仍为合并提交 `5e43b8e8f7beec4ae364bb4e89786a79385bf8e0`；以下改动尚未提交、未推送，也未冻结为新验收候选。剪贴板源码已在 `target/release` 生成普通 Release EXE/PDB；产物未启动、未复制到 `release/`，隐私检查见下节。工作区变更包括剪贴板实现/测试、两种 Release 构建入口及本文档。
+
+剪贴板会先在锁内枚举并复制受支持的 HGLOBAL 数据，最多 128 个格式、合计 64 MiB。HTML/RTF 等注册格式、GDI 对象格式（0x0300–0x03FF）和 DIB/DIBV5 内容可参与恢复；DIB 存在时跳过可由其重新合成的 Bitmap/Palette。Owner-display、应用私有格式（0x0200–0x02FF）、无法安全克隆的格式、读取错误和超限都在 EmptyClipboard 前拒绝。GDI 对象格式使用 `GMEM_MOVEABLE` 全局内存，Windows 会在剪贴板清空时自动释放；见 [Microsoft 剪贴板格式文档](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats)。新文本发布失败后逐格式尽力恢复；完全恢复返回 `PublishFailedRestored`，部分失败返回 `RestoreIncomplete` 并记录失败格式。该流程尽量恢复剪贴板，但 Windows 不提供多格式原子事务；恢复 API 本身失败时仍可能有格式缺失，日志会明确标出，不能声称原内容已恢复。
+
+本次在 Windows 上重新执行 `cargo test --locked --quiet`：**449 passed / 0 failed / 12 ignored**；剪贴板专用内存模拟为 **10 passed / 0 failed**。`cargo clippy --all-targets --locked -- -D warnings`、`cargo fmt --check`、`git diff --check` 和 `cargo check --release --locked --features custom-protocol` 均 exit 0。Release 检查未启用 `beta2-isolation`。这些自动化测试没有读写真实系统剪贴板；没有重跑前端或 Playwright，因为本次没有前端修改。普通 Release 链接构建及 EXE 路径扫描已在下节记录；仍未执行原生复制或失败恢复验收。
+
+## Release 路径隐私复核（2026-11-01，本地未提交）
+
+首次普通 Release 构建的 EXE/PDB 扫描发现 `%USERPROFILE%\.cargo\registry\src\...\anyhow-1.0.104\src\error.rs`，PDB 还包含工作区路径和 MSVC 临时目录。两个 Release 入口现在保留已有 `RUSTFLAGS`/`CARGO_ENCODED_RUSTFLAGS`，并追加把项目根映射为 `/src`、Cargo home 映射为 `/cargo` 的 `--remap-path-prefix` 参数。实现位置为 `scripts/build-release.mjs` 和 `release.ps1`；Rustc 路径映射的范围与限制见 [rustc 文档](https://doc.rust-lang.org/rustc/remap-source-paths.html)。
+
+通过 `node scripts/build-release.mjs --no-frontend --no-check --no-deliver` 重新构建，命令 exit 0，Release 链接耗时约 2 分 39 秒；6 个嵌入 HTML 的新鲜度检查通过，跳过了前端重建、check 链、签名和交付复制。features 为 `custom-protocol`，没有启用 `beta2-isolation`。产物仅位于 `src-tauri/target/release`，没有启动，`release/` 交付目录未刷新。
+
+系统 PATH 的 Node 为 `v24.14.0`，低于 package.json 的 `^24.15.0`；因此首次执行没有重建前端。随后使用已安装的 Codex Node `v24.22.1` 重跑同一 `--no-deliver` 入口，满足 engines 约束，Cargo 报告 Release 已是最新，6 个 HTML 新鲜度检查再次通过。未升级或修改系统 Node；完整前端发行链仍需在受支持 Node 下单独运行。
+
+该构建输入是 HEAD `5e43b8e8f7beec4ae364bb4e89786a79385bf8e0` 加 7 个未提交文件的当前工作区；此本地产物不是冻结候选，也未执行原生验收。
+
+| 本机校验产物 | SHA256 | 大小 |
+|---|---|---:|
+| `deepseek-float.exe` | `41e86fea1816842c27fdcb7d0cee4e6230c213dd769766e9fb69989f7540605c` | 7,705,088 bytes |
+| `deepseek_float.pdb` | `a61e40dbaca877cab83083c3e04e47593c668b1047da12ef8013bb5da5159c9d` | 2,535,424 bytes |
+
+对 EXE 的 ASCII/UTF-16 静态扫描未命中本机用户名、工作区、Cargo home 或 Temp 路径。PDB 仍含 `%TEMP%\lnk{...}.tmp`、构建工作目录及 MSVC `cvtres.exe` 路径；这些来自链接器记录，Rustc source remap 不会重写它们。PDB 只作本机诊断，不得放入公开仓库或发行包；本次未提取 PDB GUID/Age，也未将其作为候选身份。以上是针对指定路径的静态扫描，不构成完整二进制隐私证明。`--no-deliver` 的成功输出也已调整为明确说明交付目录未刷新。
 
 ## 本轮自动化结果
 
@@ -105,13 +131,13 @@ A01 未复现新的生产缺陷，生产生命周期逻辑未改。会话/票据
 |---|---|
 | Issue #2 启动 P1 | 保持 OPEN；历史业务 panic 栈 UNKNOWN，单次成功不能证明间歇性问题已修复。新迟到显形修复仍待上述原生回归 |
 | A01 / N01 | 自动化保护通过，历史原生首次点击/生命周期 FAIL 保留；另验合成选区、计时隐藏、失效票据、旧结果和连续选区 |
-| N05 | 新主动复制修复只有模拟回归，历史完整文本不匹配/WM_COPY 原生证据未闭环；先另获合成剪贴板授权，再逐 UTF-16 核验中英文、多行、Unicode、忙碌与快速操作 |
-| 剪贴板系统失败边界 | 分配/锁定/创建 owner/Open/Empty 失败及授权拒绝发生在破坏前，模拟测试保留原文本/HTML/RTF/DIB；**Empty 成功后 Set 再失败仍可能留空，不保证任意格式事务回滚** |
+| N05 | 当前本地 writer 已覆盖发布失败后对文本/HTML/RTF/DIB 的模拟恢复；真实系统剪贴板读写、普通文本/中文/多行/Unicode、忙碌与快速操作仍未验收，另需原生测试授权 |
+| 剪贴板系统失败边界 | 分配/锁定/创建 owner/Open/Empty、枚举/读取/快照错误、授权拒绝和不支持格式都在清空前失败。发布失败后尽力逐格式恢复。恢复本身失败可能留下缺失格式，代码以 `RestoreIncomplete` 和诊断日志明示，不能保证 Windows 多格式原子回滚 |
 | 备份/恢复原生门禁 | 当前隔离构建有意禁用外部文件对话框，不静默放开。另行授权在无真实数据的独立 Windows 测试环境使用普通 Release，验合成收藏/设置/完整备份、取消、预览、合并/覆盖及非法文件；失败回滚保留真实临时事务故障注入证据 |
 | 交互范围 | 页面测试覆盖设置、收藏、拖动等前端流程；托盘、全屏恢复、快速开关和拖动的真实桌面表现未在新候选验证，不为清单额外重构 |
 | 历史正式 config 改写 | 写入者 UNKNOWN，本轮哈希未新增变化；不恢复、不重置，不以构建成功关闭历史问题 |
 | Huorong 缓存事件 | 仍为 UNATTRIBUTED_WRITE / ACCEPTED_NONBLOCKING_RISK，不继续追查全部系统缓存。契约是候选及受控子进程持久写入不得逃逸隔离根，正式业务数据与自启不得修改 |
-| 发行隐私 | 普通 Release EXE 有 178 处本机构建用户路径匹配，诊断候选有 176 处；所查私钥/GitHub token 模式无命中。扫描非完整安全证明，两者均不分发；最终构建应受控 remap 后复查 |
+| 发行隐私 | 首次未 remap 的本机 Release 命中 Cargo 源路径；新增 remap 后本地 EXE 对用户名、工作区、Cargo home、Temp 的 ASCII/UTF-16 扫描无命中。PDB 仍含 linker cwd/Temp 记录且不分发；正式打包前仍需复扫最终 EXE/安装包 |
 | 最终包与许可 | 依赖和锁文件不变，现有 LICENSE、第三方 notices、WebView2/Rust 许可与 MPL 源码材料保留；新发行 ZIP 尚未冻结审查，不能只交付 EXE |
 | 最终版本映射 | 最终发行源码、普通 Release 配置、EXE SHA256、私有 PDB GUID/Age 和打包清单必须绑定；诊断测试特性不能混入发行版 |
 
@@ -121,7 +147,7 @@ A01 未复现新的生产缺陷，生产生命周期逻辑未改。会话/票据
 
 目标发布标识沿用仓库约定 **v0.1.0-beta.2**；“Beta.2.0”是本轮任务名称，package/Tauri/Cargo 产品版本仍为 0.1.0，不擅自改为 2.0.0。当前没有新 Beta.2 下载包，既有 Beta.1 链接继续对应旧版本。
 
-1. 普通发行构建必须先构建前端，再使用 custom-protocol，显式 CARGO_INCREMENTAL=0，**不得带 beta2-isolation 或测试 identifier**。本轮普通 Release check/build 已通过，诊断变体另行保留。
+1. 普通发行构建必须先构建前端，再使用 custom-protocol、显式 CARGO_INCREMENTAL=0，并通过 Release 脚本映射源码路径，**不得带 beta2-isolation 或测试 identifier**。本轮普通 Release 链接及目标路径静态检查通过；诊断变体另行保留。
 2. 最终包应包含完整 LICENSE、THIRD_PARTY_NOTICES、SOURCES、组件/来源/校验索引及相对许可目录；不得含 PDB、日志、用户配置、WebView2 profile、测试缓存或密钥。最终 EXE 和完整包分别计算 SHA256。
 3. 核验哈希后完整解压到新程序目录，退出旧助手，保留旧程序、核心配置和收藏。不要删除 AppData 或清理 WebView2 来升级，也不要依赖测试目录覆盖实现正式迁移。
 4. 迁移使用显式备份与恢复预览；备份不含网站登录态、设备自启或自动复制授权。原生备份验收未完成前，不建议在唯一一份真实数据上恢复。
@@ -134,7 +160,25 @@ A01 未复现新的生产缺陷，生产生命周期逻辑未改。会话/票据
 - [x] 最小主动复制 owner 修复、针对性 A01/备份回归，全量自动化和普通 Release 构建通过。
 - [x] 新隔离候选身份、干净代码提交、路径探针和单次原生计划准备完成，旧候选未覆盖。
 - [x] Release 自动 Ctrl+C 仍禁用；正式业务文件哈希不变；本轮无真实剪贴板或原生恢复操作。
+- [x] 剪贴板发布失败回滚与内存 facade 覆盖完成；本轮复核 450 passed / 12 ignored，剪贴板 facade 11 passed，严格 Clippy、fmt 与 Release build 通过。
+- [x] 两个 Release 构建入口加入源码路径 remap；普通 Release EXE 静态隐私扫描未命中指定本机路径。PDB 仍含链接器临时路径，仅本地保留、不公开分发。
+- [ ] 新剪贴板 writer 的 Windows 原生复制与失败恢复行为仍待授权验收；不操作用户当前剪贴板。
 - [x] 新隔离候选单次原生启动、球窗/UI Ready、手动隐藏恢复、设置页读取/关闭、正常退出、子进程及正式数据/自启对比完成；迟到启动回调竞态本轮 NOT EXERCISED。
 - [ ] 对 Issue #2、A01、N05、原生备份等门禁取得真实结果或维护者明确的处置。
-- [ ] 最终普通发行构建 remap/隐私、完整许可证包和 EXE/PDB/源码映射复核。
+- [ ] 最终发布包的完整许可证内容、EXE/PDB/源码版本映射和包级隐私复核；PDB 不进入公开资产。
 - [ ] 推送当前功能分支、创建 PR 并等待最新 SHA CI；条件满足后按授权合并 main。Tag、资产上传和预发布仍需另行授权。
+
+## Release-Safety 收口复核（2026-11-01）
+
+本轮验证输入为 `feature/beta2-release-safety`，基线 HEAD `5e43b8e8f7beec4ae364bb4e89786a79385bf8e0` 加工作区修改。未启动 EXE，未读取或写入真实系统剪贴板，未访问正式配置；构建使用普通 Release 配置并以 `--no-deliver` 结束。
+
+- 剪贴板：新增 GDI 格式范围边界回归，覆盖 `0x0300` 和 `0x03FF` 发布失败后的恢复。移除格式接受分支时该测试先按预期失败，恢复分支后通过。官方 Win32 格式契约将这段范围定义为可用可移动全局内存承载的数据；本测试仍是内存 facade，不是原生剪贴板验收。
+- Rust：`cargo test --locked --offline` **450 passed / 0 failed / 12 ignored**；剪贴板集成目标 **11 passed / 0 failed**。首次无提权执行有 5 个收藏测试因沙箱拒绝写入仓库 `.test-artifacts` 而失败；获准后在相同代码下全量通过，未改业务代码。
+- 静态检查：`cargo clippy --all-targets --locked --offline -- -D warnings`、`cargo fmt --check`、`git diff --check` 均 exit 0。Node `v24.22.1` 直接运行的 14 个前端单测脚本全部 exit 0；之前记录的 Playwright 22 PASS 可复用，本轮没有前端源码改动。
+- 安全策略：Release 配置下执行 `cargo test --release --locked --offline --all-features --test release_selection_policy`，**4 passed / 0 failed**。普通 Release 构建只启用 `custom-protocol`，不含 `beta2-isolation` 或 `experimental-clipboard-fallback`；自动 Ctrl+C 回退仍禁用。
+- Release：Node `v24.22.1` 执行 `node scripts/build-release.mjs --no-deliver`，前端构建、6 个嵌入 HTML 新鲜度检查、CSP/内联脚本/版本/净化白名单检查及 Rust Release 链接均 exit 0。npm 对 pnpm 配置项有提示警告，不影响退出结果。没有签名、复制发行文件或创建 `release/`。
+- 本地 Release EXE：`deepseek-float/src-tauri/target/release/deepseek-float.exe`，SHA256 `72564eb196eb4750e35978d8c4051e10afb76b781c29e37f8ede3e1208c48b14`，7,705,088 bytes。对用户名、仓库目录、Cargo home 和 Temp 的 ASCII/UTF-16 路径扫描均无命中。该本机构建不是冻结候选，也没有启动。
+- 本地 PDB：`deepseek-float/src-tauri/target/release/deepseek_float.pdb`，SHA256 `bd67929b7d50114891db49c98441e467f2ab861444ec37c3c2e322e87a5342a9`，仅在本地构建目录；没有跟踪 EXE/PDB，也未生成发行目录。不得公开分发 PDB。
+- 许可材料：仓库包含 MIT `LICENSE`、`THIRD_PARTY_NOTICES.md` 和 Windows 发行材料。最终二进制与逐组件许可义务映射仍待发布包冻结后复核。
+
+剪贴板原生测试计划在 `docs/windows-clipboard-native-test-plan.md`，只读验证脚本为 `scripts/windows-clipboard-acceptance.ps1`。脚本默认 `Plan` 不读取剪贴板；读操作需显式 `-AcknowledgeClipboardRead`，且脚本不包含剪贴板写 API。Native clipboard、A01 和原生文件选择器/恢复流程本轮均未执行；不完整恢复、真实格式保持和系统句柄生命周期仍属发布验收门禁。Issue #2 继续 OPEN。
