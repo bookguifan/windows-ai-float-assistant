@@ -4,10 +4,10 @@
   "original_git_history_included": false,
   "automatic_copy_fallback": "hard-disabled; UIA and explicit copy retained",
   "source_rights": "explicit maintainer declaration recorded in RIGHTS_CONFIRMATION.md",
-  "security_channel": "not enabled or verified; private staging only",
+  "security_channel": "not enabled or verified in the imported snapshot; current channel settings are not represented by this record",
   "executables_or_release_attachments_included": false,
   "text_storage": "repository LF normalization; original upstream legal bytes retained",
-  "implementation_changes_from_reviewed_snapshot": "none beyond LF normalization",
+  "implementation_changes_from_reviewed_snapshot": "The imported snapshot was normalized to LF; subsequent implementation changes are recorded in Git history. This import record does not describe the current release binary or its component mapping.",
   "license_supplement": "five MPL components exact sources plus reviewed generated file; brotli exact source archive",
-  "repository_visibility": "private staging; no public release authorization"
+  "repository_visibility": "private staging at import time; repository confirmed public on 2026-11-01; this record does not authorize a Beta.2.0 release"
 }

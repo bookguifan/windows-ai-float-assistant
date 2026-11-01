@@ -116,4 +116,4 @@ PR #3 已按维护者明确授权合并，main 为 `05eaf6b37381a12fc5f676011b16
 
 新增一次单独授权的冻结候选设置回归：WebView2、球窗/HWND、明确 ball_ready 通过；人工打开/保存“全屏隐藏” false→true/关闭设置，AX 与磁盘重读佐证，记 MANUAL_PASS；正常菜单退出，两路真实退出码均 0，受控 WebView2 无残留。正式 config/favorites/prompts SHA256、自启项不变，没有新 identifier Known Folder。没有执行 A01/N05/备份，也未重新启动。冻结候选不等于后续修改产物。
 
-当前发布计划、验证范围与安装升级草稿见 [Beta.2.0 发布准备](beta2-release-preparation.md)。Issue #2 仍 OPEN；Beta.2.0 发布仍 NO-GO，合并不等于发布。
+当前发布计划、验证范围与安装升级草稿见 [Beta.2.0 发布准备](../../beta2-release-preparation.md)。Issue #2 仍 OPEN；Beta.2.0 发布仍 NO-GO，合并不等于发布。
