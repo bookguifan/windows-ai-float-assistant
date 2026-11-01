@@ -1,6 +1,19 @@
 # Beta.2.0 功能完善与预发布准备（2026-11-01）
 
-PR [#3](https://github.com/bookguifan/windows-ai-float-assistant/pull/3) 已合并至 main，合并提交为 05eaf6b37381a12fc5f676011b16a2ef1bed3f2c。[main CI #10](https://github.com/bookguifan/windows-ai-float-assistant/actions/runs/41273704896) 已成功。当前开发分支为 feature/beta2-final-polish；本轮已获授权推送该分支、创建 PR，并在门禁满足后合并 main，不创建 Tag 或 Release。**Beta.2.0 发布继续 NO-GO。**
+## 当前发布冲刺状态（2026-11-01）
+
+- 候选源码提交为 `2f2ab6b5cac9b8b650dd1a5c8fcd149c67bc249e`，构建时工作树干净，较当时远端 `main` (`5e43b8e8f7beec4ae364bb4e89786a79385bf8e0`) 有 3 个实现提交。候选构建后只补充发布/验收文档，没有改变编译输入。GitHub 版本记录核对时仅有 `v0.1.0-beta.1` tag / Release；本轮不创建 Beta.2 tag 或 Release，PR/CI 动态状态以 GitHub 为准。目标命名沿用 `v0.1.0-beta.2`；Cargo、npm 和 Tauri 产品版本继续为 `0.1.0`。
+- 使用 Node `v24.22.1` 直接运行 Vite 与四项前端检查；pnpm `9.15.9` frozen/offline 安装及前端构建完成。pnpm 启动器报告系统 Node `v24.14.0` 的 engine warning，因此包管理器提示仍保留；不把 warning 说成版本符合。`cargo build --locked --release --features custom-protocol` 在全新 `%TEMP%` Cargo target 完成，未启用 `beta2-isolation`、`experimental-clipboard-fallback` 或自动 Ctrl+C 回退；脚本使用 `--no-deliver`，没有刷新旧 `release/` 文件。构建未签名。
+- 新本地候选 EXE SHA256 `372196e9f6c2cdbc098768450126188b31ba519b50532c160e7d82aee77f5e01`，7,705,088 bytes。诊断 PDB SHA256 `662d172e6e16a0dcb563e8fb6c4a647e93c0d91ecb3685ca1eda8c49479ec545`，GUID/Age `c57a5122-1d56-4fff-a6e1-883780a4c819 / 1`；PDB 不进入候选 ZIP。EXE CodeView RSDS 与 PDB GUID/Age 匹配。对 EXE 做的本机用户名、仓库路径、Cargo 路径、Temp 路径、私钥和常见 token 字符串扫描未命中；这是指定模式静态扫描，不是完整隐私证明。
+- WebView2 SDK 锁定版本 `0.38.2`；本机安装 Runtime `156.0.4314.58`，不随包捆绑。EXE 未启动；本机没有 Windows Sandbox，普通产品标识会落到维护者正式用户目录。原生设置保存/备份恢复测试在具备独立 Windows 测试账户或 Windows Sandbox 的环境前保持 BLOCKED，不用改 `LOCALAPPDATA` 假装隔离。
+- `distribution/windows/CHECKSUMS.csv` 中 593 项本地材料均通过 SHA256 复核；材料目录共 594 个文件。材料自身明确说明最终 EXE 内容与组件许可映射仍未完成，因此它们作为保守随包准备材料保留，但许可证门禁仍未关闭。
+- 已在本地准备未发布的草稿 ZIP 与清单；不创建 tag、GitHub Release 或上传资产。临时构建根保留 `candidate-identity.json`（SHA256 `105ab4cbcef3d702816acff71c4a94237448af52b9728a91328551f9721d6a1c`）和 `release-build.log`（SHA256 `032bbbdb9491a646412ce3399fc72b70ce31e1daaec5946164130196b3d6b1e3`）；它们不进入 Git 或 ZIP。候选身份与本轮原生验收边界见 `docs/beta2-native-acceptance-plan.md` 和 `docs/beta2-release-notes-draft.md`。
+
+自动化测试可复用与本提交树匹配的既有证据：Rust 450 passed / 12 ignored，剪贴板 facade 11/11，前端 14 个单测脚本、Playwright 22 passed、Clippy、fmt、安全策略与 diff 检查通过。以上是之前在同一源码内容上的运行记录，本轮未重跑全套；本轮实际新执行的是前端 build/check、干净 Cargo Release build、候选身份/隐私扫描和第三方材料摘要复核。所有原生候选功能仍未验收。
+
+**当前结论：Beta.2.0 NO-GO。** 真实剪贴板、A01 原生生命周期、Issue #2、原生备份/恢复和最终发行许可映射尚未完成。准备阶段的 ZIP 不是冻结发行候选。
+
+历史阶段说明（PR #3 合并后、进入 Release-Safety 分支前）：PR #3 已合并至 main，合并提交为 `05eaf6b37381a12fc5f676011b16a2ef1bed3f2c`；该 main 的 CI #10 当时成功。旧阶段曾在 `feature/beta2-final-polish` 工作。当前分支、HEAD、PR/CI 与发布决定以本文顶部“当前发布冲刺状态”为准。Beta.2.0 发布继续 NO-GO。
 
 新候选代码基线为干净提交 **686258ef7b2e43b6b9ad72420ae0ed9d894b44f3**。后续本文件的文档提交不改变编译输入。本次隔离候选原生启动 **1 次**；真实系统剪贴板操作 **0 次**，原生文件选择器/备份恢复操作 **0 次**。
 
