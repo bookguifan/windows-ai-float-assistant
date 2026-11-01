@@ -924,7 +924,7 @@ pub fn copy(text: Option<String>) {
         Some(t) if crate::capture::set_clipboard_text(&t) => {
             log(&format!("已复制 {} 字符到剪贴板", t.chars().count()));
         }
-        Some(_) => warn("复制失败（剪贴板被占用）"),
+        Some(_) => warn("复制失败（请检查剪贴板状态和应用诊断日志）"),
         None => warn("复制失败（当前无卡片正文）"),
     }
 }

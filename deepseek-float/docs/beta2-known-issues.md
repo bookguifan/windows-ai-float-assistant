@@ -36,10 +36,10 @@
 旧 EXE SHA256：3B14E14F654590F6D7AF953EB14AB945872932F597729E545ADBCE78EA3ECE1E。
 两者历史结果分别保留。原始脱敏日志和详细逐项结果保存在维护者本地隔离证据目录，本仓库只提交非敏感结论，不伪造可下载的日志链接。
 
-- [N01/N05 修复机制与自动化记录](uia-beta2-n01-n05-fix.md)
-- [发行候选安全策略](uia-beta2-release-safety-gate.md)
-- [原生验证历史](uia-beta2-validation.md)
-- [R01–R03 研究记录](uia-beta2-r123-validation.md)
+- [N01/N05 修复机制与自动化记录](archive/beta2/uia-beta2-n01-n05-fix.md)
+- [发行候选安全策略](archive/beta2/uia-beta2-release-safety-gate.md)
+- [原生验证历史](archive/beta2/uia-beta2-validation.md)
+- [R01–R03 研究记录](archive/beta2/uia-beta2-r123-validation.md)
 
 ## CI、合并与发布分开判断
 
@@ -53,7 +53,7 @@ CI 明确执行 selection_core、copy_engine、native_copy_proof、uia_strategy�
 
 ## 合并后收敛补记（2026-10-27）
 
-PR #1 已合并至 main 922479b。后续本地修复分支的证据与计划见[合并后缺陷收敛](beta2-postmerge-convergence.md)。已复现并修复旧前端解锁定时器跨票据重复派发，但尚未证明它是N01首次点击根因；N05缺少原生区间/全链摘要，新增固定合成资料诊断，不猜测截断原因。本段不覆盖上文历史FAIL/BLOCKED/NOT_TESTED；Beta.2发布仍NO-GO。
+PR #1 已合并至 main 922479b。后续本地修复分支的证据与计划见[合并后缺陷收敛](archive/beta2/beta2-postmerge-convergence.md)。已复现并修复旧前端解锁定时器跨票据重复派发，但尚未证明它是N01首次点击根因；N05缺少原生区间/全链摘要，新增固定合成资料诊断，不猜测截断原因。本段不覆盖上文历史FAIL/BLOCKED/NOT_TESTED；Beta.2发布仍NO-GO。
 
 
 ## 原生诊断补验（2026-10-27，开发提交记录）
@@ -74,7 +74,7 @@ Beta.2 发布仍 NO-GO。下一步先针对显示阶段撤销补证与最小修�
 
 ## N01 显示事务修复（2026-10-27）
 
-见[显示事务修复与冻结记录](beta2-n01-show-transaction.md)。已在真实旧实现上取得 RED，并用绑定 ticket/generation/目标身份/show serial 的显示事务修复该纯状态机缺口，延迟归还不再无条件操作旧目标。完整 Rust 397 PASS（12 ignored）、前端384 PASS、Playwright22 PASS，严格检查及 Release 链接通过。
+见[显示事务修复与冻结记录](archive/beta2/beta2-n01-show-transaction.md)。已在真实旧实现上取得 RED，并用绑定 ticket/generation/目标身份/show serial 的显示事务修复该纯状态机缺口，延迟归还不再无条件操作旧目标。完整 Rust 397 PASS（12 ignored）、前端384 PASS、Playwright22 PASS，严格检查及 Release 链接通过。
 
 新 EXE 尚未启动或原生复测，不能把 N01 历史 FAIL 改为 PASS。无法可靠归属的迟到前台事件仍保守撤销；首次点击兼容性需新 EXE 验证。N05 历史完整文本不匹配、N03/N04 剩余矩阵及 WM_COPY UNKNOWN 保留；N07 前轮合并/覆盖局部 PASS 不扩展为所有组合已通过。发行实验性自动 Ctrl+C 门禁未更改，R01–R03 不改判。Beta.2 仍 NO-GO。
 
@@ -93,7 +93,7 @@ SHA256 为 `2D09F1B7F03428A48171EB7A0FC245E9D8E438B19B663418882A399DC7DEEAC4` �
 
 ## 划词优化与开发合并准备（2026-10-28，本地未提交）
 
-维护者已允许 main 容纳完整披露的未发布开发代码；启动调查本轮暂缓，独立调查文档及既有证据保留。详见[本轮收敛与准入报告](beta2-selection-merge-readiness.md)。本轮确认并修复菜单 IPC 完成后固定 250ms 锁导致快速设置点击丢失，补充智能划词关闭时在途请求撤销和设置落盘失败回滚；自动化通过不代表 N01 原生 FAIL 已关闭。
+维护者已允许 main 容纳完整披露的未发布开发代码；启动调查本轮暂缓，独立调查文档及既有证据保留。详见[本轮收敛与准入报告](archive/beta2/beta2-selection-merge-readiness.md)。本轮确认并修复菜单 IPC 完成后固定 250ms 锁导致快速设置点击丢失，补充智能划词关闭时在途请求撤销和设置落盘失败回滚；自动化通过不代表 N01 原生 FAIL 已关闭。
 
 智能划词增强对新安装/缺字段默认开启，保留显式关闭；普通设置移除旧版回退入口，发行实验回退继续灰显“待安全验收”。后端旧字段及研究源码保留，发行禁用规则不变。历史 N05 60→33 首个差异节点仍 UNKNOWN，后续 58 单位全链一致的局部 PASS 不覆盖原失败；N03 PARTIAL、N04 完整矩阵待验、N07 前轮局部 PASS、WM_COPY UNKNOWN、R01–R03 历史风险和启动 P1 均保留。
 
@@ -102,7 +102,7 @@ SHA256 为 `2D09F1B7F03428A48171EB7A0FC245E9D8E438B19B663418882A399DC7DEEAC4` �
 
 ## PR 补审追踪（2026-10-28）
 
-启动异常已独立建立 [P1 Issue #2](https://github.com/bookguifan/windows-ai-float-assistant/issues/2)，保持 OPEN；原始业务栈 UNKNOWN，调查暂缓。新增的智能划词保存串行化、旧配置读取拒绝及配置写锁内 generation 撤销已有 RED/GREEN 自动化证据，见[PR准入补审](beta2-selection-merge-readiness.md#pr-准入补审2026-10-28)。这些结果不关闭 N01、N05、WM_COPY 或原生验收缺口；Beta.2 发布仍 NO-GO。
+启动异常已独立建立 [P1 Issue #2](https://github.com/bookguifan/windows-ai-float-assistant/issues/2)，保持 OPEN；原始业务栈 UNKNOWN，调查暂缓。新增的智能划词保存串行化、旧配置读取拒绝及配置写锁内 generation 撤销已有 RED/GREEN 自动化证据，见[PR准入补审](archive/beta2/beta2-selection-merge-readiness.md#pr-准入补审2026-10-28)。这些结果不关闭 N01、N05、WM_COPY 或原生验收缺口；Beta.2 发布仍 NO-GO。
 
 ## 维护者实用验收与 PR #3 合并（2026-11-01）
 

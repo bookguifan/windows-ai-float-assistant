@@ -59,14 +59,14 @@
 
 | 范围 | 当前实现与证据 |
 | --- | --- |
-| 事件目标 | [mousehook.rs](../src-tauri/src/mousehook.rs) 捕获 HWND/PID/线程、释放位置、时间和代次；前台切换失效旧代次；新增全局前台事件钩子配对卸载 |
-| 调度 | [selection_runtime.rs](../src-tauri/src/selection_runtime.rs) 单 worker、一个可替换待处理槽、独立关闭处理；控制通道有界为 16 |
-| UIA | [uia.rs](../src-tauri/src/uia.rs)、[uia_strategy.rs](../src-tauri/src/uia_strategy.rs) 焦点、命中及限定父级；PID/根窗口/密码检查；只读实际选区，不以整篇文档替代 |
-| 原文 | [selection.rs](../src-tauri/src/selection.rs)、[popup.rs](../src-tauri/src/popup.rs) 同一 Session 保存原文、归一化文本、来源及有效期；使用前复核；保留换行缩进和不同范围的相同文本 |
-| 授权 | [safe_copy.rs](../src-tauri/src/safe_copy.rs) 本机原生风险确认默认取消，只允许可见且聚焦的本地设置页请求；并发提示去重；撤销使在途授权代次失效 |
-| 入口 | [release_policy.rs](../src-tauri/src/release_policy.rs) 旧自动回退保持恒定禁用；新入口独立检查授权、目标和事务有效性 |
-| 备份 | [ipc.rs](../src-tauri/src/ipc.rs) 成功恢复后撤销授权并使选区失效；授权不属于配置或备份字段，旧 true、环境变量或普通配置不能授予权限 |
-| 界面 | [settings.html](../poc/settings.html) 更名“UIA 划词增强”；旧入口仍灰显；新开关显示本次运行授权与实验性风险；取消、错误、重复点击、迟到状态均处理 |
+| 事件目标 | [mousehook.rs](../../../src-tauri/src/mousehook.rs) 捕获 HWND/PID/线程、释放位置、时间和代次；前台切换失效旧代次；新增全局前台事件钩子配对卸载 |
+| 调度 | [selection_runtime.rs](../../../src-tauri/src/selection_runtime.rs) 单 worker、一个可替换待处理槽、独立关闭处理；控制通道有界为 16 |
+| UIA | [uia.rs](../../../src-tauri/src/uia.rs)、[uia_strategy.rs](../../../src-tauri/src/uia_strategy.rs) 焦点、命中及限定父级；PID/根窗口/密码检查；只读实际选区，不以整篇文档替代 |
+| 原文 | [selection.rs](../../../src-tauri/src/selection.rs)、[popup.rs](../../../src-tauri/src/popup.rs) 同一 Session 保存原文、归一化文本、来源及有效期；使用前复核；保留换行缩进和不同范围的相同文本 |
+| 授权 | [safe_copy.rs](../../../src-tauri/src/safe_copy.rs) 本机原生风险确认默认取消，只允许可见且聚焦的本地设置页请求；并发提示去重；撤销使在途授权代次失效 |
+| 入口 | [release_policy.rs](../../../src-tauri/src/release_policy.rs) 旧自动回退保持恒定禁用；新入口独立检查授权、目标和事务有效性 |
+| 备份 | [ipc.rs](../../../src-tauri/src/ipc.rs) 成功恢复后撤销授权并使选区失效；授权不属于配置或备份字段，旧 true、环境变量或普通配置不能授予权限 |
+| 界面 | [settings.html](../../../poc/settings.html) 更名“UIA 划词增强”；旧入口仍灰显；新开关显示本次运行授权与实验性风险；取消、错误、重复点击、迟到状态均处理 |
 
 UIA 为专用 MTA 工作线程创建和释放 COM 对象，先释放接口再反初始化；未跨线程传递这些接口。UIA 预算 350ms，父级深度 5、候选最多 12、选区最多 32、文本最多 20,000 字符。请求有效期 1.5 秒，展示会话有效期 8 秒。预算属于协作检查，不是强制中断 COM 的承诺。监督线程使过期结果作废并清理缓存，阻塞时不无限增加线程。
 
@@ -81,7 +81,7 @@ UIA 为专用 MTA 工作线程创建和释放 COM 对象，先释放接口再反
 5. 核对 owner 的根窗口、PID、线程、序列号和目标上下文；读前后持剪贴板锁复核。可观察的外部写入、未知来源或失效上下文均不采纳结果、不强行恢复。
 6. 恢复前持同一剪贴板锁核对精确 stamp，再转移已准备的已知格式。恢复报错不会返回成功。可信但空的复制结果先尝试条件恢复，然后拒绝作为选区。
 
-[copy_engine.rs](../src-tauri/src/copy_engine.rs) 是原生适配器和合成测试共用的顺序控制；[capture.rs](../src-tauri/src/capture.rs) 仅向新入口提供已有的有界 Unicode 读取 helper。旧核心竞争处理和旧禁用策略未改为开放。
+[copy_engine.rs](../../../src-tauri/src/copy_engine.rs) 是原生适配器和合成测试共用的顺序控制；[capture.rs](../../../src-tauri/src/capture.rs) 仅向新入口提供已有的有界 Unicode 读取 helper。旧核心竞争处理和旧禁用策略未改为开放。
 
 授权只保存在进程内存中，重启需重新确认；不新增存储系统或授权配置迁移。原生确认不能防御具有同等权限、能操作设置或注入程序的本机恶意软件。
 

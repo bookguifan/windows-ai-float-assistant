@@ -1,16 +1,17 @@
 // Windows 绿色版发布构建脚本；原生 Rust 代码仅支持 Windows。
 //
 // 串联一次「可发布」的完整链路：
-//   ① 前端 vite build           → 产出 dist/poc/*（含 result.html）
-//   ② cargo release（必开 custom-protocol）→ 编译内嵌前端资源的 exe
-//   ③ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源
+//   ① pnpm install --frozen-lockfile
+//   ② 前端 vite build           → 产出 dist/poc/*（含 result.html）
+//   ③ cargo release（必开 custom-protocol）→ 编译内嵌前端资源的 exe
+//   ④ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源
 //      （逐文件配对；防止「改了任一前端页却忘重打」导致内嵌的还是旧页面）
-//   ④ 复用既有 check 链（csp / inline-js / version 一致性）
-//   ⑤（可选）--sign：给 exe 做代码签名（Authenticode / codesign），非致命
-//   ⑥ 交付：复制 exe → `release/deepseek-float.exe`，并刷新 `release/HASH.txt`（SHA256）
-//      ★ 必须在 ⑤ **之后** —— 交付的应是最终（含签名）产物；`--no-deliver` 可跳过本步。
+//   ⑤ CSP/内联脚本/版本/净化检查、前端单测、Rust fmt/Clippy/测试和安全策略回归
+//   ⑥（可选）--sign：给 exe 做代码签名（Authenticode / codesign），非致命
+//   ⑦ 交付：复制 exe → `release/deepseek-float.exe`，并刷新 `release/HASH.txt`（SHA256）
+//      ★ 必须在 ⑥ **之后** —— 交付的应是最终（含签名）产物；`--no-deliver` 可跳过本步。
 //
-// ★ Windows 提醒：本机 pnpm/npm 是 `.cmd` 垫片，node 直接 execFile 会报 `ENOENT`
+// ★ Windows 提醒：pnpm 是命令垫片，node 直接 execFile 会报 `ENOENT`
 //   ⇒ 下面统一经 shell 解析（macOS/Linux 保持直接 exec，行为不变）。
 //
 // 用法（在 deepseek-float/ 下）：
@@ -28,36 +29,89 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertNodeEngineVersion,
+  assertPnpmRuntime,
+  nodeBoundEnvironment,
+  pinnedPnpmVersion,
+} from "./lib/release-toolchain.mjs";
 
 // ★ 仓库根（deepseek-float/）：脚本自身在 scripts/ 下，向上一层。
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const RUSTFLAG_SEPARATOR = String.fromCharCode(31);
 
-// Windows 上 pnpm/npm 是 `.cmd` 垫片，node 的 execFile 无法直接 exec ⇒ 经 shell 解析。
+/** Preserve explicit Rust flags while removing machine-specific source roots. */
+function releaseRustflags() {
+  let flags;
+  if (process.env.CARGO_ENCODED_RUSTFLAGS !== undefined) {
+    flags = process.env.CARGO_ENCODED_RUSTFLAGS
+      .split(RUSTFLAG_SEPARATOR)
+      .filter(Boolean);
+  } else {
+    const configured = process.env.RUSTFLAGS || process.env.CARGO_BUILD_RUSTFLAGS || "";
+    flags = configured.trim().split(/\s+/).filter(Boolean);
+  }
+
+  const cargoHome = path.resolve(
+    process.env.CARGO_HOME || path.join(process.env.HOME || os.homedir(), ".cargo"),
+  );
+  for (const [prefix, replacement] of [
+    [root, "/src"],
+    [cargoHome, "/cargo"],
+  ]) {
+    for (const variant of new Set([prefix, prefix.replaceAll("\\", "/")])) {
+      flags.push(`--remap-path-prefix=${variant}=${replacement}`);
+    }
+  }
+  return flags.join(RUSTFLAG_SEPARATOR);
+}
+
+// Windows 上 pnpm 是命令垫片，node 的 execFile 无法直接 exec ⇒ 经 shell 解析。
 // 其它平台保持直接 exec（shell 反而可能改变参数解析行为）。
 const WIN = process.platform === "win32";
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+assertNodeEngineVersion(process.version, packageJson.engines?.node || "");
+const pm = "pnpm";
+const expectedPnpmVersion = pinnedPnpmVersion(packageJson.packageManager || "");
+const releaseEnvironment = nodeBoundEnvironment(process.env, process.execPath, process.platform);
+
+function captureOutput(cmd, args) {
+  return execFileSync(cmd, args, {
+    encoding: "utf8",
+    cwd: root,
+    shell: WIN,
+    env: releaseEnvironment,
+  }).trim();
+}
+
+const actualPnpmVersion = captureOutput(pm, ["--version"]);
+const pnpmNodeExecutable = captureOutput(pm, ["exec", "node", "-p", "process.execPath"]);
+const pnpmNodeVersion = captureOutput(pm, ["exec", "node", "-p", "process.version"]);
+assertPnpmRuntime({
+  actualPnpmVersion,
+  expectedPnpmVersion,
+  actualNodeExecutable: pnpmNodeExecutable,
+  expectedNodeExecutable: process.execPath,
+  actualNodeVersion: pnpmNodeVersion,
+  expectedNodeVersion: process.version,
+  platform: process.platform,
+});
+console.log(`✓ Release toolchain: Node ${process.version}; pnpm ${actualPnpmVersion}; pnpm Node ${pnpmNodeVersion}`);
+
+if (process.argv.includes("--check-toolchain-only")) {
+  console.log("✓ Release toolchain check complete; build steps were not run.");
+  process.exit(0);
+}
 
 const noFrontend = process.argv.includes("--no-frontend");
 const noCheck = process.argv.includes("--no-check");
 const doSign = process.argv.includes("--sign");
 const noDeliver = process.argv.includes("--no-deliver");
 
-/** 优先 pnpm（项目带 pnpm-lock.yaml），回退 npm。 */
-function pkgManager() {
-  for (const pm of ["pnpm", "npm"]) {
-    try {
-      execFileSync(pm, ["--version"], { stdio: "ignore", shell: WIN });
-      return pm;
-    } catch {
-      // 继续尝试下一个
-    }
-  }
-  return "pnpm"; // 最终兜底（缺失时由后续调用暴露报错）
-}
-
 /**
  * 运行一条命令，失败即中止（stdio 透传，便于看到真实输出）。
  *
- * @param {string} cmd 可执行名（Windows 上 pnpm/npm 为 `.cmd`，由 `shell` 解析）。
+ * @param {string} cmd 可执行名（Windows 上 pnpm 等命令 shim 由 `shell` 解析）。
  * @param {string[]} args 参数数组。
  * @param {Record<string, string>} [extraEnv] 追加/覆盖的环境变量（仅作用于本次调用；默认 `{}`）。
  */
@@ -67,11 +121,12 @@ function run(cmd, args, extraEnv = {}) {
     stdio: "inherit",
     cwd: root,
     shell: WIN,
-    env: { ...process.env, ...extraEnv },
+    env: { ...releaseEnvironment, ...extraEnv },
   });
 }
 
-const pm = pkgManager();
+// Validate the lockfile against the exact package-manager version before building.
+run(pm, ["install", "--frozen-lockfile"]);
 
 // ① 前端构建
 if (!noFrontend) {
@@ -86,7 +141,7 @@ if (!noFrontend) {
 //     `[build] incremental = true`（本意加速 dev）会**泄漏到 release**，且**压过** manifest 的
 //     `[profile.release] incremental = false`（实测 cargo 1.98.1：`[build]` 优先于 `[profile.*]`）。
 //     故用**环境变量**在本次调用强制关掉 —— 只作用于 release、不影响用户 dev 增量，且与
-//     `release.ps1` Step 5 的 `CARGO_INCREMENTAL=0` **配方一致**（消除两入口「不同产物」的分叉）。
+//     `release.ps1` 仅包装本脚本，发布配方只在此处定义。
 //     效果：产物确定（去掉「增量缓存状态」这一非确定源）+ 消除 incremental lock 告警。
 run(
   "cargo",
@@ -99,7 +154,10 @@ run(
     "--manifest-path",
     "src-tauri/Cargo.toml",
   ],
-  { CARGO_INCREMENTAL: "0" },
+  {
+    CARGO_INCREMENTAL: "0",
+    CARGO_ENCODED_RUSTFLAGS: releaseRustflags(),
+  },
 );
 
 // ③ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源。
@@ -161,7 +219,43 @@ if (!noCheck) {
   console.log("\n（跳过 check：--no-check）");
 }
 
-// ⑤（E3）可选：给 exe 做代码签名；签名不保证消除 SmartScreen 提示。
+// ⑤ Release 前端、Rust 与剪贴板安全策略回归。
+run(pm, ["run", "test:unit"]);
+run("cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]);
+run("cargo", [
+  "clippy",
+  "--locked",
+  "--manifest-path",
+  "src-tauri/Cargo.toml",
+  "--all-targets",
+  "--",
+  "-D",
+  "warnings",
+]);
+run("cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib"]);
+run("cargo", [
+  "test",
+  "--locked",
+  "--manifest-path",
+  "src-tauri/Cargo.toml",
+  "--features",
+  "experimental-clipboard-fallback",
+  "--test",
+  "release_selection_policy",
+]);
+run("cargo", [
+  "test",
+  "--locked",
+  "--manifest-path",
+  "src-tauri/Cargo.toml",
+  "--release",
+  "--features",
+  "custom-protocol,experimental-clipboard-fallback",
+  "--test",
+  "release_selection_policy",
+]);
+
+// ⑥（E3）可选：给 exe 做代码签名；签名不保证消除 SmartScreen 提示。
 //   Windows：Authenticode（signtool.exe 或 osslsigncode）。需证书，通过环境变量配置，缺失则警告跳过。
 //   macOS：codesign（需开发者证书 + 钥匙串访问权限）。
 //   Linux：无统一签名体系，跳过（仅提示）。
@@ -172,15 +266,19 @@ if (doSign) {
   console.log("\n（跳过签名：未传 --sign；分发前建议 `node scripts/build-release.mjs --sign`）");
 }
 
-// ⑥ 交付：复制构建产物到 `release/` 并刷新 `release/HASH.txt`。
-//   ★ 放在签名（⑤）之后：交付的应是**最终**（含签名）产物，其 SHA256 才与分发文件一致。
+// ⑦ 交付：复制构建产物到 `release/` 并刷新 `release/HASH.txt`。
+//   ★ 放在签名（⑥）之后：交付的应是**最终**（含签名）产物，其 SHA256 才与分发文件一致。
 if (noDeliver) {
   console.log("\n（跳过交付复制：--no-deliver；release/ 未刷新）");
 } else {
   deliverArtifacts();
 }
 
-console.log("\n✓ 发布构建完成（bundle.active=false，已交付 release/deepseek-float.exe + release/HASH.txt）。");
+console.log(
+  noDeliver
+    ? "\n✓ Release 构建完成（未刷新 release/ 交付目录）。"
+    : "\n✓ 发布构建完成（bundle.active=false，已交付 release/deepseek-float.exe + release/HASH.txt）。",
+);
 process.exit(0);
 
 // ---- E3：代码签名（可选，非致命）----
@@ -198,8 +296,7 @@ function releaseBinary() {
  * - 目标名 = 产物基线名（Windows `deepseek-float.exe`）；新产物由 .gitignore 排除。
  *   构建不等于发布，不自动加入 Git，也不自动上传。
  * - `HASH.txt` = 该产物的 **SHA256，64 位大写十六进制 + 平台换行**。
- *   ★ Windows 下即「64 字符 + `\r\n`」= **66 字节**，与既有交付物 / `release.ps1`
- *     的 `Set-Content` 输出格式逐字节对齐（便于分发/下载后比对）。
+ *   ★ Windows 下即「64 字符 + `\r\n`」= **66 字节**，与既有 Windows 交付格式对齐。
  * - 失败即 `throw`（由顶层未捕获异常以非 0 退出），**绝不静默交付错误的哈希**。
  */
 function deliverArtifacts() {

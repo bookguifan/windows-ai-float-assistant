@@ -84,7 +84,7 @@
 |PR 完整披露及维护者审阅|PENDING；本报告可作为说明底稿，不自动更新远端 PR|
 |main 合并授权|未取得，不执行|
 
-建议独立 Issue：**[P1] Windows 启动后偶发 fail-fast，Beta.2 发布阻断**。证据为既有 Application Error 1000、0xC0000409、RVA 0x4383EB，匹配符号 panic_with_hook；缺少原始业务栈，根因未知。后续一次隔离运行未复现不能关闭问题。完整记录见[启动调查](beta2-startup-crash-analysis.md)，暂缓进一步调试，不猜测修复。
+建议独立 Issue：**[P1] Windows 启动后偶发 fail-fast，Beta.2 发布阻断**。证据为既有 Application Error 1000、0xC0000409、RVA 0x4383EB，匹配符号 panic_with_hook；缺少原始业务栈，根因未知。后续一次隔离运行未复现不能关闭问题。完整记录见[启动调查](../../beta2-startup-crash-analysis.md)，暂缓进一步调试，不猜测修复。
 
 ## 下一轮最小原生矩阵（须单独授权）
 

@@ -155,8 +155,8 @@ strip = true
 #   并产生 `error deleting lock file for incremental compilation session directory … (os error 5)` 告警，
 #   以及「同源码两次构建产物 sha256 不同」的非确定源）。
 #
-#   ⇒ **真正生效的强制点**在 `scripts/build-release.mjs`（❙② cargo 步骤显式 `CARGO_INCREMENTAL=0`）与
-#     `release.ps1` Step 5（同款）—— 两条发版入口配方一致。此处保留本行：① 声明期望的 release 配方；
+#   ⇒ **真正生效的强制点**在 `scripts/build-release.mjs` 的 cargo 步骤（显式 `CARGO_INCREMENTAL=0`）。
+#     `release.ps1` 仅转调该入口，不维护第二套配方。此处保留本行：① 声明期望的 release 配方；
 #     ② 若日后用户移除全局泄漏，本行即为唯一所需。
 #   ✗ 不要改用项目级 `.cargo/config.toml` 的 `[build] incremental = false`：它会**连 dev 增量一起关**，
 #     违背用户「加速 dev 编译」的原意；环境变量方案只作用于 release 调用，不伤 dev。
