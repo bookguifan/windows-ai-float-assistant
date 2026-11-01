@@ -13,16 +13,14 @@ use std::time::{Duration, Instant};
 
 use windows::core::w;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, GlobalFree, SetLastError, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND,
+    CloseHandle, GetLastError, SetLastError, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND,
 };
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
+    CloseClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
     GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
-    RegisterClipboardFormatW, SetClipboardData,
+    RegisterClipboardFormatW,
 };
-use windows::Win32::System::Memory::{
-    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
-};
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -600,56 +598,18 @@ pub(crate) unsafe fn read_open_clipboard_text() -> Option<String> {
     })()
 }
 
+#[path = "clipboard_write.rs"]
+mod clipboard_write;
+
 /// 把文本写回剪贴板（用于恢复旧内容）。失败静默返回 false。
 unsafe fn write_clipboard_text(text: &str, restore: Option<&RestoreGuard<'_>>) -> bool {
-    // SetClipboardData 需要以 NUL 结尾的 UTF-16，且内存必须是 GMEM_MOVEABLE 的 HGLOBAL。
-    // ★ 数据一致性加固（2026-09-19）：先把 HGLOBAL 分配并填好，**成功后再** EmptyClipboard +
-    //   SetClipboardData —— 避免「先清空、后分配失败」把用户剪贴板留在空态（数据丢失）。
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) else {
-        return false;
-    };
-    let dst = GlobalLock(hmem) as *mut u16;
-    if dst.is_null() {
-        let _ = GlobalFree(Some(hmem));
-        return false;
-    }
-    std::ptr::copy_nonoverlapping(wide.as_ptr(), dst, wide.len());
-    let _ = GlobalUnlock(hmem);
-    if OpenClipboard(None).is_err() {
-        let _ = GlobalFree(Some(hmem));
-        return false;
-    }
-    let ok = (|| -> bool {
-        // Check while holding OpenClipboard: an intervening writer, even copying identical
-        // text, must not be overwritten by restoration of an earlier capture snapshot.
-        if let Some(restore) = restore {
-            if !restore.permits_current() {
-                return false;
-            }
-        }
-        if EmptyClipboard().is_err() {
-            return false;
-        }
-        if SetClipboardData(CF_UNICODETEXT_FORMAT, Some(HANDLE(hmem.0))).is_err() {
-            // SetClipboardData 失败，所有权未移交，需要自己释放。
-            return false;
-        }
-        // 成功则所有权移交系统（EmptyClipboard 已清空，HMEM 归系统），**不能**再 free。
-        true
-    })();
-    let _ = CloseClipboard();
-    if !ok {
-        // 失败路径（OpenClipboard/Empty/Set 任一失败但内存仍在）：自行归还。
-        // 注意：EmptyClipboard 成功后 Set 失败时剪贴板已空，此双重失败场景不再回填，
-        // 但这是极罕见的系统级失败，而「分配失败即清空」的常见路径已由前置分配消除。
-        let _ = GlobalFree(Some(hmem));
-    }
-    ok
+    clipboard_write::write_text(text, || {
+        restore.map_or(true, |guard| guard.permits_current())
+    })
 }
 
 /// 把文本写入系统剪贴板（供划词工具条的「复制」动作使用）。
-/// 调用方拿到的是**已归一化**的选区文本；成功返回 true。
+/// 按调用方提供的原文保留换行、缩进与 Unicode；成功返回 true。
 pub fn set_clipboard_text(text: &str) -> bool {
     unsafe { write_clipboard_text(text, None) }
 }
