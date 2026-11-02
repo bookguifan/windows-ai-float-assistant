@@ -1,16 +1,20 @@
 # Windows Native Clipboard Acceptance Plan
 
-Status: prepared only. No system clipboard was read or written while preparing this plan. Run this only after separate, explicit authorization.
+Status: prepared only. No system clipboard was read or written while preparing this plan. Run this only after separate, explicit authorization for the native copy fallback.
 
 ## Safety Setup
 
 - Use a disposable Windows test account or isolated interactive session. Do not begin while the clipboard contains user or work data.
 - Before testing, deliberately replace the clipboard with a known recovery sentinel. This is the recovery target; the plan does not claim to serialize or restore arbitrary rich clipboard data.
 - Keep the test candidate, app data, logs, and fixture files in the existing isolated test root. Record the candidate SHA256 and the test-session start time.
-- Disable no security controls. Do not use Release automatic Ctrl+C fallback; test only the app's explicit Copy action.
-- Stop on an unexpected app-data write, a `RestoreIncomplete` diagnostic, or a mismatch after a failed copy. Preserve the logs and restore only the known test sentinel from its fixture.
+- Leave the fallback disabled until the native settings confirmation is accepted. Run the Release candidate only against disposable synthetic text and a known clipboard sentinel.
+- Stop on an unexpected app-data write, a `COPY_RESTORE_FAILED` / `COPY_RESTORE_SKIPPED` diagnostic, or a mismatch after a failed copy. Do not claim arbitrary rich clipboard restoration is lossless.
 
 The verifier at `scripts/windows-clipboard-acceptance.ps1` is read-only. Its default `Plan` action does not access the clipboard. `ListFormats`, `VerifyText`, and `VerifyFormats` read clipboard state only when passed `-AcknowledgeClipboardRead`; run those actions from an STA PowerShell session. The script contains no clipboard write API.
+
+## Delayed Rendering Limitation
+
+Windows can defer a clipboard format until a reader requests it; the system then sends `WM_RENDERFORMAT` to the clipboard owner. The current in-process `GetClipboardData` snapshot cannot reliably identify that state in advance, and its 100 ms elapsed-time check cannot interrupt a call that has not returned. A blocked owner can therefore stall the selection worker while the snapshot is incomplete. The code does not empty the clipboard until the full snapshot succeeds, but this is not a hard timeout or a guarantee against a stuck owner. Do not test against valuable clipboard contents or treat delayed rendering as a verified rejection. See [Microsoft's WM_RENDERFORMAT documentation](https://learn.microsoft.com/en-us/windows/win32/dataxchg/wm-renderformat).
 
 ## Test Data
 
@@ -55,6 +59,19 @@ powershell.exe -NoProfile -STA -File .\scripts\windows-clipboard-acceptance.ps1 
 - Whether the lock helper was released and the clipboard became available again.
 - App diagnostics, process handle counts, normal exit code, and any `RestoreIncomplete` format IDs.
 - Confirmation that no formal config, favorites, prompts, autostart entry, or user clipboard data was used.
+
+## Automatic Selection Fallback Acceptance
+
+Status: planned only; this task does not start the EXE or access the system clipboard.
+
+1. Confirm UIA success and standard Unicode Edit success each avoid `SendInput`.
+2. In Notepad, with only the known sentinel on the clipboard, authorize the session in settings and select synthetic text. Verify one Ctrl+Insert sequence, one toolbar, exact Unicode text, and restoration of the sentinel.
+3. Repeat with ordinary browser text only if the browser exposes a verified standard Edit focus. Do not assume a rendered page has a Win32 Edit control.
+4. Test a prepared HTML/RTF/image/multiformat clipboard. The copy fallback must reject before input when any format is outside the exact snapshot whitelist; verify the clipboard formats remain unchanged. Do not claim this covers delayed rendering, which cannot be reliably preflighted or interrupted by the current API path.
+5. Simulate clipboard contention and third-party sequence changes with the deterministic fake backend. Native acceptance must confirm that the target performs exactly one clipboard-empty operation plus one concrete format write (sequence delta 2); synthesized text formats reported by `EnumClipboardFormats` do not count as concrete writes. Any other delta rejects attribution. On native contention, verify clear refusal and no retry.
+6. Change foreground window during a selection and verify no shortcut is sent after identity validation fails. A verified in-flight clipboard result may be restored only if its exact transaction stamp is still current.
+7. WPS remains unsupported unless its focused control is verified as a same-process, standard Unicode `Edit` with stable native selection proof. Never relax cross-process checks to make WPS pass.
+8. Revoke the authorization and restart the app; the setting must be off. Legacy config and imported backups must not grant it.
 
 ## A01 Native Acceptance
 

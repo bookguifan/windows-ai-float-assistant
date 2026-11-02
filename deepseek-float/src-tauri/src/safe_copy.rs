@@ -1,5 +1,5 @@
-//! Opt-in, one-shot clipboard capture. Old capture_selection remains locked off.
-//! Same-process writers and brokered/delayed renderers cannot be fully attributed.
+//! Session-consented, one-shot clipboard fallback. The legacy capture_selection
+//! entry point stays locked off; only standard Unicode Edit controls are supported.
 use crate::selection::{
     formats_allowed, restore_allowed, Consent, Request, Stamp, Target, POLICY_VERSION,
 };
@@ -22,9 +22,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetClassNameW, GetGUIThreadInfo, GetWindowLongPtrW, GetWindowThreadProcessId,
-    MessageBoxW, GA_ROOT, GUITHREADINFO, GWL_STYLE, IDOK, MB_DEFBUTTON2, MB_ICONWARNING,
-    MB_OKCANCEL,
+    GetAncestor, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW,
+    GetWindowThreadProcessId, IsWindowUnicode, MessageBoxW, GA_ROOT, GUITHREADINFO, GWL_STYLE,
+    IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL,
 };
 static CONSENT: Mutex<Consent> = Mutex::new(Consent::empty());
 static TRANSACTION: Mutex<()> = Mutex::new(());
@@ -38,9 +38,9 @@ pub struct State {
 }
 pub fn state() -> State {
     State {
-        enabled: crate::release_policy::experimental_copy_available()
+        enabled: crate::release_policy::safe_copy_available()
             && CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows(),
-        available: crate::release_policy::experimental_copy_available(),
+        available: crate::release_policy::safe_copy_available(),
         policy_version: POLICY_VERSION,
         session_only: true,
     }
@@ -49,7 +49,7 @@ pub fn revoke() {
     CONSENT.lock().unwrap_or_else(|p| p.into_inner()).revoke();
 }
 fn epoch() -> Option<u64> {
-    if !crate::release_policy::experimental_copy_available() {
+    if !crate::release_policy::safe_copy_available() {
         return None;
     }
     let c = CONSENT.lock().ok()?;
@@ -85,8 +85,8 @@ pub(crate) fn trusted(window: &WebviewWindow) -> bool {
 }
 /// The IPC is only a request: only the real native modal's OK can grant this process.
 pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
-    if !crate::release_policy::experimental_copy_available() {
-        return Err("本发行构建已禁用实验性 Ctrl+C 回退；UIA 和原生 Edit 读取不受影响".into());
+    if !crate::release_policy::safe_copy_available() {
+        return Err("此构建未提供自动剪贴板回退".into());
     }
     if !trusted(&window) {
         return Err("只能在聚焦的本地设置页请求授权".into());
@@ -104,7 +104,12 @@ pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
     let start_epoch = CONSENT.lock().unwrap_or_else(|p| p.into_inner()).epoch();
     let hwnd = window.hwnd().map_err(|_| "设置窗口不可用")?;
     let answer = unsafe {
-        MessageBoxW(Some(HWND(hwnd.0)),w!("当 UIA 无法读取选中文本时，程序可能模拟 Ctrl+C 获取选区，并尝试恢复原剪贴板。此操作可能短暂改变剪贴板内容，无法完全避免其他程序并发操作造成的风险。\n\n仅本次运行有效，重启后需重新授权。旧配置和备份不能授权。请勿在敏感资料中开启。"),w!("授权自动剪贴板划词回退"),MB_OKCANCEL|MB_ICONWARNING|MB_DEFBUTTON2)
+        MessageBoxW(
+            Some(HWND(hwnd.0)),
+            w!("仅当 UIA 和标准 Unicode Edit 原生读取都失败时，程序才会对身份已验证的前台 Edit 控件投递一次 Ctrl+Insert。发送前会完整保存白名单内的剪贴板格式；仅当序列号证明发生了一次清空和一次格式写入时，才会读取并尝试恢复。\n\nHTML、RTF、图片、自定义格式或无法完整快照的原剪贴板会在发送前拒绝。若目标使用多次格式写入、并发变化或延迟渲染，来源校验会拒绝；为避免覆盖无法归属的剪贴板内容，可能跳过恢复。Windows 可能在读取延迟渲染格式时同步请求原应用生成数据；100 毫秒检查不能中断卡住的系统调用。恢复也不保证对所有格式无损。仅支持可验证的标准 Unicode Edit 控件；WPS 等自定义控件在无法验证时不支持。\n\n授权只在本次运行有效，旧配置和备份不能代替确认。"),
+            w!("授权自动剪贴板划词回退"),
+            MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+        )
     };
     let still_trusted = trusted(&window);
     let mut consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
@@ -118,9 +123,21 @@ pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
 }
 struct Clipboard;
 impl Clipboard {
-    unsafe fn open() -> Result<Self, &'static str> {
-        OpenClipboard(None).map_err(|_| "COPY_CLIPBOARD_BUSY")?;
-        Ok(Self)
+    unsafe fn open_until(
+        owner: Option<HWND>,
+        deadline: Instant,
+        busy_code: &'static str,
+    ) -> Result<Self, &'static str> {
+        loop {
+            if OpenClipboard(owner).is_ok() {
+                return Ok(Self);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(busy_code);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
     }
 }
 impl Drop for Clipboard {
@@ -155,6 +172,27 @@ unsafe fn stamp() -> Option<Stamp> {
     if hwnd.is_invalid() || pid == 0 || thread == 0 {
         return None;
     }
+    let mut format_count = 0;
+    let mut previous = 0;
+    loop {
+        SetLastError(ERROR_SUCCESS);
+        let format = EnumClipboardFormats(previous);
+        if format == 0 {
+            if GetLastError() != ERROR_SUCCESS {
+                return None;
+            }
+            break;
+        }
+        format_count += 1;
+        if format_count > 64 {
+            return None;
+        }
+        previous = format;
+    }
+    let sequence = GetClipboardSequenceNumber();
+    if sequence == 0 || format_count == 0 {
+        return None;
+    }
     Some(Stamp {
         root_hwnd: GetAncestor(hwnd, GA_ROOT).0 as isize,
         owner: Target {
@@ -162,7 +200,8 @@ unsafe fn stamp() -> Option<Stamp> {
             pid,
             thread,
         },
-        sequence: GetClipboardSequenceNumber(),
+        sequence,
+        format_count,
     })
 }
 struct Snapshot {
@@ -170,12 +209,16 @@ struct Snapshot {
     blocks: Vec<(u32, Block)>,
 }
 unsafe fn snapshot() -> Result<Snapshot, &'static str> {
-    if !crate::release_policy::experimental_copy_available() {
+    if !crate::release_policy::safe_copy_available() {
         return Err("COPY_BUILD_DISABLED");
     }
-    let _lock = Clipboard::open()?;
-    let sequence = GetClipboardSequenceNumber();
     let start = Instant::now();
+    let _lock = Clipboard::open_until(
+        None,
+        start + Duration::from_millis(100),
+        "COPY_CLIPBOARD_BUSY",
+    )?;
+    let sequence = GetClipboardSequenceNumber();
     let owner = GetClipboardOwner().ok();
     let mut formats = Vec::new();
     let mut previous = 0;
@@ -250,15 +293,15 @@ fn current(r: &Request, e: u64, p: &Process) -> bool {
     ) && unsafe { GetExitCodeProcess(p.0, &mut code).is_ok() }
         && code == 259
 }
-unsafe fn copy_chord() -> bool {
-    if !crate::release_policy::experimental_copy_available() {
-        return false;
+unsafe fn copy_chord() -> crate::copy_engine::SendStatus {
+    if !crate::release_policy::safe_copy_available() {
+        return crate::copy_engine::SendStatus::Rejected;
     }
-    if [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
+    if [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN, VK_INSERT]
         .iter()
         .any(|v| GetAsyncKeyState(i32::from(v.0)) < 0)
     {
-        return false;
+        return crate::copy_engine::SendStatus::Rejected;
     }
     let key = |v: VIRTUAL_KEY, flags| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -272,37 +315,66 @@ unsafe fn copy_chord() -> bool {
             },
         },
     };
+    // Use the legacy-tested chord once; never fall back to another global chord.
     let sent = SendInput(
         &[
             key(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
-            key(VIRTUAL_KEY(0x43), KEYBD_EVENT_FLAGS(0)),
-            key(VIRTUAL_KEY(0x43), KEYEVENTF_KEYUP),
+            key(VK_INSERT, KEYBD_EVENT_FLAGS(0)),
+            key(VK_INSERT, KEYEVENTF_KEYUP),
             key(VK_CONTROL, KEYEVENTF_KEYUP),
         ],
         std::mem::size_of::<INPUT>() as i32,
     );
-    if sent != 4 {
-        let _ = SendInput(
-            &[
-                key(VIRTUAL_KEY(0x43), KEYEVENTF_KEYUP),
-                key(VK_CONTROL, KEYEVENTF_KEYUP),
-            ],
-            std::mem::size_of::<INPUT>() as i32,
-        );
+    if sent != 4 && sent > 0 {
+        let mut releases = Vec::with_capacity(2);
+        if sent >= 2 {
+            releases.push(key(VK_INSERT, KEYEVENTF_KEYUP));
+        }
+        releases.push(key(VK_CONTROL, KEYEVENTF_KEYUP));
+        let _ = SendInput(&releases, std::mem::size_of::<INPUT>() as i32);
     }
-    sent == 4
+    match sent {
+        0 | 1 => crate::copy_engine::SendStatus::Rejected,
+        4 => crate::copy_engine::SendStatus::Sent,
+        _ => crate::copy_engine::SendStatus::Partial,
+    }
 }
 pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
     let outcome = capture_inner(r, app);
+    let reason = outcome.as_ref().err().map(|code| copy_failure_reason(code));
     crate::diag::log(&format!(
-        "selection status={} elapsed_ms={}",
+        "selection status={} reason={} elapsed_ms={}",
         outcome
             .as_ref()
             .map(|_| "COPY_SUCCESS")
             .unwrap_or_else(|e| e),
+        reason.unwrap_or(""),
         crate::selection_runtime::now_ms().saturating_sub(r.created_ms)
     ));
     outcome
+}
+fn copy_failure_reason(code: &str) -> &'static str {
+    match code {
+        "COPY_UNAUTHORIZED" => "尚未在设置页确认本次运行的剪贴板回退",
+        "COPY_FORMAT_UNSAFE" => "原剪贴板含不支持或无法完整保存的格式，未发送快捷键",
+        "COPY_CLIPBOARD_BUSY" => "复制前无法取得剪贴板快照，未发送快捷键",
+        "COPY_CAPTURE_BUSY" => "目标已触发剪贴板变化，但剪贴板持续被占用，无法确认来源",
+        "COPY_READ_BUSY" => "复制结果读取时剪贴板持续被占用，正在尝试安全恢复",
+        "COPY_RESTORE_BUSY" => "剪贴板持续被占用，无法完成原内容恢复",
+        "COPY_TARGET_PROTECTED" => "目标属于受保护的控制台窗口",
+        "COPY_PROTECTED_OR_UNVERIFIED_CONTROL" => "无法确认标准编辑控件及其焦点，未发送快捷键",
+        "COPY_TIMEOUT" => "未能及时验证目标应用的复制结果",
+        "COPY_SNAPSHOT_UNSTABLE" => "剪贴板快照超过 100 毫秒检查时限或读取期间内容变化，未发送快捷键；该检查不能中断仍未返回的延迟渲染调用",
+        "COPY_SNAPSHOT_FAILED" => "无法完整读取原剪贴板，未发送快捷键",
+        "COPY_READ_FAILED" => "无法读取目标应用的复制结果，正在尝试安全恢复",
+        "COPY_SELECTION_MISMATCH" => "复制结果与当前选区不一致，未采纳该文本",
+        "COPY_SELECTION_CHANGED" => "读取期间选区发生变化，未采纳该文本",
+        "COPY_RESTORE_SKIPPED" => "剪贴板在事务期间发生变化，为避免覆盖新内容已跳过恢复",
+        "COPY_RESTORE_FAILED" => "原剪贴板恢复未完整完成，剪贴板中可能仍有本次复制内容",
+        "COPY_INPUT_FAILED" => "Windows 未完整接收一次 Ctrl+Insert 输入",
+        "COPY_SOURCE_UNVERIFIED" => "无法确认剪贴板来源或单次清空加单一格式写入事务",
+        _ => "安全检查未通过或目标状态已变化",
+    }
 }
 struct NativeIo<'a> {
     request: &'a Request,
@@ -330,28 +402,63 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
     fn sequence(&self) -> u32 {
         unsafe { GetClipboardSequenceNumber() }
     }
-    fn send_once(&mut self) -> bool {
+    fn send_once(&mut self) -> crate::copy_engine::SendStatus {
+        if !self.valid() || native_focus(self.request.target) != Some(self.focus) {
+            return crate::copy_engine::SendStatus::Rejected;
+        }
         unsafe { copy_chord() }
     }
-    fn wait(&mut self, before: u32) -> Result<Stamp, &'static str> {
+    fn wait(&mut self, before: u32) -> Result<Stamp, crate::copy_engine::WaitFailure> {
         let deadline = Instant::now() + Duration::from_millis(350);
         unsafe {
-            while GetClipboardSequenceNumber() == before {
+            loop {
+                if GetClipboardSequenceNumber() != before {
+                    let _lock = Clipboard::open_until(None, deadline, "COPY_CAPTURE_BUSY")
+                        .map_err(crate::copy_engine::WaitFailure::changed)?;
+                    return stamp().ok_or_else(|| {
+                        crate::copy_engine::WaitFailure::changed("COPY_SOURCE_UNVERIFIED")
+                    });
+                }
                 if !self.valid() {
-                    return Err("COPY_TARGET_CHANGED");
+                    return Err(crate::copy_engine::WaitFailure::unchanged(
+                        "COPY_CONTEXT_CHANGED",
+                    ));
                 }
                 if Instant::now() >= deadline {
-                    return Err("COPY_TIMEOUT");
+                    return Err(crate::copy_engine::WaitFailure::unchanged("COPY_TIMEOUT"));
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let _lock = Clipboard::open()?;
-            stamp().ok_or("COPY_SOURCE_UNVERIFIED")
+        }
+    }
+    fn recover_after_wait_failure(
+        &mut self,
+        snapshot: Snapshot,
+        before: u32,
+        target: Target,
+        focused_control: isize,
+    ) -> Result<(), &'static str> {
+        unsafe {
+            let lock = Clipboard::open_until(
+                None,
+                Instant::now() + Duration::from_millis(150),
+                "COPY_RESTORE_BUSY",
+            )?;
+            let observed = stamp().ok_or("COPY_RESTORE_SKIPPED")?;
+            if !crate::selection::source_allowed(target, before, focused_control, observed) {
+                return Err("COPY_RESTORE_SKIPPED");
+            }
+            drop(lock);
+            self.restore(snapshot, observed)
         }
     }
     fn read(&mut self, expected: Stamp) -> Result<String, &'static str> {
         unsafe {
-            let _lock = Clipboard::open()?;
+            let _lock = Clipboard::open_until(
+                None,
+                Instant::now() + Duration::from_millis(150),
+                "COPY_READ_BUSY",
+            )?;
             if !self.valid() || stamp() != Some(expected) {
                 return Err("COPY_SOURCE_UNVERIFIED");
             }
@@ -363,7 +470,7 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
         }
     }
     fn restore(&mut self, mut saved: Snapshot, expected: Stamp) -> Result<(), &'static str> {
-        if !crate::release_policy::experimental_copy_available() {
+        if !crate::release_policy::safe_copy_available() {
             return Err("COPY_BUILD_DISABLED");
         }
         unsafe {
@@ -372,35 +479,50 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
                 .get_webview_window("ball")
                 .and_then(|w| w.hwnd().ok())
                 .ok_or("COPY_RESTORE_SKIPPED")?;
-            OpenClipboard(Some(HWND(owner.0))).map_err(|_| "COPY_CLIPBOARD_BUSY")?;
-            let _lock = Clipboard;
+            let _lock = Clipboard::open_until(
+                Some(HWND(owner.0)),
+                Instant::now() + Duration::from_millis(150),
+                "COPY_RESTORE_BUSY",
+            )?;
             let observed = stamp().ok_or("COPY_RESTORE_SKIPPED")?;
-            if !self.valid() || !restore_allowed(expected, observed) {
+            if !restore_allowed(expected, observed) {
                 return Err("COPY_RESTORE_SKIPPED");
             }
-            // Other processes cannot open/write between this comparison and EmptyClipboard.
-            // Restoring several formats can still partially fail; do not claim atomic recovery.
+            // Cleanup may outlive a focus/consent change only while the exact transaction
+            // stamp is current. The clipboard lock prevents a race before EmptyClipboard;
+            // publishing several formats is still non-atomic and may fail part-way.
             EmptyClipboard().map_err(|_| "COPY_RESTORE_FAILED")?;
+            let mut failed = false;
             for (format, block) in &mut saved.blocks {
-                SetClipboardData(*format, Some(HANDLE(block.0 .0)))
-                    .map_err(|_| "COPY_RESTORE_FAILED")?;
-                block.0 = HGLOBAL::default();
+                if SetClipboardData(*format, Some(HANDLE(block.0 .0))).is_ok() {
+                    block.0 = HGLOBAL::default();
+                } else {
+                    failed = true;
+                }
             }
-            Ok(())
+            if failed {
+                Err("COPY_RESTORE_FAILED")
+            } else {
+                Ok(())
+            }
         }
     }
 }
 /// Generic/custom virtual focus cannot safely authorize synthetic copy. Only
-/// verified standard Edit/RichEdit focus is currently supported by this path.
+/// the verified Unicode Edit control in the current foreground target is supported.
 fn native_focus(target: Target) -> Option<isize> {
     unsafe {
+        let root = HWND(target.hwnd as *mut _);
+        if GetForegroundWindow() != root {
+            return None;
+        }
         let mut info = GUITHREADINFO {
             cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
         GetGUIThreadInfo(target.thread, &mut info).ok()?;
         let focus = info.hwndFocus;
-        if focus.is_invalid() || GetAncestor(focus, GA_ROOT) != HWND(target.hwnd as *mut _) {
+        if focus.is_invalid() || GetAncestor(focus, GA_ROOT) != root {
             return None;
         }
         let mut pid = 0;
@@ -414,7 +536,11 @@ fn native_focus(target: Target) -> Option<isize> {
         }
         let class = String::from_utf16_lossy(&name[..size as usize]).to_ascii_lowercase();
         let style = GetWindowLongPtrW(focus, GWL_STYLE) as u32;
-        if crate::selection::copy_control_allowed(&class, style) {
+        if crate::native_copy_proof::control_metadata_allowed(
+            &class,
+            IsWindowUnicode(focus).as_bool(),
+            style & 0x20 != 0,
+        ) {
             Some(focus.0 as isize)
         } else {
             None
@@ -422,7 +548,7 @@ fn native_focus(target: Target) -> Option<isize> {
     }
 }
 fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
-    if !crate::release_policy::experimental_copy_available() {
+    if !crate::release_policy::safe_copy_available() {
         return Err("COPY_BUILD_DISABLED");
     }
     let _serial = TRANSACTION.try_lock().map_err(|_| "COPY_BUSY")?;
@@ -462,6 +588,13 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
 mod tests {
     use super::*;
     #[test]
+    fn snapshot_timeout_reason_does_not_claim_it_can_interrupt_delayed_rendering() {
+        let reason = copy_failure_reason("COPY_SNAPSHOT_UNSTABLE");
+        assert!(reason.contains("未发送快捷键"));
+        assert!(reason.contains("不能中断"));
+    }
+
+    #[test]
     fn only_focused_visible_local_settings_can_request_native_consent() {
         let local = tauri::Url::parse("https://tauri.localhost/poc/settings.html").unwrap();
         assert!(local_settings("settings", &local, true, true));
@@ -484,17 +617,15 @@ mod tests {
         }
     }
     #[test]
-    fn distribution_state_and_epoch_ignore_even_forged_runtime_consent() {
-        if crate::release_policy::experimental_copy_available() {
-            return;
-        }
+    fn state_and_epoch_follow_the_build_gate_but_old_config_never_grants_consent() {
         CONSENT
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .grant(POLICY_VERSION);
-        assert!(!state().available);
-        assert!(!state().enabled);
-        assert!(epoch().is_none());
+        let available = crate::release_policy::safe_copy_available();
+        assert_eq!(state().available, available);
+        assert_eq!(state().enabled, available);
+        assert_eq!(epoch().is_some(), available);
         revoke();
     }
     #[test]
@@ -504,7 +635,7 @@ mod tests {
                 for c in [false, true] {
                     assert_eq!(
                         crate::release_policy::safe_copy_allowed(a, b, c),
-                        crate::release_policy::experimental_copy_available() && a && b && c
+                        crate::release_policy::safe_copy_available() && a && b && c
                     );
                 }
             }

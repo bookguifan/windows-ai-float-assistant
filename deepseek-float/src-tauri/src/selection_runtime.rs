@@ -116,34 +116,39 @@ fn start(app: AppHandle) {
                     r.target.pid,
                     started_ms.saturating_sub(r.created_ms)
                 ));
-                if let Some(text) = read.text {
+                let safe_target = read.safe_target;
+                let clipboard_authorized = crate::safe_copy::state().enabled;
+                let native_allowed = cfg.privileged_capture || clipboard_authorized;
+                let captured = crate::selection::capture_first_available(
+                    read.text,
+                    || {
+                        if !safe_target || !native_allowed || !valid(&r) {
+                            return None;
+                        }
+                        crate::native_selection::capture(&r, || {
+                            valid(&r)
+                                && (crate::config::load().privileged_capture
+                                    || crate::safe_copy::state().enabled)
+                        })
+                        .ok()
+                    },
+                    safe_target && clipboard_authorized,
+                    || {
+                        if !valid(&r) {
+                            return None;
+                        }
+                        crate::safe_copy::capture(&r, &worker_app).ok()
+                    },
+                );
+                if let Some((method, text)) = captured {
                     if valid(&r) {
-                        crate::selection_trace::text("uia-read", &r, r.session_id, &text);
+                        if method == Method::Uia {
+                            crate::selection_trace::text("uia-read", &r, r.session_id, &text);
+                        }
                         crate::popup::accept_session(
                             &worker_app,
-                            Session::new(r.clone(), text, Method::Uia),
+                            Session::new(r.clone(), text, method),
                         );
-                    }
-                } else if read.safe_target && valid(&r) {
-                    let native = crate::native_selection::capture(&r, || {
-                        valid(&r) && crate::config::load().privileged_capture
-                    });
-                    if let Ok(text) = native {
-                        if valid(&r) && crate::config::load().privileged_capture {
-                            crate::popup::accept_session(
-                                &worker_app,
-                                Session::new(r.clone(), text, Method::NativeEdit),
-                            );
-                        }
-                    } else if crate::release_policy::experimental_copy_available() {
-                        if let Ok(text) = crate::safe_copy::capture(&r, &worker_app) {
-                            if valid(&r) {
-                                crate::popup::accept_session(
-                                    &worker_app,
-                                    Session::new(r.clone(), text, Method::Clipboard),
-                                );
-                            }
-                        }
                     }
                 }
             }

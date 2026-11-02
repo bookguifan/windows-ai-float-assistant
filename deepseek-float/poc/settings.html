@@ -150,7 +150,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
             <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动复制回退（实验性）</span><span class="t-hint" id="safe-copy-hint">待安全验收：本发行构建已禁用；仅显式启用研究特性的调试构建可授权。默认关闭；仅本次运行授权，启用后也先尝试 UIA。UIA 失败时可能模拟 Ctrl+C 并条件恢复剪贴板，存在并发风险。点击开启后需在系统确认框确认。</span></div>
+            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">默认关闭。仅在设置页点击并确认后，本次运行才启用。仅对当前前台且身份已验证的标准 Unicode Edit 控件投递一次 Ctrl+Insert；运行前完整保存白名单文本格式，结束后仅接受一次剪贴板清空及单一格式写入的序列变化，再校验并恢复。多格式写入、HTML、RTF、图片、未知格式和并发变化会拒绝或跳过恢复。Windows 延迟渲染可能同步等待原应用，100 毫秒检查不能中断仍未返回的系统调用；恢复也不保证对所有格式无损。WPS 等自定义控件在无法验证时不支持。</span></div>
             <label class="switch"><input type="checkbox" data-key="safe-copy" disabled aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
@@ -859,8 +859,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
         el.checked=safeCopyAvailable&&!!status.enabled;
         el.disabled=!safeCopyAvailable;
         document.querySelector('#safe-copy-hint').textContent=safeCopyAvailable
-          ?'实验性调试能力；仅本次运行授权。Ctrl+C 与多格式恢复仍有未关闭风险，不可用于发布验收。'
-          :'待安全验收：本发行构建已禁用自动 Ctrl+C 回退，配置、备份及授权不能开启。UIA、标准 Unicode Edit 原生读取和主动复制保留。';
+          ?'仅本次运行授权。先尝试 UIA 和标准 Unicode Edit 原生读取；仅两者无法读取时，对当前前台且身份已验证的 Edit 控件投递一次 Ctrl+Insert。原剪贴板快照不完整或格式不受支持时不会发送；仅接受一次清空加单一格式写入的序列变化，否则为避免覆盖并发内容会拒绝并跳过恢复。Windows 延迟渲染可能同步等待原应用，100 毫秒检查不能中断仍未返回的系统调用；恢复也不保证所有格式无损。WPS 等自定义控件在无法验证时不支持。'
+          :'此构建未提供自动剪贴板回退。UIA、标准 Unicode Edit 原生读取和主动复制仍可使用。';
       }
       async function refreshSafeCopy(){
         const revision=safeCopyRevision;
