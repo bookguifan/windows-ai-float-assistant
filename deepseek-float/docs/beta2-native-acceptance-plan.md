@@ -9,14 +9,26 @@
 | 启动、页面渲染与 UI Ready | NOT TESTED | 可交互的球页/明确 ready 信号；只有 HWND 不算通过 |
 | 悬浮球显示、隐藏、拖动 | NOT TESTED | 隐藏后等待再显示；启动早期也试一次 |
 | A01 划词 | NOT TESTED | 在支持 UIA 的应用选取专用中英文文本，检查工具条与提问；无需主动复制 |
+| 托盘菜单 | NOT TESTED | 打开菜单、检查基本命令可用 |
 | 设置页打开、关闭 | NOT TESTED | 不保存真实偏好；保存测试只使用测试配置 |
 | 截图与 OCR | NOT TESTED | 仅截取合成图片和测试文字 |
 | 主要 AI 请求流程 | NOT TESTED | 使用非敏感问题，检查发送、回答与追问；无需穷举所有站点 |
-| 正常退出 | NOT TESTED | 通过应用菜单退出，确认本次进程及其 WebView2 子进程结束 |
+| 正常退出 | NOT TESTED | 托盘右键菜单选择“退出助手” |
+| 子进程清理 | NOT TESTED | 确认本次主进程及其 WebView2 子进程结束，不按映像名强杀其他实例 |
 
-填写 PASS、FAIL 或 NOT TESTED，并给出一行原因。历史候选的结果不能代替本次候选。
+填写 PASS、FAIL、NOT TESTED 或 BLOCKED，并给出一行原因。历史候选的结果不能代替本次候选。
 不必每个功能再跑一次 `beta2-isolation`；它是可选的诊断能力，路径/安全不变量仍在 CI 验证。
-PR #6 的隔离诊断代码尚未合并，本流程不依赖它，也不将诊断构建作为普通功能门槛。
+本地整合候选包含 PR #6 的隔离诊断代码；普通构建不注册诊断 IPC、不注入诊断桥。
+[PR #6 的历史原生记录](https://github.com/bookguifan/windows-ai-float-assistant/blob/d72198cefae85d3df2a5d72df1343805d5a96eda/deepseek-float/docs/beta2-native-acceptance-plan.md)仍可追溯，不能替代当前普通候选验收。
+
+启动前先只读核对已有应用进程和现有配置备份的时间、位置及覆盖范围；不得输出配置内容或覆盖正式配置。备份不存在或影响范围不清时记录 BLOCKED，先明确保护措施。
+
+## 本次会话的数据影响
+
+普通 Release 使用正式 Tauri identifier，可能读取现有配置、收藏和网站登录状态；
+启动可能创建/更新 WebView2 缓存、Cookie 和应用运行状态，退出不会撤销这些写入。
+AI 问答会向所选第三方网站发送合成问题；截图/OCR 只使用专门准备的非敏感测试内容。
+本轮仅准备候选，启动次数为 0。取得明确授权后才启动一次；不沿用历史启动授权。
 
 ## 数据操作
 

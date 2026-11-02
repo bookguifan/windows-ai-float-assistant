@@ -115,7 +115,18 @@ pub fn run() {
         }
     }));
 
-    Builder::default()
+    let builder = Builder::default();
+    #[cfg(feature = "beta2-isolation")]
+    let builder = builder.on_page_load(|webview, payload| {
+        if crate::diag::enabled() && webview.label() == "ball" {
+            let stage = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "navigation-started",
+                tauri::webview::PageLoadEvent::Finished => "navigation-finished",
+            };
+            crate::diag::log(&format!("[ball-page] {stage}"));
+        }
+    });
+    builder
         .setup(move |app| {
             crate::isolation::create_configured_windows(app, &isolated_windows)
                 .map_err(std::io::Error::other)?;
@@ -402,6 +413,8 @@ pub fn run() {
             crate::ipc::context_menu_action,
             crate::ipc::context_menu_close,
             crate::ipc::ball_ready,
+            #[cfg(feature = "beta2-isolation")]
+            crate::ipc::ball_diagnostic,
             crate::ipc::popup_action,
             crate::ipc::popup_trace,
             crate::ipc::settings_save,

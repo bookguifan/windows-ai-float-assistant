@@ -100,6 +100,17 @@
         };
       }
       const tauri = window.__TAURI__;
+      function reportBallDiagnostic(stage) {
+        try {
+          if (typeof window.__DSFLOAT_BALL_DIAG__ === "function") {
+            window.__DSFLOAT_BALL_DIAG__(stage);
+          }
+        } catch (_) {}
+      }
+      reportBallDiagnostic("script-start");
+      const ipcAvailable = !!window.__TAURI_INTERNALS__ &&
+        typeof window.__TAURI_INTERNALS__.invoke === "function";
+      reportBallDiagnostic(ipcAvailable ? "ipc-available" : "ipc-unavailable");
       const ball = document.getElementById("ball");
 
       // ---- ★ #7：启动期「首帧就绪」握手 ----
@@ -118,13 +129,24 @@
       function notifyBallReady() {
         if (ballReadySent) return;
         ballReadySent = true;
+        reportBallDiagnostic("ready-invoke-start");
         try {
-          tauri.core.invoke("ball_ready").catch((e) => console.error("[ball] ball_ready:", e));
+          tauri.core.invoke("ball_ready").then(
+            () => reportBallDiagnostic("ready-invoke-ok"),
+            () => {
+              reportBallDiagnostic("ready-invoke-rejected");
+              console.error("[ball] ball_ready IPC rejected");
+            }
+          );
         } catch (e) {
-          console.error("[ball] invoke ball_ready failed:", e);
+          reportBallDiagnostic("ready-invoke-rejected");
+          console.error("[ball] ball_ready IPC threw");
         }
       }
-      requestAnimationFrame(() => requestAnimationFrame(notifyBallReady));
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        reportBallDiagnostic("first-frame-callback");
+        notifyBallReady();
+      }));
       window.addEventListener("load", () => setTimeout(notifyBallReady, 0));
       setTimeout(notifyBallReady, 4000);
 

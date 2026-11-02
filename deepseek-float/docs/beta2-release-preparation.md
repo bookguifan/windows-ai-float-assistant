@@ -5,9 +5,9 @@
 
 ## 当前代码
 
-main 为 `2ecaba3`（PR #5 已合并）。[PR #6](https://github.com/bookguifan/windows-ai-float-assistant/pull/6)
-仍是隔离球页诊断草稿，head `d72198c`，该 head 的 CI 已通过。本次流程精简从 main 独立分支开始，
-不重复实现 PR #5 的统一构建入口、Node/pnpm 配对校验和文档归档，也不隐式合并 PR #6。
+main 当前为 `2ecaba3`。先由维护者合并 [PR #7](https://github.com/bookguifan/windows-ai-float-assistant/pull/7)，再合并 [PR #6](https://github.com/bookguifan/windows-ai-float-assistant/pull/6)。PR #6 已预整合更新后的 #7；两处文档冲突保留精简流程及历史验收链接，不改 main。
+
+组合应用源码与已验证的本地候选 `6b3846f` 相同；后续仅补充用户退出说明、材料摘要及原生清单。合并后记录确定 main SHA 与其 CI，再经现有 `pnpm release` 构建并冻结 EXE/ZIP 摘要和 CHECKSUMS。旧候选不是合并后 main 的正式冻结包。
 
 ## 开发和 CI
 
