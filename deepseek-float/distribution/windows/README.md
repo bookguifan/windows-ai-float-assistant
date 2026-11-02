@@ -1,6 +1,6 @@
 # Windows AI 悬浮助手 v0.1.0-beta.2
 
-Windows x64 绿色版：解压完整 ZIP，运行 deepseek-float.exe。请保留同目录的许可证、通知及源码材料。
+Windows x64 绿色版：解压完整 ZIP，运行 deepseek-float.exe。请保留同目录的许可证、通知及源码材料。退出时使用系统托盘菜单的“退出”，关闭设置页不会退出程序。
 
 需要本机 WebView2 Runtime 和 Microsoft Visual C++ x64 Runtime；本包不捆绑这些运行时。
 - WebView2：https://developer.microsoft.com/microsoft-edge/webview2/
