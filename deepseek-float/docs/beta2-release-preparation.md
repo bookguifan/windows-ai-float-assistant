@@ -1,50 +1,63 @@
-# Beta.2.0 Release Preparation
+# Beta.2 发布准备
 
-Updated 2026-11-01. This is the current release summary; detailed historical test logs are preserved under [`archive/beta2/`](archive/beta2/).
+更新：2026-11-02。计划发布 `v0.1.0-beta.2`；应用内四处版本继续为 `0.1.0`。
+本文是当前流程，历史阶段报告保留在 [archive/beta2/](archive/beta2/)。
 
-## Version and Release State
+## 当前代码
 
-- Planned release and tag: `v0.1.0-beta.2`. The only GitHub release currently published is `v0.1.0-beta.1`.
-- `package.json`, `Cargo.toml`, and `tauri.conf.json` remain `0.1.0`; the prerelease suffix belongs to the Git tag and release name.
-- PR #5 contains clipboard failure recovery, release-build path remapping, and this repository/release-toolchain cleanup. Before merging, verify CI against the exact current PR head; the earlier successful run was for the previous head.
-- Beta.2.0 remains **NO-GO**. This branch is not a frozen distribution candidate, and no tag or release asset was created in this work.
+main 为 `2ecaba3`（PR #5 已合并）。[PR #6](https://github.com/bookguifan/windows-ai-float-assistant/pull/6)
+仍是隔离球页诊断草稿，head `d72198c`，该 head 的 CI 已通过。本次流程精简从 main 独立分支开始，
+不重复实现 PR #5 的统一构建入口、Node/pnpm 配对校验和文档归档，也不隐式合并 PR #6。
 
-## Build Entry
+## 开发和 CI
 
-`scripts/build-release.mjs` is the single release implementation. `release.ps1` is a compatibility wrapper that forwards `-SkipFrontBuild`, `-UseSccache`, and an optional `-NodePath`.
+Windows 本机使用 Node **24.22.1**、pnpm **9.15.9**、已验证的 Rust **1.98.1**、Tauri 2 与本机 WebView2。
+既有 Node engine 校验保留，无新增环境管理器或工具链文件。命令和临时 PATH 修正见 [贡献指南](../../CONTRIBUTING.md)。
 
-The build requires the `package.json` Node engine (`^24.15.0`) and the exact pnpm version in `packageManager` (`9.15.9`). It puts the entry Node executable first in the child `PATH`, then verifies that `pnpm exec node` resolves to the same executable and version. The lockfile install uses `--frozen-lockfile`; npm fallback is not permitted.
+日常用 `pnpm dev`；按改动选择 `pnpm test` / `pnpm test:js` / `pnpm test:rs` 与 `pnpm check`。
+只改前端无需构建 Rust Release。PR 的一个 Windows CI 完成完整验证：前端构建、全部单元测试、
+Playwright、聚合检查（CSP/内联 JS/版本/净化白名单）、Rust fmt、默认与隔离特性 Clippy、
+普通 Release 构建及窗口引导、默认 Rust 测试、Debug/Release 隔离路径与窗口引导、
+Debug/Release 实验复制策略。不同 profile/feature 的安全检查保留；同配置 Release `cargo check` 已由实际 build 覆盖。
+CI 不启动桌面程序，不公开上传构建包，不要求第三方 Reviewer。
 
-The ordinary build runs frontend checks and unit tests, Rust formatting, strict Clippy, Rust library tests, Debug/Release clipboard policy tests, and a locked Release build with `custom-protocol`. `beta2-isolation` and automatic Ctrl+C fallback stay disabled. Use `--check-toolchain-only` to verify the Node/pnpm pairing without building. `--no-deliver` does not refresh the local delivery directory.
+## 唯一打包入口
 
-## Repository Cleanup And Local Verification
+在 `deepseek-float/` 执行 **`pnpm release`**，调用 `scripts/build-release.mjs`。
+`release.ps1` 已被既有说明使用，继续作为薄包装；不维护第二套构建配方。
 
-- Eleven completed Beta.2 reports were moved under `docs/archive/beta2/`; their historical outcomes are retained. The current release summary and known-issues page remain at the top level. No tracked history or Windows license material was deleted; the 594-file `distribution/windows/` set remains pending final binary-to-component mapping.
-- `release.ps1` is now a compatibility wrapper around `scripts/build-release.mjs`; npm fallback was removed. The package scripts include four release-toolchain regression tests.
-- On this machine, the release entry check passed with Node `v24.22.1`, pnpm `9.15.9`, and `pnpm exec node` resolving to the same Node executable. `pnpm run check` passed. `pnpm run test:unit` passed 400 cases across 15 scripts. A local scan found no broken relative links in 30 Markdown files. `git diff --check` exited 0; Git reported only the repository's configured line-ending normalization notices.
-- Rust tests, Playwright, and a full Release build were not rerun for this cleanup: application Rust/TypeScript sources and dependencies did not change. The successful PR #5 CI run documented earlier applies only to its old head; the latest head must have its own passing CI before merge.
+1. 校验 Node/pnpm 配对，冻结安装依赖。
+2. 构建前端，执行现有 `pnpm check`，检查版本一致性及 CSP。
+3. 检查生产 features 恰为 `custom-protocol`，拒绝继承 `TAURI_CONFIG` 覆盖。
+4. 执行 Release 实验特性无法解锁复制的策略回归，然后构建普通 Release。
+   普通构建放在最后，避免策略测试的 feature 污染最终 EXE。
+5. 检查所有 HTML 资源新鲜度，可选签名，然后生成 EXE SHA256。
+6. 按既有许可 CHECKSUMS 逐文件核对并组装材料，生成完整包校验表、一个 Windows x64 ZIP 及 ZIP SHA256。
 
-## Windows Acceptance
+完整单元测试、fmt、Clippy 和 Debug 测试由 CI 执行，不在打包中重复运行。
+`--no-check` 不再允许；`--no-frontend` 仍须通过资源检查；`--no-deliver` 仅构建而不刷新交付目录。
+`--check-toolchain-only` 只验证工具链。本地构建不等于发布，不启动 EXE，不创建 Tag/GitHub Release。
 
-The last recorded native run used the earlier isolated diagnostic candidate. It showed WebView2 startup, a visible ball/HWND, UI Ready, manual hide and restore, settings access, normal exit, child cleanup, and unchanged production settings. The delayed-startup visibility race was **not exercised** in that run; it must not be reported as a native pass for the current branch.
+输出只使用已有的 `deepseek-float/release/`：EXE、`HASH.txt`、原目录结构的许可/源码材料、
+`CHECKSUMS.csv`、`windows-ai-float-assistant-v0.1.0-beta.2-windows-x64.zip` 和 `.zip.sha256`。
+临时组装目录在系统 TEMP 自动清理；ZIP 只收录经校验的材料及新 EXE，不收录旧 release 目录内容。
+PDB、用户配置、日志、开发缓存、Token、私钥不应进入包；不要手动压缩整个工作目录。
+许可证文本、NOTICE、MPL 对应源码归档及索引完整保留，不能因为精简流程删除。
 
-No native EXE was started, no real system clipboard was read or written, and no native backup/restore was performed during this repository closeout. The simulated clipboard writer tests do not substitute for real Windows clipboard acceptance. Issue #2 remains open; one successful historical run does not establish that intermittent startup failures are fixed.
+## 原生验收和剩余放行项
 
-## Licensing and Distribution
+使用[普通 Release 简单清单](beta2-native-acceptance-plan.md)，一次授权会话验启动/UI Ready、球窗、
+A01、设置、截图/OCR、主要 AI 请求和退出。隔离构建仅作可选诊断，不重复全部普通功能。
+数据操作使用专用测试内容；不能确保安全的设置保存/备份恢复先不执行并记录原因。
 
-Keep the complete `distribution/windows/` material until the final binary-to-component mapping is reviewed. It currently contains 594 tracked files, including license texts and MPL source correspondence. Its checksum review is not proof that every final binary component has been mapped; that release gate remains open.
+当前尚未放行，真实剩余事项：
 
-The final green package must be freshly built from the final source SHA and include the required project and third-party notices, source correspondence, component/checksum indexes, and a SHA256 manifest. Do not distribute PDBs, local logs, user data, WebView2 profiles, test caches, or signing credentials. The ignored local `release/` draft is not a frozen candidate and must not be reused as the final package.
+- PR #7 再 PR #6 完成人工合并，合并后的 main GitHub CI 通过。
+- 新普通 Release 的主要功能及正常退出人工验收；本次没有启动权限，均不能宣称通过。
+- brotli 文件级通知及原生组件范围已在现有第三方说明中澄清；最终 ZIP 仍按校验表检查，不要求企业级二进制审计。
+- 若发现可稳定复现的严重故障或严重用户数据丢失，修复后再发布。
 
-## Install and Upgrade
-
-Verify the published SHA256, extract the green package into a new program directory, and close the running assistant before replacing program files. Preserve the user's configuration, favorites, prompts, and WebView2 data; do not clear AppData as an upgrade step. Use the application's backup/restore flow only after the native backup and recovery gates have been completed.
-
-## Remaining Release Gates
-
-- Run the latest PR commit's CI and review its full diff.
-- Validate the current-source EXE in one authorized isolated native session, including the delayed startup event, settings, normal exit, and child cleanup.
-- Complete authorized real clipboard acceptance, including publish-failure restoration; recovery can be partial and must remain clearly reported.
-- Complete native backup/restore tests with disposable data.
-- Review final package contents, privacy scan, license mapping, EXE/PDB/source identity, and SHA256 manifest.
-- Keep Issue #2 open until its intermittent failure has adequate evidence; do not infer a fix from a single successful run.
+[Issue #2](https://github.com/bookguifan/windows-ai-float-assistant/issues/2) 可作为已知问题开放，
+一次成功启动不说明根治；它的开放状态本身不是额外发布门槛。
+历史所有原生矩阵、PDB 身份报告、真实备份恢复或特定 VM 验收不再是统一强制门槛。
+升级时退出旧实例并保留用户配置、收藏和 WebView2 数据，不清空 AppData。

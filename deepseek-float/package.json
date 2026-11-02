@@ -17,13 +17,13 @@
     "check:csp": "node scripts/check-csp.mjs",
     "check": "npm run check:csp && npm run check:inline-js && npm run check:version && npm run check:sanitize-whitelist",
     "check:sanitize-whitelist": "node scripts/check-sanitize-whitelist.mjs",
-    "test:rs": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:unit": "node tests/sanitize.test.mjs && node tests/business-logic.test.mjs && node tests/screenshot-ui.test.mjs && node tests/context-menu.test.mjs && node tests/ball-interaction.test.mjs && node tests/send-feedback.test.mjs && node tests/new-session.test.mjs && node tests/favorites-export.test.mjs && node tests/settings-workflows.test.mjs && node tests/safe-copy-ui.test.mjs && node tests/backup-ui.test.mjs && node tests/site-compatibility.test.mjs && node tests/ocr-score.test.mjs && node tests/release-security.test.mjs && node tests/release-toolchain.test.mjs",
+    "test:rs": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "test:unit": "node tests/sanitize.test.mjs && node tests/business-logic.test.mjs && node tests/screenshot-ui.test.mjs && node tests/context-menu.test.mjs && node tests/ball-interaction.test.mjs && node tests/send-feedback.test.mjs && node tests/new-session.test.mjs && node tests/favorites-export.test.mjs && node tests/settings-workflows.test.mjs && node tests/safe-copy-ui.test.mjs && node tests/backup-ui.test.mjs && node tests/site-compatibility.test.mjs && node tests/ocr-score.test.mjs && node tests/release-security.test.mjs && node tests/release-toolchain.test.mjs && node tests/release-package.test.mjs",
     "test:js": "playwright test",
     "e2e:shell": "node scripts/e2e-shell.mjs",
-    "e2e:diag": "node scripts/e2e-diag.mjs",
     "build:release": "cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml",
-    "release": "node scripts/build-release.mjs"
+    "release": "node scripts/build-release.mjs",
+    "test": "pnpm test:unit"
   },
   "devDependencies": {
     "@playwright/test": "1.61.0",

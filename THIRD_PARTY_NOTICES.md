@@ -14,7 +14,7 @@
 
 采用Apache-2.0分支的再分发内容需保留许可及适用NOTICE/修改说明；存在OR时可选择分支，不能把所有选项都当必须同时履行。MIT/BSD/Unicode等也需保留适用原通知。现有通知包中的原文不因本README被重写。参考[MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/)、[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)及[MIT](https://opensource.org/license/mit)。
 
-brotli-decompressor 5.0.3的根BSD正文、src/context.rs MIT头及保守MIT正文均保留；包中斜杠声明不能擅自解读成统一AND/OR。当前候选不vendor其实现，不能把尚未完成的文件级/最终链接映射冒称关闭。本次已核对精确源文件并保守保留相应许可及原通知；未来二进制分发仍须携带相应材料。
+brotli-decompressor 5.0.3的根BSD正文、src/context.rs MIT头及保守MIT正文均保留；包中斜杠声明不能擅自解读成统一AND/OR。文件级范围已核对：根 LICENSE 的 Dropbox BSD-3-Clause 与 src/context.rs 的 Google 2013 MIT 分别适用，运行时解码使用后者；brotli 8.0.4 的 BSD/MIT 及 Google 2010 编码器 MIT 通知也保留，编码器为资源构建输入。本次已核对精确源文件并保守保留相应许可及原通知；未来二进制分发仍须携带相应材料。
 
 WebView2 SDK条款不能只用Rust绑定MIT许可替代；本候选不带SDK加载器二进制或Runtime。未来可执行包需另核实际加载器/SDK、MSVC/标准库、生成前端、MPL和NOTICE，不继承当前源码候选状态。
 
