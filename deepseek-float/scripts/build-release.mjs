@@ -1,34 +1,16 @@
-// Windows 绿色版发布构建脚本；原生 Rust 代码仅支持 Windows。
-//
-// 串联一次「可发布」的完整链路：
-//   ① pnpm install --frozen-lockfile
-//   ② 前端 vite build           → 产出 dist/poc/*（含 result.html）
-//   ③ cargo release（必开 custom-protocol）→ 编译内嵌前端资源的 exe
-//   ④ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源
-//      （逐文件配对；防止「改了任一前端页却忘重打」导致内嵌的还是旧页面）
-//   ⑤ CSP/内联脚本/版本/净化检查、前端单测、Rust fmt/Clippy/测试和安全策略回归
-//   ⑥（可选）--sign：给 exe 做代码签名（Authenticode / codesign），非致命
-//   ⑦ 交付：复制 exe → `release/deepseek-float.exe`，并刷新 `release/HASH.txt`（SHA256）
-//      ★ 必须在 ⑥ **之后** —— 交付的应是最终（含签名）产物；`--no-deliver` 可跳过本步。
-//
-// ★ Windows 提醒：pnpm 是命令垫片，node 直接 execFile 会报 `ENOENT`
-//   ⇒ 下面统一经 shell 解析（macOS/Linux 保持直接 exec，行为不变）。
-//
-// 用法（在 deepseek-float/ 下）：
-//   node scripts/build-release.mjs
-//   node scripts/build-release.mjs --no-frontend   # 跳过 vite build（只重新编译 Rust）
-//   node scripts/build-release.mjs --no-check      # 跳过 csp/inline-js/version 校验
-//   node scripts/build-release.mjs --sign          # 构建后给 exe 做 Authenticode / codesign
-//   node scripts/build-release.mjs --no-deliver    # 跳过交付复制（不刷新 release/）
-//
-// 退出码非 0 = 构建未通过（请按上面提示修复后重试）。
+// Single Windows x64 portable build entry: toolchain -> frontend/checks ->
+// ordinary custom-protocol Release -> policy -> signing -> licenses/ZIP/SHA256.
+// Full unit tests, formatting and Clippy run once in CI.
+// Usage: pnpm release
+// Optional: --no-frontend (checks freshness), --no-deliver, --sign,
+//           --check-toolchain-only. Mandatory checks cannot be skipped.
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assembleRelease } from "./lib/release-package.mjs";
 import {
   assertNodeEngineVersion,
   assertPnpmRuntime,
@@ -104,7 +86,9 @@ if (process.argv.includes("--check-toolchain-only")) {
 }
 
 const noFrontend = process.argv.includes("--no-frontend");
-const noCheck = process.argv.includes("--no-check");
+if (process.argv.includes("--no-check")) {
+  throw new Error("Release checks cannot be skipped; use pnpm build for frontend development.");
+}
 const doSign = process.argv.includes("--sign");
 const noDeliver = process.argv.includes("--no-deliver");
 
@@ -135,6 +119,32 @@ if (!noFrontend) {
   console.log("\n（跳过前端 build：--no-frontend）");
 }
 
+// Fail before Rust compilation if frontend/version/security configuration is invalid.
+run(pm, ["run", "check"]);
+if (process.env.TAURI_CONFIG) {
+  throw new Error("Ordinary Release requires the tracked Tauri config; unset TAURI_CONFIG.");
+}
+const releaseFeatures = captureOutput("cargo", ["tree", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--depth", "0", "--prefix", "none", "--format", "{f}", "--features", "custom-protocol"]);
+if (releaseFeatures !== "custom-protocol") throw new Error(`Unexpected Release features: ${releaseFeatures}`);
+const releaseBuildEnvironment = {
+  CARGO_INCREMENTAL: "0",
+  CARGO_ENCODED_RUSTFLAGS: releaseRustflags(),
+};
+
+// ⑤ Only the distribution security invariants run here; the full test suite,
+// formatting and Clippy run once in CI. These tests never operate the clipboard.
+run("cargo", [
+  "test",
+  "--locked",
+  "--manifest-path",
+  "src-tauri/Cargo.toml",
+  "--release",
+  "--features",
+  "custom-protocol,experimental-clipboard-fallback",
+  "--test",
+  "release_selection_policy",
+], releaseBuildEnvironment);
+
 // ② Rust release 构建。★ 必开 custom-protocol，否则 exe 白屏；build.rs 也会在漏开时直接 panic。
 //
 //   ★ CARGO_INCREMENTAL=0：**强制关闭增量编译**。原因：用户全局 `~/.cargo/config.toml` 的
@@ -154,10 +164,7 @@ run(
     "--manifest-path",
     "src-tauri/Cargo.toml",
   ],
-  {
-    CARGO_INCREMENTAL: "0",
-    CARGO_ENCODED_RUSTFLAGS: releaseRustflags(),
-  },
+  releaseBuildEnvironment,
 );
 
 // ③ 新鲜度校验：`poc/` 下**全部** `*.html` 都必须有 `dist/poc/` 对应产物、且不旧于源。
@@ -212,49 +219,6 @@ if (missing.length > 0 || stale.length > 0) {
 }
 console.log(`✓ dist/poc/ 新鲜度 OK（${srcHtmls.length} 个 *.html 均有对应产物且不旧于 poc/ 源，已含最新前端改动）`);
 
-// ④ 复用既有 check 链（csp / inline-js / version 一致性）。
-if (!noCheck) {
-  run(pm, ["run", "check"]);
-} else {
-  console.log("\n（跳过 check：--no-check）");
-}
-
-// ⑤ Release 前端、Rust 与剪贴板安全策略回归。
-run(pm, ["run", "test:unit"]);
-run("cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]);
-run("cargo", [
-  "clippy",
-  "--locked",
-  "--manifest-path",
-  "src-tauri/Cargo.toml",
-  "--all-targets",
-  "--",
-  "-D",
-  "warnings",
-]);
-run("cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib"]);
-run("cargo", [
-  "test",
-  "--locked",
-  "--manifest-path",
-  "src-tauri/Cargo.toml",
-  "--features",
-  "experimental-clipboard-fallback",
-  "--test",
-  "release_selection_policy",
-]);
-run("cargo", [
-  "test",
-  "--locked",
-  "--manifest-path",
-  "src-tauri/Cargo.toml",
-  "--release",
-  "--features",
-  "custom-protocol,experimental-clipboard-fallback",
-  "--test",
-  "release_selection_policy",
-]);
-
 // ⑥（E3）可选：给 exe 做代码签名；签名不保证消除 SmartScreen 提示。
 //   Windows：Authenticode（signtool.exe 或 osslsigncode）。需证书，通过环境变量配置，缺失则警告跳过。
 //   macOS：codesign（需开发者证书 + 钥匙串访问权限）。
@@ -277,7 +241,7 @@ if (noDeliver) {
 console.log(
   noDeliver
     ? "\n✓ Release 构建完成（未刷新 release/ 交付目录）。"
-    : "\n✓ 发布构建完成（bundle.active=false，已交付 release/deepseek-float.exe + release/HASH.txt）。",
+    : "\n✓ 发布构建完成（普通 Windows x64 绿色版 EXE、许可证、ZIP 和 SHA256 均在 release/）。",
 );
 process.exit(0);
 
@@ -290,29 +254,20 @@ function releaseBinary() {
   return path.join(base, "deepseek-float"); // macOS / Linux
 }
 
-/**
- * 交付：把构建产物复制到 `release/` 并刷新 `release/HASH.txt`（幂等）。
- *
- * - 目标名 = 产物基线名（Windows `deepseek-float.exe`）；新产物由 .gitignore 排除。
- *   构建不等于发布，不自动加入 Git，也不自动上传。
- * - `HASH.txt` = 该产物的 **SHA256，64 位大写十六进制 + 平台换行**。
- *   ★ Windows 下即「64 字符 + `\r\n`」= **66 字节**，与既有 Windows 交付格式对齐。
- * - 失败即 `throw`（由顶层未捕获异常以非 0 退出），**绝不静默交付错误的哈希**。
- */
+// Assemble verified legal materials and the final (possibly signed) binary.
 function deliverArtifacts() {
   const bin = releaseBinary();
   if (!fs.existsSync(bin)) {
     throw new Error(`未找到构建产物 ${path.relative(root, bin)}（cargo build 未产出？）`);
   }
-  const dir = path.join(root, "release");
-  fs.mkdirSync(dir, { recursive: true });
-  const dest = path.join(dir, path.basename(bin));
-  fs.copyFileSync(bin, dest);
-  const buf = fs.readFileSync(dest);
-  const hash = createHash("sha256").update(buf).digest("hex").toUpperCase();
-  fs.writeFileSync(path.join(dir, "HASH.txt"), hash + os.EOL);
-  console.log(`✓ 交付：${path.relative(root, dest)}（${buf.length} 字节）`);
-  console.log(`✓ 交付：release/HASH.txt ← sha256 ${hash}`);
+  const result = assembleRelease({
+    binary: bin,
+    materials: path.join(root, "distribution", "windows"),
+    output: path.join(root, "release"),
+  });
+  console.log(`✓ EXE SHA256: ${result.exeHash}`);
+  console.log(`✓ ZIP: ${path.relative(root, result.zip)} (${result.files} files)`);
+  console.log(`✓ ZIP SHA256: ${result.zipHash}`);
 }
 
 /** 给发布产物签名（失败仅警告，不中止构建）。 */
