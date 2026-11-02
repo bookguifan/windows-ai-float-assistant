@@ -1,5 +1,6 @@
 [package]
 name = "deepseek-float"
+default-run = "deepseek-float"
 version = "0.1.0"
 description = "DeepSeek floating window desktop shell"
 # 发布前需补齐的元数据（当前为占位，非真实身份，请勿编造后提交）：
