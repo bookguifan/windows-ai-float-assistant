@@ -173,6 +173,23 @@ test('resolved more menu permits the immediate settings click without a fixed lo
  }finally{p.close();}
 });
 
+test('clicking visible more collapses it and reopening preserves the selection ticket',async()=>{
+ const p=toolbarPage();try{
+  p.w.__dsfSetPrompts(Array.from({length:6},(_,i)=>({id:`prompt-${i}`,label:`Prompt ${i}`})));
+  p.w.__dsfResetFired('350');
+  const more=p.d.querySelector('[data-preset="open-more"]');
+  more.click();await tick();p.w.__dsfShowMore();
+  more.click();await tick();
+  assert.deepEqual(p.calls.filter(c=>c.command==='popup_action').map(c=>c.args.preset),
+   ['open-more','close-more']);
+  p.w.__dsfHideMore();
+  more.click();await tick();p.w.__dsfShowMore();
+  p.d.querySelector('[data-preset="open-settings"]').click();
+  assert.deepEqual(p.calls.filter(c=>c.command==='popup_action').map(c=>[c.args.preset,c.args.selectionTicket]),
+   [['open-more','350'],['close-more','350'],['open-more','350'],['open-settings','350']]);
+ }finally{p.close();}
+});
+
 test('smart selection default and explicit preferences render without a legacy control',async()=>{
  for(const cfg of [{}, {privileged_capture:false}, {privileged_capture:true}]){
   const p=page(c=>c==='config_get'?Promise.resolve(cfg):c==='safe_copy_status'?Promise.resolve({available:false,enabled:false}):undefined);

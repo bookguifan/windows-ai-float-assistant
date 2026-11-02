@@ -11,7 +11,7 @@
 //!
 //! 关闭条件：
 //!   1) 点了任一动作（复制 / 提示词）→ 动作后立即关闭
-//!   2) 点了「⋮」→ 就地扩高展开浮层（不关闭；点浮层项/设置才关）
+//!   2) 点了「⋮」→ 就地展开/收起浮层（不消费选区；点浮层项/设置才关）
 //!   3) 点了「设置」→ 打开设置窗口后关闭工具条
 //!   4) 点击工具条外的任意处（鼠标钩子 Dismiss）→ 立即关闭
 //!   5) 8s 超时自动关闭
@@ -425,11 +425,19 @@ pub fn show_at_cursor(app: &AppHandle) {
     arm_auto_close(app, POPUP_TIMEOUT_MS);
 }
 
-/// 「⋮ 更多」：把常驻工具条窗口**就地扩高**展开自定义浮层，并按「新高度」重新翻边定位。
+fn more_height(expanded: bool, overflow: usize) -> f64 {
+    if !expanded {
+        return POPUP_LOGICAL_H;
+    }
+    let n = overflow.min(FLY_MAX_ROWS);
+    POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 9.0 } else { 0.0 }
+}
+
+/// 「⋮ 更多」：就地展开或收起浮层，并按新高度同步窗口位置和鼠标命中区域。
 ///
 /// 不关闭、不消费待发文本 —— 用户点完浮层里的某项（或点“设置”）才真正关（走 on_action）。
 /// 复用 show 时存下的锚点/工作区/scale，扩高后用 `place_near` 对新高度重新夹取（防止顶出屏幕）。
-fn expand_more(app: &AppHandle) {
+fn set_more_expanded(app: &AppHandle, expanded: bool) {
     let Some(win) = app.get_webview_window(POPUP_LABEL) else {
         return;
     };
@@ -443,15 +451,14 @@ fn expand_more(app: &AppHandle) {
         .filter(|p| !p.hidden)
         .map(|p| p.label.clone())
         .collect();
-    let n = labels.len().saturating_sub(INLINE_MAX).min(FLY_MAX_ROWS);
     // ★ 顶栏保留：窗口宽 = 顶栏宽；高度 = 顶栏 34 + 右下窄下拉（窄宽由 CSS 的 max-content 决定）。
-    let new_h =
-        POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 9.0 } else { 0.0 }; // 分隔线/边距7px及其额外2px间隙
+    let new_h = more_height(expanded, labels.len().saturating_sub(INLINE_MAX));
     if let Err(e) = win.set_size(LogicalSize::new(last.logical_w, new_h)) {
         crate::diag::log(&format!(
-            "popup 展开 set_size({}, {new_h:.0}) 失败: {e}",
+            "popup 更多菜单 set_size({}, {new_h:.0}) 失败: {e}",
             last.logical_w
         ));
+        return;
     }
     let gap = (CURSOR_GAP * last.scale).round() as i32;
     let w = (last.logical_w * last.scale).round() as i32;
@@ -463,9 +470,14 @@ fn expand_more(app: &AppHandle) {
         *g = Some((x, y, x + w, y + h));
     }
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
-    let _ = win.eval("if (window.__dsfShowMore) window.__dsfShowMore();");
+    let script = if expanded {
+        "if (window.__dsfShowMore) window.__dsfShowMore();"
+    } else {
+        "if (window.__dsfHideMore) window.__dsfHideMore();"
+    };
+    let _ = win.eval(script);
     crate::diag::log(&format!(
-        "popup 已展开「更多」（宽 {} 高 {new_h:.0} 逻辑像素，{} 项进下拉，位于 ({x},{y})）",
+        "popup 更多菜单 expanded={expanded}（宽 {} 高 {new_h:.0} 逻辑像素，{} 项进下拉，位于 ({x},{y})）",
         last.logical_w,
         labels.len().saturating_sub(INLINE_MAX)
     ));
@@ -780,6 +792,12 @@ fn selection_with_policy(
 ///
 /// 硬约束：绝不发送空内容。
 pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
+    if preset_name == "close-more" {
+        if take_pending_action(ticket, false).is_some() {
+            set_more_expanded(app, false);
+        }
+        return;
+    }
     if preset_name == "open-more" {
         // 「⋮ 更多」：若有溢出项才就地扩高展开浮层；无溢出则直接打开设置（避免空浮层「点了没东西」）。
         let overflow = {
@@ -792,7 +810,7 @@ pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
         let selected = take_pending_action(ticket, overflow == 0);
         if overflow > 0 {
             if selected.is_some() {
-                expand_more(app);
+                set_more_expanded(app, true);
             }
         } else if let Some(selected) = selected {
             crate::settings::open_from_selection(app, selected);
@@ -953,6 +971,15 @@ pub(crate) fn expire_session() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_more_restores_toolbar_height_even_with_many_overflow_items() {
+        assert_eq!(more_height(true, 2), 151.0);
+        assert_eq!(more_height(true, 20), 343.0);
+        for overflow in [0, 2, 20] {
+            assert_eq!(more_height(false, overflow), 34.0);
+        }
+    }
 
     #[test]
     fn clipboard_fallback_policy_never_copies_without_opt_in() {
