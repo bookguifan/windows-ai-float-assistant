@@ -116,6 +116,22 @@ fn inherited_webview2_override_is_rejected_before_root_creation() {
     assert_eq!(output.status.code(), Some(78));
     assert!(!root.exists());
 }
+
+#[test]
+fn inherited_non_path_webview2_override_is_rejected_before_root_creation() {
+    let root = fresh();
+    let output = command()
+        .env(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--remote-debugging-port=0",
+        )
+        .arg("--beta2-isolated-data-root")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(78));
+    assert!(!root.exists());
+}
 #[test]
 fn actual_known_folder_official_path_is_rejected_without_reading_user_files() {
     use windows::Win32::{
