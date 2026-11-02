@@ -1,6 +1,6 @@
 # MPL对应源码供应：当前禁用回退构建
 
-本补充对应已审查的固定禁用回退实现及其内部构建；本仓库不分发 EXE。五个组件的精确完整源码在deepseek-float/distribution/windows/sources/的crate归档，原版权/MPL通知和正文在deepseek-float/distribution/windows/licenses/；无需邮箱、账户或费用，使用支持gzip/tar的工具读取，不需执行归档程序。COMPONENTS.csv记录精确版本、摘要和获取位置；COMPILER-INPUTS.csv只记录从本次编译dep-info实际观察到的输入，不把编译输入误称全部进入最终机器码。
+本补充提供候选普通 Release 所需的保守对应源码材料。五个组件的精确完整源码在../sources/的crate归档，原版权/MPL通知和正文在../licenses/；无需邮箱、账户或费用，使用支持gzip/tar的工具读取，不需执行归档程序。COMPONENTS.csv记录精确版本、摘要和获取位置；内部 COMPILER-INPUTS.csv 留在源码仓库，不随用户包分发；它只记录编译输入，不表示所有输入均进入最终机器码。
 
 每个包实际Cargo源缓存文件都与锁定归档逐字比对，无修改。所有可能保留的原始文件保守提供，而不依赖LTO裁剪证明排除。selectors的build.rs及属性词表在原归档，实际OUT_DIR的ascii_case_insensitive_html_attributes.rs另逐字随附；它由原生成器和锁定phf_codegen构建生成，修改时优先编辑build.rs及词表，再用Cargo.lock固定依赖重建。
 

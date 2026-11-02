@@ -15,15 +15,18 @@ function fixture(t) {
   const materials = path.join(root, 'materials');
   fs.mkdirSync(materials);
   fs.writeFileSync(path.join(materials, 'LICENSE'), 'fixture license\r\n');
+  fs.writeFileSync(path.join(materials, 'files.csv'), 'internal evidence');
   fs.writeFileSync(path.join(materials, 'CHECKSUMS.csv'),
-    `path,sha256,bytes\nLICENSE,${sha('fixture license\r\n')},17\n`);
+    `path,sha256,bytes\nLICENSE,${sha('fixture license\r\n')},17\nfiles.csv,${sha('internal evidence')},17\n`);
   fs.writeFileSync(path.join(materials, 'secret.token'), 'must never ship');
   const binary = path.join(root, 'app.exe');
   fs.writeFileSync(binary, 'fixture executable');
+  const releaseNotes = path.join(root, 'notes.md');
+  fs.writeFileSync(releaseNotes, 'candidate release notes');
   const output = path.join(root, 'release');
   fs.mkdirSync(output);
   fs.writeFileSync(path.join(output, 'old.pdb'), 'must never ship');
-  return { materials, binary, output };
+  return { materials, binary, output, releaseNotes };
 }
 
 test('package preserves indexed license bytes and hashes the final EXE and ZIP; unlisted files stay out', (t) => {
@@ -38,6 +41,8 @@ test('package preserves indexed license bytes and hashes the final EXE and ZIP; 
   { env: { ...process.env, FLOAT_TEST_ZIP: result.zip, FLOAT_TEST_UNPACK: unpacked } });
   assert.equal(fs.readFileSync(path.join(unpacked, 'LICENSE'), 'utf8'), 'fixture license\r\n');
   assert.equal(fs.readFileSync(path.join(unpacked, 'deepseek-float.exe'), 'utf8'), 'fixture executable');
+  assert.equal(fs.readFileSync(path.join(unpacked, 'RELEASE_NOTES.md'), 'utf8'), 'candidate release notes');
+  assert.ok(!fs.existsSync(path.join(unpacked, 'files.csv')));
   assert.ok(!fs.existsSync(path.join(unpacked, 'secret.token')));
   assert.ok(!fs.existsSync(path.join(unpacked, 'old.pdb')));
   assert.match(fs.readFileSync(path.join(unpacked, 'CHECKSUMS.csv'), 'utf8'), /deepseek-float\.exe,/);

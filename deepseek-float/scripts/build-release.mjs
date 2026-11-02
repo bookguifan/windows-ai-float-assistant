@@ -264,6 +264,7 @@ function deliverArtifacts() {
     binary: bin,
     materials: path.join(root, "distribution", "windows"),
     output: path.join(root, "release"),
+    releaseNotes: path.join(root, "docs", "beta2-release-notes-draft.md"),
   });
   console.log(`✓ EXE SHA256: ${result.exeHash}`);
   console.log(`✓ ZIP: ${path.relative(root, result.zip)} (${result.files} files)`);

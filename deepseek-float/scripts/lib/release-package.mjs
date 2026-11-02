@@ -8,7 +8,7 @@ const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
 // Copy only indexed, byte-verified legal materials. Never collect a working
 // directory or a previous release directory into the ZIP.
-export function assembleRelease({ materials, binary, output }) {
+export function assembleRelease({ materials, binary, output, releaseNotes }) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'float-release-'));
   const payload = path.join(temporary, 'payload');
   fs.mkdirSync(payload);
@@ -33,7 +33,9 @@ export function assembleRelease({ materials, binary, output }) {
       if (sha256(bytes) !== expectedHash || bytes.length !== Number(expectedBytes)) {
         throw new Error(`Material checksum mismatch: ${name}`);
       }
-      if (name === '.gitattributes') continue; // Repository metadata, not legal content.
+      // Keep internal provenance/compile-input evidence in the source repository.
+      // License texts, attribution, source archives and source correspondence stay.
+      if (['.gitattributes', 'files.csv', 'mpl-correspondence/COMPILER-INPUTS.csv'].includes(name)) continue;
       const destination = path.join(payload, name);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.writeFileSync(destination, bytes);
@@ -42,6 +44,10 @@ export function assembleRelease({ materials, binary, output }) {
     fs.copyFileSync(binary, path.join(payload, 'deepseek-float.exe'));
     fs.writeFileSync(path.join(payload, 'HASH.txt'), sha256(fs.readFileSync(binary)).toUpperCase() + os.EOL);
     files.push('deepseek-float.exe', 'HASH.txt');
+    if (releaseNotes) {
+      fs.copyFileSync(releaseNotes, path.join(payload, 'RELEASE_NOTES.md'));
+      files.push('RELEASE_NOTES.md');
+    }
     const checksums = files.sort().map((name) => {
       const bytes = fs.readFileSync(path.join(payload, name));
       return `${name},${sha256(bytes)},${bytes.length}`;
