@@ -21,33 +21,52 @@
 
 ## 本地开发与测试
 
-在 Windows 上准备 MSVC C++ 工具链、Windows SDK 和 WebView2 Runtime。Node.js 需满足 `^24.15.0`，pnpm 使用 `9.15.9`；已有本地构建使用 Rust `1.98.1`，不把 Cargo 元数据中的版本字段当作完整依赖图已经验证的最低版本。
+在一套本机 Windows 环境准备 MSVC C++ 工具链、Windows SDK 和 WebView2 Runtime。
+使用 Node.js **24.22.1**、pnpm **9.15.9** 和已验证的 Rust **1.98.1**；Tauri 2 沿用锁文件。
+不要求 Docker、VM、独立 Dev/Test/Release 环境或新版本管理器。
+
+在 deepseek-float/ 下：
+
+| 命令 | 用途 |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | 安装已有锁定依赖 |
+| `pnpm dev` | 日常前端开发；完整桌面开发用 `pnpm tauri dev` |
+| `pnpm test` / `pnpm test:unit` | 同一组前端和构建脚本单元测试，二选一 |
+| `pnpm test:js` | Playwright；先 `pnpm build`，首次需 `pnpm exec playwright install chromium` |
+| `pnpm test:rs` | 默认 Rust 测试；先构建前端资源，可追加测试过滤器 |
+| `pnpm check` | CSP、内联脚本、版本、净化白名单；先 `pnpm build` |
+| `pnpm release` | 唯一正式打包入口；普通 Release EXE、许可、ZIP 和哈希 |
+
+日常只运行相关测试，例如 `node tests/settings-workflows.test.mjs` 或
+`pnpm test:rs selection`。不要为每次前端修改编译 Rust Release。
+PR 后由一个 Windows GitHub CI 完整验证，包括 fmt、Clippy 和独立的 Debug/Release 安全策略。
+没有 verify/check-all 等第二套聚合入口。CI 不发布构建包，不要求第三方 Reviewer。
+
+### pnpm 调用旧 Node 时
+
+先检查 `node --version`、`pnpm --version`、`pnpm exec node -p process.version`。
+使用已安装的正确 Node 和 Corepack，不修改全局 PATH。若 pnpm 是携带旧 Node 的独立可执行文件，
+可只在当前 PowerShell 会话生成 Corepack 入口（把两处路径换成自己已有的安装路径）：
 
 ```powershell
-git clone https://github.com/bookguifan/windows-ai-float-assistant.git
-cd windows-ai-float-assistant\deepseek-float
-pnpm install --frozen-lockfile
-pnpm tauri dev
+$nodeExe = 'C:\path\to\node-24.22.1\node.exe'
+$corepackJs = 'C:\path\to\node_modules\corepack\dist\corepack.js'
+$pnpmShim = Join-Path $env:TEMP 'float-pnpm-session'
+New-Item -ItemType Directory -Force -Path $pnpmShim | Out-Null
+& $nodeExe $corepackJs enable pnpm --install-directory $pnpmShim
+$env:Path = $pnpmShim + ';' + (Split-Path $nodeExe) + ';' + $env:Path
+pnpm --version
+pnpm exec node -p process.version
+node scripts/build-release.mjs --check-toolchain-only
 ```
 
-前端资源需要先构建，随后再运行依赖内嵌资源的 Rust 检查：
+Corepack 读取已有 packageManager 固定 pnpm 9.15.9；发布入口继续验证 pnpm 子进程和入口 Node 一致。
+关闭终端即可丢弃 PATH 调整。没有增加持久环境配置文件。
 
-```powershell
-pnpm build
-pnpm check
-pnpm test:unit
-pnpm exec playwright install chromium
-pnpm test:js
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
-cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo check --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol
-git diff --check
-```
-
-可根据改动先运行对应专项测试。记录实际命令、结果和未执行原因；不要把未运行测试写成通过，也不要降低断言或校验以绕过失败。自动化测试不能替代原生窗口、全新 Windows 或真实第三方站点验收。
-
-使用独立测试数据与合成内容。涉及系统剪贴板、截图或账户的网站测试前，须明确测试范围和数据使用条件，不在日常资料上盲目运行。
+原生验收使用[普通 Release 清单](deepseek-float/docs/beta2-native-acceptance-plan.md)，
+一次会话记录 PASS/FAIL/NOT TESTED；不要求重复跑隔离诊断版。
+未经授权不启动 EXE、操作真实剪贴板、覆盖正式配置或执行真实备份恢复。
+无法保证用户数据安全的操作先跳过并说明原因；自动化通过不代替原生验收。
 
 ## PR 提交要求
 

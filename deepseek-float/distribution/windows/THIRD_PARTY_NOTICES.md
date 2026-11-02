@@ -1,18 +1,18 @@
 # Windows 第三方许可与通知
 
-**材料状态：待最终构建核对，非正式 Beta 放行。** 包含当前 Windows 生产特性解析图的保守材料集合；262 项不是“262 项均进入最终 EXE”的认定。`components.csv` 区分 198 个运行时候选和 64 个构建/过程宏输入。
+**候选发行材料；正式放行仍需 CI 和原生验收。** 包含当前 Windows 生产特性解析图的保守材料集合；262 项不是“262 项均进入最终 EXE”的认定。`components.csv` 区分 198 个运行时候选和 64 个构建/过程宏输入。
 
 本项目的原 MIT 许可见 [LICENSE](LICENSE)，不替代任何第三方许可，不提供商标授权。下表选定 OR 分支仅用于本材料集；未选分支的原文有时也保留，提供其副本不表示把 OR 变成 AND。明确 AND 义务保留。
 
-`brotli-decompressor 5.0.3` 的历史斜杠表达式未被擅自解释为 OR 或 AND：本材料同时保留 BSD 根正文及 Google MIT 源码头和 MIT 标准正文。清单中的 BSD+MIT 表示保守保留两类文件通知，不是更改上游声明；文件适用范围仍需复核。`siphasher` 的 MIT 标准正文与原 COPYING 中明确的许可选择和版权一起提供；标准正文里的占位符没有伪造填写。
+`brotli-decompressor 5.0.3` 的历史斜杠表达式未被擅自解释为 OR 或 AND：本材料同时保留 BSD 根正文及 Google MIT 源码头和 MIT 标准正文。清单中的 BSD+MIT 表示保守保留两类文件通知，不是更改上游声明；适用范围为文件级：根 LICENSE 的 Dropbox BSD-3-Clause 与 src/context.rs 的 Google 2013 MIT 分别适用；后者参与运行时解码。brotli 8.0.4 根 BSD/MIT 及 Google 2010 src/enc/entropy_encode.rs MIT 通知同样保留。编码器是资源构建输入，不能仅因压缩数据内嵌就认定编码器实现进入 EXE。`siphasher` 的 MIT 标准正文与原 COPYING 中明确的许可选择和版权一起提供；标准正文里的占位符没有伪造填写。
 
-完整原文按字节保存在每个包目录，`ATTRIBUTION-HEADERS.txt` 是精确发布归档中带版权/许可声明的完整注释块集合，不是“每个相关源文件已链接”的证据。`files.csv` 记录原文来源与摘要；最终生成代码/复制资源和包级适用范围仍需复核。
+完整原文按字节保存在每个包目录，`ATTRIBUTION-HEADERS.txt` 是精确发布归档中带版权/许可声明的完整注释块集合，不是“每个相关源文件已链接”的证据。源码仓库中的 `files.csv` 记录原文来源与摘要，不随用户包分发；包内完整性由 CHECKSUMS.csv 核对。
 
 ## 原生组件与标准库
 
 - Microsoft WebView2 SDK 1.0.3650.58 的 [LICENSE](native/WebView2-SDK-1.0.3650.58/LICENSE.txt) 为原包 BSD 三条款正文，原 [NOTICE](native/WebView2-SDK-1.0.3650.58/NOTICE.txt) 完整保留。x64 静态加载器字节与锁定 Rust crate 内的库一致。NOTICE 中列出组件不代表它们都链接到本应用；不把 Rust 绑定的 MIT 许可套用于 Microsoft 原生内容。
 - 当前本机 Rust 1.98.1 的 [标准库版权资料](toolchain/rust-1.98.1/COPYRIGHT-library.html) 及全部附属许可原文一起提供。这不是历史 EXE 的编译器证明；最终编译器改变时须更新。
-- [额外组件清单](external-components.csv) 记录 MSVC/Windows 运行库及其他原生输入仍待最终链接核定。外部系统 WebView2 Runtime 没有随这个材料目录捆绑，也未将其全套 Chromium 依赖认定为本应用已分发。
+- [额外组件清单](external-components.csv) 记录 MSVC x64 静态 WebView2Loader 输入及 EXE 的动态运行库依赖；VCRUNTIME140/140_1、UCRT 和 Windows 系统 DLL 由本机提供，本包不捆绑其可再分发二进制。外部系统 WebView2 Runtime 没有随这个材料目录捆绑，也未将其全套 Chromium 依赖认定为本应用已分发。
 
 ## Apache 与 MPL
 

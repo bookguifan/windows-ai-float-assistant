@@ -42,7 +42,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: pnpm
           cache-dependency-path: deepseek-float/pnpm-lock.yaml
 
@@ -63,27 +63,12 @@ jobs:
       - name: Browser regression
         run: pnpm test:js
 
-      - name: Sanitizer whitelist consistency
-        run: pnpm check:sanitize-whitelist
-
-      # R17-P2：`poc/*.html` 的 JS 全部内联，没有 eslint/tsconfig 兜底 —— 一个手滑的括号
-      # 会让页面「加载成功但按钮全失效」，真机上只表现为「点了没反应」。这里做纯语法编译。
-      - name: Inline script syntax check
-        run: pnpm check:inline-js
-
-      # R17-P2：版本号散在 package.json / tauri.conf.json / Cargo.toml / Cargo.lock **四处**，
-      # 发版时极易只改一处 ⇒ 安装包名与 exe 版本资源对不上，事后无法追溯。
-      - name: Version consistency
-        run: pnpm check:version
-
-      # R19：CSP 只在**构建产物**里下发（dev 走 vite dev server，Tauri 的资产协议不参与），
-      # 所以「CSP 打死页面」在 dev 永远复现不出来 —— 必须在这里挡。
-      # ★ 依赖上一步的 `pnpm build`（读的是 dist/），不可前置。
-      - name: CSP vs pages consistency
-        run: pnpm check:csp
+      # CSP reads the freshly built dist/. Reuse the existing aggregate.
+      - name: Frontend, version and security checks
+        run: pnpm check
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
 
@@ -103,14 +88,7 @@ jobs:
           TAURI_CONFIG: '{"identifier":"com.deepseekfloat.beta2.isolated.ci"}'
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features beta2-isolation -- -D warnings
 
-      # R17-P2：`#[cfg(debug_assertions)]` 门控的探针在 release 下会变成 dead_code ——
-      # 这类告警只有 release 才会暴露（R16 曾漏掉 7 处）。故 release 也进门禁。
-      # R20：必须带上 `--features custom-protocol` —— 这是**交付用的那份特性组合**
-      # （不带它产物是 dev 模式空壳，见 Cargo.toml 的 custom-protocol 配置说明）。顺带兜住
-      # 「Cargo.toml 里这个 features 条目被误删」的情况：删了这里会直接失败。
-      - name: cargo check (release, production features)
-        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --release --features custom-protocol
-
+      # The production build includes compilation checks for the same profile/features.
       - name: Ordinary Release build (no test feature)
         env:
           CARGO_INCREMENTAL: '0'
