@@ -8,7 +8,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT, WM_GETTEXT, WM_GETTEXTLENGTH,
 };
 const EM_GETSEL: u32 = 0x00b0;
-const MAX_CONTROL_UNITS: usize = 32_768;
+// Bound the whole-control buffer independently of the selected-text limit (20k).
+// A small selection in an ordinary larger Notepad document must remain readable.
+const MAX_CONTROL_UNITS: usize = 262_144;
 struct TextBuffer(Vec<u16>);
 impl Drop for TextBuffer {
     fn drop(&mut self) {
@@ -210,11 +212,11 @@ mod tests {
     }
     fn edit(text: &str, password: bool) -> Window {
         let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-        Window(unsafe {
+        let window = Window(unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("EDIT"),
-                PCWSTR(text.as_ptr()),
+                w!(""),
                 WINDOW_STYLE(if password { 0x20 } else { 4 }),
                 0,
                 0,
@@ -226,7 +228,19 @@ mod tests {
                 None,
             )
             .unwrap()
-        })
+        });
+        // Large initial window names can be rejected before Edit receives text.
+        // Populate the synthetic control through its normal text message instead.
+        unsafe {
+            let assigned = SendMessageW(
+                window.0,
+                0x000c, // WM_SETTEXT
+                Some(WPARAM(0)),
+                Some(LPARAM(PCWSTR(text.as_ptr()).0 as isize)),
+            );
+            assert_ne!(assigned.0, 0, "synthetic Edit text must be initialized");
+        }
+        window
     }
     fn select(w: &Window, start: usize, end: usize) {
         unsafe {
@@ -270,5 +284,12 @@ mod tests {
         let w = edit(&"A".repeat(MAX_CONTROL_UNITS + 1), false);
         select(&w, 0, 2);
         assert!(capture(w.0, || true).is_err());
+    }
+    #[test]
+    #[ignore = "manual native-window gate; requires an authorized desktop session"]
+    fn small_selection_in_forty_thousand_unit_document_is_readable() {
+        let w = edit(&"A".repeat(40_000), false);
+        select(&w, 1247, 1258);
+        assert_eq!(capture(w.0, || true).unwrap().text, "A".repeat(11));
     }
 }
