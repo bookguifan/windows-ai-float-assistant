@@ -26,7 +26,10 @@ use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, Webvi
 
 use crate::{capture, inject};
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE},
+};
 
 pub const POPUP_LABEL: &str = "popup";
 /// 首行最多常驻的提示词数量（**复制 + ≤4 项提示词 = 共 5 个按钮**）；
@@ -365,15 +368,22 @@ pub fn show_at_cursor(app: &AppHandle) {
         )
     });
     let Some(show) = show else {
+        crate::diag::log("popup show-rejected stage=before-show");
         dismiss(app);
         return;
     };
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
     crate::selection_trace::event("show-begin", Some(show.ticket), "bound");
-    if let Err(e) = win.show() {
-        crate::diag::warn(&format!("popup show 失败: {e}"));
+    // Tao's show() uses SW_SHOW even for focusable(false). Its transient foreground
+    // events can revoke this exact session before the first toolbar click.
+    // Pair native show/hide because Tao's cached VISIBLE flag stays false.
+    let Ok(hwnd) = win.hwnd() else {
+        crate::diag::warn("popup show 失败: 无法取得原生窗口");
         dismiss(app);
         return;
+    };
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
     let retained = PENDING_SESSION.lock().ok().is_some_and(|state| {
         state.retains(
@@ -385,6 +395,15 @@ pub fn show_at_cursor(app: &AppHandle) {
         )
     });
     if !retained {
+        crate::diag::log(&format!(
+            "popup show-rejected stage=after-show ticket={} show_generation={} current_generation={} source_foreground={} popup_foreground={} source_alive={}",
+            show.ticket,
+            show.generation,
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::target() == Some(show.source),
+            popup_is_foreground(),
+            crate::selection_runtime::is_native_target(show.source)
+        ));
         dismiss(app);
         return;
     }
@@ -528,7 +547,11 @@ pub fn dismiss(app: &AppHandle) {
     SHOW_GEN.fetch_add(1, Ordering::SeqCst);
     POPUP_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
-        let _ = w.hide();
+        if let Ok(hwnd) = w.hwnd() {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
     }
     // 冲刷残留在透明球表面的工具条旧帧（消「悬浮球背景渗出工具条」）。
     crate::flush_ball(app);
