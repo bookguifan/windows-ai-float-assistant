@@ -101,6 +101,62 @@ pub fn ball_ready() {
     crate::diag::log("ball_ready: 收到悬浮球首帧就绪握手信号（Rust 侧随后套椭圆区域显形）");
 }
 
+#[cfg(feature = "beta2-isolation")]
+#[tauri::command]
+pub fn ball_diagnostic(window: tauri::WebviewWindow, stage: String) {
+    if !crate::diag::enabled() || window.label() != "ball" {
+        return;
+    }
+    let Some(event) = ball_diagnostic_event(&stage) else {
+        return;
+    };
+    crate::diag::log(&format!("[ball-page] {event}"));
+}
+
+#[cfg(feature = "beta2-isolation")]
+fn ball_diagnostic_event(stage: &str) -> Option<&'static str> {
+    Some(match stage {
+        "document-start" => "document-start",
+        "dom-content-loaded" => "dom-content-loaded",
+        "script-start" => "script-start",
+        "ipc-available" => "ipc-available",
+        "ipc-unavailable" => "ipc-unavailable",
+        "javascript-error" => "javascript-error",
+        "unhandled-rejection" => "unhandled-rejection",
+        "first-frame-callback" => "first-frame-callback",
+        "ready-invoke-start" => "ready-invoke-start",
+        "ready-invoke-ok" => "ready-invoke-ok",
+        "ready-invoke-rejected" => "ready-invoke-rejected",
+        _ => return None,
+    })
+}
+
+#[cfg(all(test, feature = "beta2-isolation"))]
+mod ball_diagnostic_tests {
+    #[test]
+    fn diagnostic_stage_is_allowlisted_and_discards_arbitrary_payloads() {
+        for stage in [
+            "document-start",
+            "dom-content-loaded",
+            "script-start",
+            "ipc-available",
+            "ipc-unavailable",
+            "javascript-error",
+            "unhandled-rejection",
+            "first-frame-callback",
+            "ready-invoke-start",
+            "ready-invoke-ok",
+            "ready-invoke-rejected",
+        ] {
+            assert_eq!(super::ball_diagnostic_event(stage), Some(stage));
+        }
+        assert_eq!(
+            super::ball_diagnostic_event("token=private-test-secret"),
+            None
+        );
+    }
+}
+
 /// Synthetic-only telemetry; rejects arbitrary stages/actions and external documents.
 #[tauri::command]
 pub fn popup_trace(

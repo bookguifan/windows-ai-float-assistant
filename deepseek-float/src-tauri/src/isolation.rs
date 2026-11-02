@@ -459,9 +459,16 @@ pub fn create_configured_windows<R: tauri::Runtime>(
                 window.label
             ));
         }
-        tauri::WebviewWindowBuilder::from_config(app.handle(), window)
+        let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), window)
             .map_err(|e| e.to_string())?
-            .data_directory(p.webview2_dir.clone())
+            .data_directory(p.webview2_dir.clone());
+        #[cfg(feature = "beta2-isolation")]
+        let builder = if window.label == "ball" && crate::diag::enabled() {
+            builder.initialization_script(include_str!("ball_page_diag.js"))
+        } else {
+            builder
+        };
+        builder
             .build()
             .map_err(|e| format!("isolated window {}: {e}", window.label))?;
         crate::diag::log(&format!(
