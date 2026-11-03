@@ -178,13 +178,13 @@ test('session consent is the only path to enable fallback, regardless of legacy 
   const p = page(c => c === 'config_get' ? Promise.resolve({clipboard_fallback_enabled:true}) : c === 'safe_copy_status' ? Promise.resolve({available:true,enabled:false}) : undefined);
   try {
     await tick();
-    const box = p.d.querySelector('[data-key="safe-copy"]');
-    assert.equal(box.checked, false);
+    const box = p.d.querySelector('#safe-copy-mode');
+    assert.equal(box.value, 'safe');
     assert.equal(box.disabled, false);
-    box.checked = true;
+    box.value = 'compatibility';
     box.dispatchEvent(new p.w.Event('change'));
     await tick();
-    assert.equal(box.checked, false);
+    assert.equal(box.value, 'safe');
     assert.equal(p.calls.filter(c => c.command === 'safe_copy_authorize').length, 1);
     assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
   } finally { p.close(); }
@@ -195,15 +195,15 @@ test('an unavailable build remains disabled for missing, false and legacy true s
     const p = page(c => c === 'config_get' ? Promise.resolve(cfg) : undefined);
     try {
       await tick();
-      const box = p.d.querySelector('[data-key="safe-copy"]');
-      assert.ok(box, 'experimental capability entry exists');
-      assert.equal(box.checked, false);
+      const box = p.d.querySelector('#safe-copy-mode');
+      assert.ok(box, 'compatibility mode entry exists');
+      assert.equal(box.value, 'safe');
       assert.equal(box.disabled, true);
       assert.match(box.closest('.toggle-row').textContent, /自动复制回退/);
-      box.checked = !box.checked;
+      box.value = 'compatibility';
       box.dispatchEvent(new p.w.Event('change'));
       await tick();
-      assert.equal(box.checked, false);
+      assert.equal(box.value, 'safe');
       assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
     } finally { p.close(); }
   }
@@ -213,13 +213,13 @@ test('disabled fallback never invokes persistence even when the DOM disabled fla
   const p = page(c => c === 'config_set_clipboard_fallback' ? Promise.reject('must not be invoked') : undefined);
   try {
     await tick();
-    const box = p.d.querySelector('[data-key="safe-copy"]');
+    const box = p.d.querySelector('#safe-copy-mode');
     assert.ok(box);
     box.disabled = false;
-    box.checked = true; box.dispatchEvent(new p.w.Event('change'));
+    box.value = 'compatibility'; box.dispatchEvent(new p.w.Event('change'));
     assert.equal(box.disabled, true);
     await tick();
-    assert.equal(box.checked, false);
+    assert.equal(box.value, 'safe');
     assert.equal(box.disabled, true);
     assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
   } finally { p.close(); }
@@ -230,10 +230,10 @@ test('delayed legacy config cannot reenable the public fallback control', async 
   let resolve;
   const p = page(c => c === 'config_get' ? new Promise(r => {resolve=r;}) : undefined);
   try {
-    const box = p.d.querySelector('[data-key="safe-copy"]');
-    box.checked = true; box.dispatchEvent(new p.w.Event('change')); await tick();
+    const box = p.d.querySelector('#safe-copy-mode');
+    box.value = 'compatibility'; box.dispatchEvent(new p.w.Event('change')); await tick();
     resolve({clipboard_fallback_enabled:true}); await tick();
-    assert.equal(box.checked, false);
+    assert.equal(box.value, 'safe');
     assert.equal(box.disabled, true);
     assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
   } finally { p.close(); }

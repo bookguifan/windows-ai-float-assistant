@@ -35,6 +35,40 @@ pub fn read(r: &Request) -> ReadResult {
         read_inner(r).unwrap_or_else(|s| ReadResult::fail(s, false))
     }
 }
+/// Metadata only: do not impose UIA's same-process text-read proof on generic
+/// copy. Native focus ancestry is checked separately; all identified passwords
+/// are rejected. An unavailable UIA provider cannot identify custom controls.
+pub fn compatibility_target_safe(r: &Request) -> bool {
+    unsafe {
+        if !crate::selection_runtime::valid(r) {
+            return false;
+        }
+        if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
+            return false;
+        }
+        let _apartment = Apartment;
+        let Ok(a): Result<IUIAutomation, _> = CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL)
+        else {
+            return false;
+        };
+        for e in [
+            a.GetFocusedElement(),
+            a.ElementFromPoint(POINT {
+                x: r.point.0,
+                y: r.point.1,
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            match e.CurrentIsPassword() {
+                Ok(v) if !v.as_bool() => {}
+                _ => return false,
+            }
+        }
+        crate::selection_runtime::valid(r)
+    }
+}
 unsafe fn checked(
     a: &IUIAutomation,
     walker: &IUIAutomationTreeWalker,

@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {JSDOM} from 'jsdom';
 const tick=()=>new Promise(r=>setTimeout(r,0));
+test('compatibility mode requires native consent and safe/off revoke without legacy config writes',async()=>{
+ const p=page((command,args)=>command==='safe_copy_authorize'
+  ?Promise.resolve({available:true,enabled:true,mode:args.mode})
+  :command==='safe_copy_revoke'?Promise.resolve({available:true,enabled:false,mode:args.mode}):undefined);
+ try{await tick();const mode=p.d.querySelector('#safe-copy-mode');assert.ok(mode);
+  assert.equal(mode.value,'safe');mode.value='compatibility';mode.dispatchEvent(new p.w.Event('change'));await tick();
+  assert.equal(mode.value,'compatibility');assert.deepEqual(JSON.parse(JSON.stringify(p.calls.find(c=>c.command==='safe_copy_authorize').args)),{mode:'compatibility'});
+  mode.value='off';mode.dispatchEvent(new p.w.Event('change'));await tick();assert.equal(mode.value,'off');
+  assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);
+ }finally{p.close();}
+});
 function page(handler=()=>undefined){
  const dom=new JSDOM(readFileSync(new URL('../poc/settings.html',import.meta.url),'utf8'),{runScripts:'outside-only',url:'https://tauri.localhost'});
  const calls=[];dom.window.__TAURI_INTERNALS__={invoke:(command,args)=>{
@@ -12,41 +23,52 @@ function page(handler=()=>undefined){
  dom.window.__dsfSettingsInit({prompts:[]});
  return {w:dom.window,d:dom.window.document,calls,close:()=>dom.window.close()};
 }
-test('legacy config cannot grant new safe copy authorization',async()=>{
- const p=page();try{await tick();assert.equal(p.d.querySelector('[data-key="safe-copy"]').checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+const choose=(p,value)=>{const el=p.d.querySelector('#safe-copy-mode');el.value=value;el.dispatchEvent(new p.w.Event('change'));return el;};
+test('legacy config and imported flags cannot grant compatibility consent',async()=>{
+ const p=page();try{await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true,copy_mode:'compatibility'});await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
 });
-test('safe copy warning discloses delayed-render blocking and restoration limits',async()=>{
- const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;assert.match(hint,/延迟渲染.*同步等待/);assert.match(hint,/不能中断仍未返回/);assert.match(hint,/不保证.*无损/);}finally{p.close();}
+test('compatibility warning describes shared clipboard risk and supported snapshot limits',async()=>{
+ const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;for(const pattern of [/延迟渲染.*同步等待/,/不能中断仍未返回/,/不保证.*无损/,/HTML.*RTF.*图片/,/跳过恢复/,/一次 Ctrl\+Insert/,/不代表已经通过兼容验收/])assert.match(hint,pattern);}finally{p.close();}
 });
-test('safe copy warning explains its exact clipboard transaction requirement',async()=>{
- const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;assert.match(hint,/一次清空加单一格式写入/);assert.match(hint,/跳过恢复/);}finally{p.close();}
+test('native denial leaves compatibility off without invoking the legacy setting',async()=>{
+ const p=page(c=>c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:false,mode:'safe'}):undefined);
+ try{await tick();choose(p,'compatibility');await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);}finally{p.close();}
 });
-test('native denial leaves the feature off and never invokes legacy enabling',async()=>{
- const p=page(c=>c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:false}):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();await tick();assert.equal(el.checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);}finally{p.close();}
-});
-test('native authorization enables and explicit disable revokes without a frontend prompt',async()=>{
- const p=page(c=>c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:true}):c==='safe_copy_revoke'?Promise.resolve({available:true,enabled:false}):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();await tick();assert.equal(el.checked,true);el.click();await tick();assert.equal(el.checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_revoke').length,1);}finally{p.close();}
-});
-test('pending consent prevents duplicate user requests',async()=>{
+test('pending native consent prevents duplicate requests',async()=>{
  let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();assert.equal(el.disabled,true);el.click();assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);done({available:true,enabled:false});await tick();assert.equal(el.disabled,false);assert.equal(el.checked,false);}finally{p.close();}
+ try{await tick();const el=choose(p,'compatibility');assert.equal(el.disabled,true);choose(p,'compatibility');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);done({available:true,enabled:false,mode:'safe'});await tick();assert.equal(el.disabled,false);assert.equal(el.value,'safe');}finally{p.close();}
 });
-test('authorization errors fail closed and unlock the control for retry',async()=>{
- const p=page(c=>c==='safe_copy_authorize'?Promise.reject(Error('denied')):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();await tick();assert.equal(el.checked,false);assert.equal(el.disabled,false);}finally{p.close();}
+test('native status push cannot cancel or unlock a pending mode change',async()=>{
+ for(const requested of ['compatibility','off','safe']){
+  let done;const p=page(c=>['safe_copy_authorize','safe_copy_revoke'].includes(c)?new Promise(r=>done=r):undefined);
+  try{await tick();const el=choose(p,requested);
+   p.w.__dsfSafeCopyStatus({available:true,enabled:false,mode:'safe',last_error:'old transaction'});
+   assert.equal(el.disabled,true,'status push must not unlock an outstanding native request');
+   choose(p,requested);assert.equal(p.calls.filter(c=>['safe_copy_authorize','safe_copy_revoke'].includes(c.command)).length,1);
+   done({available:true,enabled:requested==='compatibility',mode:requested});await tick();
+   assert.equal(el.value,requested);assert.equal(el.disabled,false);
+  }finally{p.close();}
+ }
 });
-
-test('late status read cannot override a newer explicit native authorization',async()=>{
- let status,reads=0;const p=page(c=>c==='safe_copy_status'?(++reads===1?Promise.resolve({available:true,enabled:false}):new Promise(r=>status=r)):c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:true}):undefined);
- try{await tick();p.w.__dsfSettingsDataRestored({prompts:[]});await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();await tick();assert.equal(el.checked,true);status({available:true,enabled:false});await tick();assert.equal(el.checked,true);}finally{p.close();}
+test('authorization errors fail closed with a visible reason and allow retry',async()=>{
+ const p=page(c=>c==='safe_copy_authorize'?Promise.reject(Error('native denied')):undefined);
+ try{await tick();const el=choose(p,'compatibility');await tick();assert.equal(el.value,'safe');assert.equal(el.disabled,false);assert.match(p.d.querySelector('#safe-copy-status').textContent,/native denied/);}finally{p.close();}
 });
-test('restore refresh uses runtime consent state rather than imported feature flags',async()=>{
- let enabled=true;const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:true,enabled}):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');assert.equal(el.checked,true);enabled=false;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();await tick();assert.equal(el.checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+test('late status read cannot override a newer native authorization',async()=>{
+ let status,reads=0;const p=page(c=>c==='safe_copy_status'?(++reads===1?Promise.resolve({available:true,enabled:false,mode:'safe'}):new Promise(r=>status=r)):c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:true,mode:'compatibility'}):undefined);
+ try{await tick();p.w.__dsfSettingsDataRestored({prompts:[]});await tick();const el=choose(p,'compatibility');await tick();assert.equal(el.value,'compatibility');status({available:true,enabled:false,mode:'safe'});await tick();assert.equal(el.value,'compatibility');}finally{p.close();}
 });
-
+test('restore reflects runtime revocation rather than imported flags',async()=>{
+ let enabled=true;const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:true,enabled,mode:'compatibility'}):undefined);
+ try{await tick();const el=p.d.querySelector('#safe-copy-mode');assert.equal(el.value,'compatibility');enabled=false;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();await tick();assert.equal(el.value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+});
+test('safe and off revoke without an authorization dialog',async()=>{
+ const p=page((c,args)=>c==='safe_copy_revoke'?Promise.resolve({available:true,enabled:false,mode:args.mode}):undefined);
+ try{await tick();for(const mode of ['off','safe']){choose(p,mode);await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,mode);}assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+});
+test('transaction failure is visible without clipboard text',async()=>{
+ const p=page();try{await tick();p.w.__dsfSafeCopyStatus({available:true,enabled:true,mode:'compatibility',last_error:'原剪贴板格式不支持'});assert.match(p.d.querySelector('#safe-copy-status').textContent,/原剪贴板格式不支持/);}finally{p.close();}
+});
 
 test('settings selection expiry removes preview and disables stale run controls',async()=>{
  const p=page();try{
@@ -94,13 +116,9 @@ test('restore clears the delegated preview even without a separate native expiry
  }finally{p.close();}
 });
 
-test('unavailable build stays disabled after restore even if settings request true',async()=>{
- const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:false,enabled:true}):undefined);
- try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');assert.equal(el.disabled,true);assert.equal(el.checked,false);
- for(let n=0;n<2;n++){p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true});await tick();await tick();assert.equal(el.disabled,true);assert.equal(el.checked,false);}
- el.click();await tick();assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);
- assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);
- }finally{p.close();}
+test('unavailable build stays disabled after restore even with imported flags',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:false,enabled:true,mode:'compatibility'}):undefined);
+ try{await tick();const el=p.d.querySelector('#safe-copy-mode');assert.equal(el.disabled,true);assert.equal(el.value,'safe');p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true});await tick();await tick();assert.equal(el.disabled,true);choose(p,'compatibility');await tick();assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);}finally{p.close();}
 });
 
 test('cold settings page asks for current native snapshot after handlers are ready',async()=>{
@@ -127,6 +145,16 @@ function toolbarPage(){
 }
 test('toolbar action carries the displayed session ticket and repeated clicks fire once',()=>{
  const p=toolbarPage();try{const copy=p.d.querySelector('[data-preset="copy"]');copy.click();assert.equal(p.calls.length,0);p.w.__dsfResetFired('42');copy.click();copy.click();assert.equal(p.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(p.calls[0].args)),{preset:'copy',selectionTicket:'42'});p.w.__dsfResetFired('43');copy.click();assert.equal(p.calls[1].args.selectionTicket,'43');}finally{p.close();}
+});
+test('first toolbar action uses the ticket installed before native show is acknowledged',async()=>{
+ const p=toolbarPage();try{
+  p.w.__TAURI_INTERNALS__.invoke=(command,args)=>{p.calls.push({command,args});return Promise.resolve(true);};
+  await p.w.__dsfPrepareSelection('41',[{id:'explain',label:'解释'}]);
+  assert.equal(p.calls[0].command,'popup_ready');
+  p.d.querySelector('[data-preset="explain"]').click();
+  assert.deepEqual(p.calls.filter(c=>c.command==='popup_action').map(c=>JSON.parse(JSON.stringify(c.args))),
+   [{preset:'explain',selectionTicket:'41'}]);
+ }finally{p.close();}
 });
 test('late ready snapshot after a higher revision focus revocation cannot revive the preview',async()=>{
  let ready;const p=page(c=>c==='settings_ready'?new Promise(resolve=>ready=resolve):undefined);

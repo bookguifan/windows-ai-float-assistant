@@ -32,6 +32,46 @@ impl WaitFailure {
         }
     }
 }
+/// Multiple writes by a related application are allowed to settle. Once a
+/// foreign writer is observed this transaction must stop, never wait it away.
+#[derive(Default)]
+pub struct CopyObservation {
+    candidate: Option<Stamp>,
+    since_ms: u64,
+    settled: Option<Stamp>,
+    rejected: bool,
+}
+impl CopyObservation {
+    pub fn observe(
+        &mut self,
+        before: u32,
+        stamp: Option<Stamp>,
+        related: bool,
+        now_ms: u64,
+    ) -> Result<Option<Stamp>, &'static str> {
+        if self.rejected
+            || !stamp
+                .is_some_and(|s| crate::selection::compatibility_source_allowed(before, s, related))
+        {
+            self.rejected = true;
+            self.settled = None;
+            return Err("COPY_SOURCE_UNVERIFIED");
+        }
+        let stamp = stamp.expect("verified observation");
+        if self.candidate != Some(stamp) {
+            self.candidate = Some(stamp);
+            self.since_ms = now_ms;
+            self.settled = None;
+        }
+        if now_ms.saturating_sub(self.since_ms) >= 40 {
+            self.settled = Some(stamp);
+        }
+        Ok(self.settled)
+    }
+    pub fn settled(&self) -> Option<Stamp> {
+        self.settled
+    }
+}
 impl SelectionProof {
     fn usable(&self) -> bool {
         self.control != 0
@@ -43,6 +83,13 @@ impl SelectionProof {
 }
 pub trait ClipboardIo {
     type Snapshot;
+    fn compatibility(&self) -> bool {
+        false
+    }
+    /// Native backend must establish a window/process relationship, never sequence alone.
+    fn related_writer(&self, _stamp: Stamp) -> bool {
+        false
+    }
     fn valid(&self) -> bool;
     /// Independently read the exact selection from the still-bound native control.
     fn selection_proof(&mut self) -> Result<SelectionProof, &'static str>;
@@ -51,7 +98,8 @@ pub trait ClipboardIo {
     fn send_once(&mut self) -> SendStatus;
     fn wait(&mut self, before: u32) -> Result<Stamp, WaitFailure>;
     /// Reopens a changed clipboard after a wait failure and restores only when its
-    /// exact owner and sequence delta still prove this selection's copy transaction.
+    /// observed transaction is attributable. Unknown/unstable compatibility writes
+    /// are deliberately left untouched and reported as skipped restoration.
     fn recover_after_wait_failure(
         &mut self,
         snapshot: Self::Snapshot,
@@ -79,13 +127,20 @@ pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'s
     if !io.valid() {
         return Err("COPY_UNAUTHORIZED_OR_STALE");
     }
-    let proof = io.selection_proof()?;
-    if !proof.usable() {
-        return Err("COPY_SELECTION_UNVERIFIED");
-    }
+    let proof = if io.compatibility() {
+        None
+    } else {
+        let proof = io.selection_proof()?;
+        if !proof.usable() {
+            return Err("COPY_SELECTION_UNVERIFIED");
+        }
+        Some(proof)
+    };
     let (snapshot, before) = io.prepare()?;
-    if io.selection_proof()? != proof {
-        return Err("COPY_SELECTION_CHANGED");
+    if let Some(proof) = &proof {
+        if io.selection_proof()? != *proof {
+            return Err("COPY_SELECTION_CHANGED");
+        }
     }
     if !io.valid() || before == 0 || io.sequence() != before {
         return Err("COPY_CONTEXT_CHANGED");
@@ -97,17 +152,30 @@ pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'s
     let source = match io.wait(before) {
         Ok(source) => source,
         Err(failure) if failure.clipboard_changed => {
-            return match io.recover_after_wait_failure(snapshot, before, target, proof.control) {
+            return match io.recover_after_wait_failure(
+                snapshot,
+                before,
+                target,
+                proof.as_ref().map_or(0, |p| p.control),
+            ) {
                 Ok(()) => Err(failure.code),
                 Err(restore_error) => Err(restore_error),
             };
         }
         Err(failure) => return Err(failure.code),
     };
-    if !io.valid() || !source_allowed(target, before, proof.control, source) {
-        if !source_allowed(target, before, proof.control, source) {
-            return Err("COPY_SOURCE_UNVERIFIED");
-        }
+    let accepted = match &proof {
+        Some(proof) => source_allowed(target, before, proof.control, source),
+        None => crate::selection::compatibility_source_allowed(
+            before,
+            source,
+            io.related_writer(source),
+        ),
+    };
+    if !accepted {
+        return Err("COPY_SOURCE_UNVERIFIED");
+    }
+    if !io.valid() {
         return restore_then_fail(io, snapshot, source, "COPY_CONTEXT_CHANGED");
     }
     if sent == SendStatus::Partial {
@@ -122,13 +190,15 @@ pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'s
     }
     // A matching owner stamp is not evidence that the bytes came from this selection.
     // Reject before restoration, so competing text is neither returned nor overwritten.
-    if text != proof.text {
-        return Err("COPY_SELECTION_MISMATCH");
-    }
-    match io.selection_proof() {
-        Ok(current) if current == proof => {}
-        Ok(_) => return restore_then_fail(io, snapshot, source, "COPY_SELECTION_CHANGED"),
-        Err(error) => return restore_then_fail(io, snapshot, source, error),
+    if let Some(proof) = &proof {
+        if text != proof.text {
+            return Err("COPY_SELECTION_MISMATCH");
+        }
+        match io.selection_proof() {
+            Ok(current) if current == *proof => {}
+            Ok(_) => return restore_then_fail(io, snapshot, source, "COPY_SELECTION_CHANGED"),
+            Err(error) => return restore_then_fail(io, snapshot, source, error),
+        }
     }
     if !io.valid() {
         return restore_then_fail(io, snapshot, source, "COPY_CONTEXT_CHANGED");

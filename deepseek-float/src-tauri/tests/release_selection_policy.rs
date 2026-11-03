@@ -11,7 +11,6 @@ fn release_build_exposes_only_the_guarded_copy_path() {
     )) || cfg!(all(
         debug_assertions,
         not(feature = "custom-protocol"),
-        feature = "experimental-clipboard-fallback",
         target_os = "windows"
     ));
     for authorized in [false, true] {
@@ -37,7 +36,6 @@ fn ordinary_release_builds_the_guarded_path_without_enabling_it_by_config() {
         || cfg!(all(
             debug_assertions,
             not(feature = "custom-protocol"),
-            feature = "experimental-clipboard-fallback",
             target_os = "windows"
         ));
     assert_eq!(release_policy::safe_copy_available(), expected);
@@ -67,6 +65,17 @@ fn legacy_config_and_backup_true_cannot_unlock_legacy_copy() {
         assert!(!release_policy::automatic_copy_allowed(requested));
     }
     assert!(release_policy::validate_automatic_copy_request(true).is_err());
+}
+#[test]
+fn ordinary_release_excludes_the_diagnostic_command_and_handler() {
+    let guard = "#[cfg(any(debug_assertions, feature = \"beta2-isolation\"))]";
+    let ipc = include_str!("../src/ipc.rs");
+    assert!(ipc.contains(&format!("{guard}\n#[tauri::command]\npub fn popup_trace(")));
+    let lifecycle = include_str!("../src/lifecycle.rs");
+    assert!(lifecycle.contains(&format!("{guard}\n            crate::ipc::popup_trace,")));
+    assert!(lifecycle.contains(
+        "#[cfg(feature = \"beta2-isolation\")]\n            crate::ipc::ball_diagnostic,"
+    ));
 }
 
 #[test]

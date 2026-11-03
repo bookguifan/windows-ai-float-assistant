@@ -15,6 +15,8 @@ fn target() -> Target {
 }
 #[derive(Default)]
 struct Fake {
+    compatibility: bool,
+    related_writer: bool,
     formats: Vec<u32>,
     busy: bool,
     snapshot_rejected: bool,
@@ -45,6 +47,7 @@ struct Fake {
 impl Fake {
     fn good() -> Self {
         Self {
+            related_writer: true,
             formats: vec![13],
             valid: true,
             sent: 4,
@@ -59,8 +62,174 @@ impl Fake {
         }
     }
 }
+
+#[test]
+fn compatibility_copies_new_text_without_a_native_selection_proof() {
+    let mut f = Fake {
+        compatibility: true,
+        proof_error: true,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut f, target()).unwrap(), "合成\n  code 😀");
+    assert_eq!((f.proof_calls, f.copies, f.restored), (0, 1, 1));
+}
+
+#[test]
+fn compatibility_accepts_related_cross_process_writer_and_multiple_format_writes() {
+    let mut f = Fake {
+        compatibility: true,
+        proof_error: true,
+        ..Fake::good()
+    };
+    let s = f.stamp.as_mut().unwrap();
+    s.owner = Target {
+        hwnd: 40,
+        pid: 50,
+        thread: 60,
+    };
+    s.sequence = 18;
+    s.format_count = 6;
+    assert!(run_copy(&mut f, target()).is_ok());
+    assert_eq!((f.copies, f.restored), (1, 1));
+}
+
+#[test]
+fn compatibility_never_adopts_or_restores_an_unrelated_writer() {
+    let mut f = Fake {
+        compatibility: true,
+        related_writer: false,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut f, target()), Err("COPY_SOURCE_UNVERIFIED"));
+    assert_eq!((f.reads, f.restore_attempts), (0, 0));
+}
+
+#[test]
+fn compatibility_keeps_snapshot_timeout_concurrency_and_restore_failure_guards() {
+    for scenario in 0..6 {
+        let mut f = Fake {
+            compatibility: true,
+            proof_error: true,
+            ..Fake::good()
+        };
+        match scenario {
+            0 => f.formats = vec![13, 0xc000],
+            1 => f.timeout = true,
+            2 => f.race_read = true,
+            3 => f.race_restore = true,
+            4 => f.partial_restore = true,
+            _ => f.live_sequence = 8,
+        }
+        assert!(run_copy(&mut f, target()).is_err());
+        assert_eq!(f.restored, 0);
+        if scenario == 0 || scenario == 5 {
+            assert_eq!(f.copies, 0);
+        }
+    }
+}
+#[test]
+fn compatibility_returns_actual_copy_instead_of_comparing_unavailable_native_text() {
+    let mut f = Fake {
+        compatibility: true,
+        proof_error: true,
+        competing_text: true,
+        ..Fake::good()
+    };
+    assert_eq!(
+        run_copy(&mut f, target()),
+        Ok("SYNTHETIC COMPETITOR TEXT".into())
+    );
+    assert_eq!((f.proof_calls, f.copies, f.restored), (0, 1, 1));
+}
+#[test]
+fn compatibility_never_reads_old_clipboard_and_cleans_up_invalid_new_text() {
+    let mut unchanged = Fake {
+        compatibility: true,
+        ..Fake::good()
+    };
+    unchanged.stamp.as_mut().unwrap().sequence = 7;
+    assert!(run_copy(&mut unchanged, target()).is_err());
+    assert_eq!((unchanged.reads, unchanged.restored), (0, 0));
+    let mut empty = Fake {
+        compatibility: true,
+        empty_text: true,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut empty, target()), Err("COPY_TEXT_INVALID"));
+    assert_eq!(empty.restored, 1);
+}
+#[test]
+fn compatibility_waits_for_multiple_writes_to_settle_and_rejects_a_foreign_writer() {
+    let stamp = Fake::good().stamp.unwrap();
+    let mut observer = CopyObservation::default();
+    assert_eq!(observer.observe(7, Some(stamp), true, 0), Ok(None));
+    assert_eq!(observer.observe(7, Some(stamp), true, 39), Ok(None));
+    let next = Stamp {
+        sequence: 15,
+        format_count: 6,
+        ..stamp
+    };
+    assert_eq!(observer.observe(7, Some(next), true, 40), Ok(None));
+    assert_eq!(observer.observe(7, Some(next), true, 80), Ok(Some(next)));
+    assert_eq!(
+        observer.observe(7, Some(next), false, 81),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+    assert_eq!(observer.settled(), None);
+}
+#[test]
+fn observed_foreign_writer_cannot_be_forgotten_by_a_later_related_write() {
+    let stamp = Fake::good().stamp.unwrap();
+    let mut observer = CopyObservation::default();
+    assert_eq!(
+        observer.observe(7, Some(stamp), false, 0),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+    assert_eq!(
+        observer.observe(7, Some(stamp), true, 100),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+    assert_eq!(observer.settled(), None);
+}
+#[test]
+fn unidentifiable_change_permanently_rejects_transaction_even_after_stable_target_write() {
+    let stamp = Fake::good().stamp.unwrap();
+    let mut observer = CopyObservation::default();
+    assert_eq!(observer.observe(7, Some(stamp), true, 0), Ok(None));
+    assert_eq!(observer.observe(7, Some(stamp), true, 40), Ok(Some(stamp)));
+    assert_eq!(
+        observer.observe(7, None, false, 50),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+    assert_eq!(observer.settled(), None);
+    assert_eq!(
+        observer.observe(7, Some(stamp), true, 100),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+    assert_eq!(
+        observer.observe(7, Some(stamp), true, 150),
+        Err("COPY_SOURCE_UNVERIFIED")
+    );
+}
+#[test]
+fn compatibility_wait_failure_does_not_recover_using_only_a_later_related_stamp() {
+    let mut f = Fake {
+        compatibility: true,
+        wait_error: Some("COPY_SOURCE_UNVERIFIED"),
+        change_during_wait: true,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut f, target()), Err("COPY_RESTORE_SKIPPED"));
+    assert_eq!((f.reads, f.restore_attempts, f.restored), (0, 0, 0));
+}
 impl ClipboardIo for Fake {
     type Snapshot = ();
+    fn compatibility(&self) -> bool {
+        self.compatibility
+    }
+    fn related_writer(&self, _: Stamp) -> bool {
+        self.related_writer
+    }
     fn valid(&self) -> bool {
         self.valid
     }
@@ -129,7 +298,9 @@ impl ClipboardIo for Fake {
         focused_control: isize,
     ) -> Result<(), &'static str> {
         let observed = self.stamp.ok_or("COPY_RESTORE_SKIPPED")?;
-        if !source_allowed(target, before, focused_control, observed) {
+        // Match the native backend: a failed wait did not retain a trustworthy
+        // stable candidate. A later related stamp cannot establish provenance.
+        if self.compatibility || !source_allowed(target, before, focused_control, observed) {
             return Err("COPY_RESTORE_SKIPPED");
         }
         self.restore(snapshot, observed)

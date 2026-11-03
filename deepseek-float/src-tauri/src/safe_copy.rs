@@ -1,5 +1,5 @@
 //! Session-consented, one-shot clipboard fallback. The legacy capture_selection
-//! entry point stays locked off; only standard Unicode Edit controls are supported.
+//! entry point stays locked off. Compatibility mode is explicitly consented.
 use crate::selection::{
     formats_allowed, restore_allowed, Consent, Request, Stamp, Target, POLICY_VERSION,
 };
@@ -17,29 +17,51 @@ use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
+use windows::Win32::System::StationsAndDesktops::{
+    CloseDesktop, GetThreadDesktop, GetUserObjectInformationW, OpenInputDesktop,
+    DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, UOI_NAME,
+};
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, GetCurrentThreadId, GetExitCodeProcess, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW,
-    GetWindowThreadProcessId, IsWindowUnicode, MessageBoxW, GA_ROOT, GUITHREADINFO, GWL_STYLE,
-    IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL,
+    GetWindowThreadProcessId, IsWindow, IsWindowUnicode, MessageBoxW, GA_ROOT, GA_ROOTOWNER,
+    GUITHREADINFO, GWL_STYLE, IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL,
 };
 static CONSENT: Mutex<Consent> = Mutex::new(Consent::empty());
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Off,
+    #[default]
+    Safe,
+    Compatibility,
+}
+static MODE: Mutex<Mode> = Mutex::new(Mode::Safe);
+static LAST_ERROR: Mutex<Option<&'static str>> = Mutex::new(None);
 static TRANSACTION: Mutex<()> = Mutex::new(());
 static PROMPTING: AtomicBool = AtomicBool::new(false);
 #[derive(serde::Serialize)]
 pub struct State {
+    pub mode: Mode,
+    pub last_error: Option<&'static str>,
     pub enabled: bool,
     pub available: bool,
     pub policy_version: u32,
     pub session_only: bool,
 }
 pub fn state() -> State {
+    let enabled = crate::release_policy::safe_copy_available()
+        && CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows();
+    let mode = *MODE.lock().unwrap_or_else(|p| p.into_inner());
+    let last_error = *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
     State {
-        enabled: crate::release_policy::safe_copy_available()
-            && CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows(),
+        mode,
+        last_error,
+        enabled,
         available: crate::release_policy::safe_copy_available(),
         policy_version: POLICY_VERSION,
         session_only: true,
@@ -47,6 +69,16 @@ pub fn state() -> State {
 }
 pub fn revoke() {
     CONSENT.lock().unwrap_or_else(|p| p.into_inner()).revoke();
+    *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    crate::selection_runtime::invalidate();
+}
+pub fn set_passive_mode(mode: Mode) -> Result<State, String> {
+    if mode == Mode::Compatibility {
+        return Err("兼容模式必须先确认原生授权".into());
+    }
+    revoke();
+    *MODE.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+    Ok(state())
 }
 fn epoch() -> Option<u64> {
     if !crate::release_policy::safe_copy_available() {
@@ -84,12 +116,15 @@ pub(crate) fn trusted(window: &WebviewWindow) -> bool {
         .unwrap_or(false)
 }
 /// The IPC is only a request: only the real native modal's OK can grant this process.
-pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
+pub fn request_authorization(window: WebviewWindow, mode: Mode) -> Result<State, String> {
     if !crate::release_policy::safe_copy_available() {
         return Err("此构建未提供自动剪贴板回退".into());
     }
     if !trusted(&window) {
         return Err("只能在聚焦的本地设置页请求授权".into());
+    }
+    if mode != Mode::Compatibility {
+        return set_passive_mode(mode);
     }
     if PROMPTING.swap(true, Ordering::AcqRel) {
         return Err("授权确认正在进行".into());
@@ -106,7 +141,7 @@ pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
     let answer = unsafe {
         MessageBoxW(
             Some(HWND(hwnd.0)),
-            w!("仅当 UIA 和标准 Unicode Edit 原生读取都失败时，程序才会对身份已验证的前台 Edit 控件投递一次 Ctrl+Insert。发送前会完整保存白名单内的剪贴板格式；仅当序列号证明发生了一次清空和一次格式写入时，才会读取并尝试恢复。\n\nHTML、RTF、图片、自定义格式或无法完整快照的原剪贴板会在发送前拒绝。若目标使用多次格式写入、并发变化或延迟渲染，来源校验会拒绝；为避免覆盖无法归属的剪贴板内容，可能跳过恢复。Windows 可能在读取延迟渲染格式时同步请求原应用生成数据；100 毫秒检查不能中断卡住的系统调用。恢复也不保证对所有格式无损。仅支持可验证的标准 Unicode Edit 控件；WPS 等自定义控件在无法验证时不支持。\n\n授权只在本次运行有效，旧配置和备份不能代替确认。"),
+            w!("兼容模式会模拟复制快捷键，以便在 WPS、浏览器及其他应用中尝试读取选中文本。操作可能短暂修改 Windows 剪贴板；特殊格式、异步复制或其他程序同时修改时，可能无法完整恢复原内容。请避免在敏感内容中使用。可随时关闭。\n\nUIA / 原生读取优先；失败后仅发送一次 Ctrl+Insert。原剪贴板仅支持空内容及 Unicode/ANSI/OEM 文本和区域格式；HTML、RTF、图片等在操作前拒绝。目标与剪贴板来源使用窗口关联和稳定性判断，不能保证所有程序的文本来源及恢复绝对准确。Windows 延迟渲染可能同步等待原应用，超时检查不能中断仍未返回的系统调用。\n\n本次授权仅在当前运行有效；旧配置、备份和历史授权不能开启兼容模式。"),
             w!("授权自动剪贴板划词回退"),
             MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
         )
@@ -115,8 +150,10 @@ pub fn request_authorization(window: WebviewWindow) -> Result<State, String> {
     let mut consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
     if answer == IDOK && consent.epoch() == start_epoch && still_trusted {
         consent.grant(POLICY_VERSION);
+        *MODE.lock().unwrap_or_else(|p| p.into_inner()) = Mode::Compatibility;
     } else {
         consent.revoke();
+        *MODE.lock().unwrap_or_else(|p| p.into_inner()) = Mode::Safe;
     }
     drop(consent);
     Ok(state())
@@ -342,6 +379,13 @@ unsafe fn copy_chord() -> crate::copy_engine::SendStatus {
 pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
     let outcome = capture_inner(r, app);
     let reason = outcome.as_ref().err().map(|code| copy_failure_reason(code));
+    *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = reason;
+    if let (Some(settings), Ok(status)) = (
+        app.get_webview_window("settings"),
+        serde_json::to_string(&state()),
+    ) {
+        let _ = settings.eval(format!("window.__dsfSafeCopyStatus?.({status});"));
+    }
     crate::diag::log(&format!(
         "selection status={} reason={} elapsed_ms={}",
         outcome
@@ -362,17 +406,19 @@ fn copy_failure_reason(code: &str) -> &'static str {
         "COPY_READ_BUSY" => "复制结果读取时剪贴板持续被占用，正在尝试安全恢复",
         "COPY_RESTORE_BUSY" => "剪贴板持续被占用，无法完成原内容恢复",
         "COPY_TARGET_PROTECTED" => "目标属于受保护的控制台窗口",
-        "COPY_PROTECTED_OR_UNVERIFIED_CONTROL" => "无法确认标准编辑控件及其焦点，未发送快捷键",
+        "COPY_PROTECTED_OR_UNVERIFIED_CONTROL" => "无法确认目标焦点或控件受保护，未发送快捷键",
         "COPY_TIMEOUT" => "未能及时验证目标应用的复制结果",
         "COPY_SNAPSHOT_UNSTABLE" => "剪贴板快照超过 100 毫秒检查时限或读取期间内容变化，未发送快捷键；该检查不能中断仍未返回的延迟渲染调用",
         "COPY_SNAPSHOT_FAILED" => "无法完整读取原剪贴板，未发送快捷键",
         "COPY_READ_FAILED" => "无法读取目标应用的复制结果，正在尝试安全恢复",
         "COPY_SELECTION_MISMATCH" => "复制结果与当前选区不一致，未采纳该文本",
         "COPY_SELECTION_CHANGED" => "读取期间选区发生变化，未采纳该文本",
-        "COPY_RESTORE_SKIPPED" => "剪贴板在事务期间发生变化，为避免覆盖新内容已跳过恢复",
+        "COPY_RESTORE_SKIPPED" => "复制结果来源不明、未稳定或事务期间发生变化；为避免覆盖新内容已跳过恢复，剪贴板中可能仍有本次复制内容",
         "COPY_RESTORE_FAILED" => "原剪贴板恢复未完整完成，剪贴板中可能仍有本次复制内容",
         "COPY_INPUT_FAILED" => "Windows 未完整接收一次 Ctrl+Insert 输入",
-        "COPY_SOURCE_UNVERIFIED" => "无法确认剪贴板来源或单次清空加单一格式写入事务",
+        "COPY_SOURCE_UNVERIFIED" => "剪贴板写入者与目标无可信关联或复制结果不稳定，未采纳且未覆盖该内容",
+        "COPY_DESKTOP_PROTECTED" => "当前不是可验证的普通交互桌面，未发送快捷键",
+        "COPY_SENSITIVE_CONTROL" => "识别到密码框或敏感输入目标，未发送快捷键",
         _ => "安全检查未通过或目标状态已变化",
     }
 }
@@ -381,21 +427,34 @@ struct NativeIo<'a> {
     epoch: u64,
     process: Process,
     app: &'a AppHandle,
-    focus: isize,
+    focus: Target,
+    compatibility: bool,
+    prepared_sequence: u32,
 }
 impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
     type Snapshot = Snapshot;
+    fn compatibility(&self) -> bool {
+        self.compatibility
+    }
+    fn related_writer(&self, stamp: Stamp) -> bool {
+        writer_related(self.request.target, self.focus, stamp)
+    }
     fn valid(&self) -> bool {
         current(self.request, self.epoch, &self.process)
-            && native_focus(self.request.target) == Some(self.focus)
+            && if self.compatibility {
+                compatibility_focus(self.request.target).ok() == Some(self.focus)
+            } else {
+                native_focus(self.request.target) == Some(self.focus.hwnd)
+            }
     }
     fn selection_proof(&mut self) -> Result<crate::copy_engine::SelectionProof, &'static str> {
-        crate::native_copy_proof::capture(HWND(self.focus as *mut _), || self.valid())
+        crate::native_copy_proof::capture(HWND(self.focus.hwnd as *mut _), || self.valid())
     }
     fn prepare(&mut self) -> Result<(Snapshot, u32), &'static str> {
         unsafe {
             let s = snapshot()?;
             let sequence = s.sequence;
+            self.prepared_sequence = sequence;
             Ok((s, sequence))
         }
     }
@@ -403,29 +462,65 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
         unsafe { GetClipboardSequenceNumber() }
     }
     fn send_once(&mut self) -> crate::copy_engine::SendStatus {
-        if !self.valid() || native_focus(self.request.target) != Some(self.focus) {
+        if !self.valid()
+            || (self.compatibility && !crate::uia::compatibility_target_safe(self.request))
+            || !self.valid()
+            || self.sequence() != self.prepared_sequence
+        {
             return crate::copy_engine::SendStatus::Rejected;
         }
         unsafe { copy_chord() }
     }
     fn wait(&mut self, before: u32) -> Result<Stamp, crate::copy_engine::WaitFailure> {
-        let deadline = Instant::now() + Duration::from_millis(350);
+        let deadline = Instant::now() + Duration::from_millis(400);
+        let started = Instant::now();
+        let mut observation = crate::copy_engine::CopyObservation::default();
+        let mut changed = false;
         unsafe {
             loop {
                 if GetClipboardSequenceNumber() != before {
+                    changed = true;
                     let _lock = Clipboard::open_until(None, deadline, "COPY_CAPTURE_BUSY")
                         .map_err(crate::copy_engine::WaitFailure::changed)?;
-                    return stamp().ok_or_else(|| {
-                        crate::copy_engine::WaitFailure::changed("COPY_SOURCE_UNVERIFIED")
-                    });
+                    let observed = stamp();
+                    if self.compatibility {
+                        let settled = observation
+                            .observe(
+                                before,
+                                observed,
+                                observed.is_some_and(|s| self.related_writer(s)),
+                                started.elapsed().as_millis() as u64,
+                            )
+                            .map_err(crate::copy_engine::WaitFailure::changed)?;
+                        if IsClipboardFormatAvailable(13).is_ok() {
+                            if let Some(settled) = settled {
+                                return Ok(settled);
+                            }
+                        }
+                    } else if let Some(observed) = observed {
+                        return Ok(observed);
+                    }
                 }
                 if !self.valid() {
-                    return Err(crate::copy_engine::WaitFailure::unchanged(
-                        "COPY_CONTEXT_CHANGED",
-                    ));
+                    if let Some(settled) = observation.settled() {
+                        return Ok(settled);
+                    }
+                    return Err(if changed {
+                        crate::copy_engine::WaitFailure::changed("COPY_CONTEXT_CHANGED")
+                    } else {
+                        crate::copy_engine::WaitFailure::unchanged("COPY_CONTEXT_CHANGED")
+                    });
                 }
                 if Instant::now() >= deadline {
-                    return Err(crate::copy_engine::WaitFailure::unchanged("COPY_TIMEOUT"));
+                    // A related stable non-text result still needs cleanup; read()
+                    // will fail and the engine restores the exact matching stamp.
+                    if let Some(settled) = observation.settled() {
+                        return Ok(settled);
+                    }
+                    return Err(crate::copy_engine::WaitFailure {
+                        code: "COPY_TIMEOUT",
+                        clipboard_changed: changed,
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -445,7 +540,11 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
                 "COPY_RESTORE_BUSY",
             )?;
             let observed = stamp().ok_or("COPY_RESTORE_SKIPPED")?;
-            if !crate::selection::source_allowed(target, before, focused_control, observed) {
+            // An observed foreign/unstable writer must never be cleaned up as ours.
+            // Generic mode only recovers the exact stabilized candidate recorded by wait.
+            if self.compatibility
+                || !crate::selection::source_allowed(target, before, focused_control, observed)
+            {
                 return Err("COPY_RESTORE_SKIPPED");
             }
             drop(lock);
@@ -508,7 +607,100 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
         }
     }
 }
-/// Generic/custom virtual focus cannot safely authorize synthetic copy. Only
+/// Compatibility keeps a stable native focus identity, including a cross-process
+/// child/owned window, without assuming Edit messages or a shared PID/TID.
+fn compatibility_focus(target: Target) -> Result<Target, &'static str> {
+    unsafe {
+        if !ordinary_input_desktop() {
+            return Err("COPY_DESKTOP_PROTECTED");
+        }
+        let root = HWND(target.hwnd as *mut _);
+        if GetForegroundWindow() != root || !IsWindow(Some(root)).as_bool() {
+            return Err("COPY_CONTEXT_CHANGED");
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(target.thread, &mut info)
+            .map_err(|_| "COPY_PROTECTED_OR_UNVERIFIED_CONTROL")?;
+        let focus = info.hwndFocus;
+        let mut pid = 0;
+        let thread = GetWindowThreadProcessId(focus, Some(&mut pid));
+        let related =
+            GetAncestor(focus, GA_ROOT) == root || GetAncestor(focus, GA_ROOTOWNER) == root;
+        if !crate::selection::compatible_focus_allowed(
+            IsWindow(Some(focus)).as_bool(),
+            related,
+            pid,
+            thread,
+            GetCurrentProcessId(),
+            info.flags.0 & 0x1e != 0,
+        ) {
+            return Err("COPY_PROTECTED_OR_UNVERIFIED_CONTROL");
+        }
+        let mut name = [0u16; 256];
+        let n = GetClassNameW(focus, &mut name);
+        if n == 0 {
+            return Err("COPY_PROTECTED_OR_UNVERIFIED_CONTROL");
+        }
+        let class = String::from_utf16_lossy(&name[..n as usize]).to_ascii_lowercase();
+        if !crate::selection::compatibility_control_allowed(
+            &class,
+            GetWindowLongPtrW(focus, GWL_STYLE) as u32 & 0x20 != 0,
+        ) {
+            return Err("COPY_SENSITIVE_CONTROL");
+        }
+        Ok(Target {
+            hwnd: focus.0 as isize,
+            pid,
+            thread,
+        })
+    }
+}
+unsafe fn ordinary_input_desktop() -> bool {
+    unsafe fn name(handle: HANDLE) -> Option<String> {
+        let mut buf = [0u16; 256];
+        GetUserObjectInformationW(
+            handle,
+            UOI_NAME,
+            Some(buf.as_mut_ptr().cast()),
+            std::mem::size_of_val(&buf) as u32,
+            None,
+        )
+        .ok()?;
+        let n = buf.iter().position(|c| *c == 0)?;
+        Some(String::from_utf16_lossy(&buf[..n]))
+    }
+    let Ok(input) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) else {
+        return false;
+    };
+    let input_name = name(HANDLE(input.0));
+    let thread_name = GetThreadDesktop(GetCurrentThreadId())
+        .ok()
+        .and_then(|d| name(HANDLE(d.0)));
+    let _ = CloseDesktop(input);
+    input_name.as_deref() == Some("Default") && thread_name == input_name
+}
+fn writer_related(target: Target, focus: Target, observed: Stamp) -> bool {
+    // A hidden clipboard helper in either verified process is permitted. A new
+    // arbitrary process is not trusted merely because it wrote after SendInput.
+    unsafe {
+        let writer = HWND(observed.owner.hwnd as *mut _);
+        let mut pid = 0;
+        IsWindow(Some(writer)).as_bool()
+            && GetWindowThreadProcessId(writer, Some(&mut pid)) == observed.owner.thread
+            && pid == observed.owner.pid
+            && crate::selection::compatibility_writer_related(
+                target,
+                focus,
+                observed,
+                GetAncestor(writer, GA_ROOTOWNER).0 as isize,
+                GetCurrentProcessId(),
+            )
+    }
+}
+/// Generic/custom virtual focus cannot authorize strict copy. Only
 /// the verified Unicode Edit control in the current foreground target is supported.
 fn native_focus(target: Target) -> Option<isize> {
     unsafe {
@@ -570,7 +762,16 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
         if name.contains("console") || name.contains("cascadia") {
             return Err("COPY_TARGET_PROTECTED");
         }
-        let focus = native_focus(r.target).ok_or("COPY_PROTECTED_OR_UNVERIFIED_CONTROL")?;
+        let compatibility = state().mode == Mode::Compatibility;
+        let focus = if compatibility {
+            if !crate::uia::compatibility_target_safe(r) {
+                return Err("COPY_SENSITIVE_CONTROL");
+            }
+            compatibility_focus(r.target)?
+        } else {
+            let hwnd = native_focus(r.target).ok_or("COPY_PROTECTED_OR_UNVERIFIED_CONTROL")?;
+            Target { hwnd, ..r.target }
+        };
         crate::copy_engine::run_copy(
             &mut NativeIo {
                 request: r,
@@ -578,6 +779,8 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
                 process,
                 app,
                 focus,
+                compatibility,
+                prepared_sequence: 0,
             },
             r.target,
         )

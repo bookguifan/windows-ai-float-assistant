@@ -158,6 +158,7 @@ mod ball_diagnostic_tests {
 }
 
 /// Synthetic-only telemetry; rejects arbitrary stages/actions and external documents.
+#[cfg(any(debug_assertions, feature = "beta2-isolation"))]
 #[tauri::command]
 pub fn popup_trace(
     window: tauri::WebviewWindow,
@@ -193,20 +194,49 @@ pub fn popup_action(
     preset: String,
     selection_ticket: String,
 ) -> Result<(), String> {
-    let url = window.url().map_err(|_| "工具条地址不可用")?;
+    let url = window.url().map_err(|_| {
+        crate::diag::warn("[selection-action] IPC rejected reason=window-url-unavailable");
+        "工具条地址不可用"
+    })?;
     if !crate::selection::local_page(
         window.label(),
         &url,
         "popup",
         window.is_visible().unwrap_or(false),
     ) {
+        crate::diag::warn("[selection-action] IPC rejected reason=not-local-visible-popup");
         return Err("只能从本地工具条执行选区动作".into());
+    }
+    let ticket = selection_ticket.parse::<u64>().map_err(|_| {
+        crate::diag::warn("[selection-action] IPC rejected reason=invalid-ticket");
+        "选区凭据无效"
+    })?;
+    crate::diag::log("[selection-action] IPC accepted");
+    crate::selection_trace::event("ipc-action", Some(ticket), "received");
+    crate::popup::on_action(&app, &preset, ticket);
+    Ok(())
+}
+
+/// The hidden toolbar confirms that its controls and exact selection ticket are ready to display.
+#[tauri::command]
+pub fn popup_ready(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    selection_ticket: String,
+) -> Result<(), String> {
+    let url = window.url().map_err(|_| "工具条地址不可用")?;
+    if !crate::selection::local_document_page(window.label(), &url, "popup") {
+        return Err("只能由本地工具条确认选区就绪".into());
     }
     let ticket = selection_ticket
         .parse::<u64>()
         .map_err(|_| "选区凭据无效")?;
-    crate::selection_trace::event("ipc-action", Some(ticket), "received");
-    crate::popup::on_action(&app, &preset, ticket);
+    if !crate::popup::frontend_prepared(ticket) {
+        return Err("选区已更新或工具条页面未就绪".into());
+    }
+    let handle = app.clone();
+    app.run_on_main_thread(move || crate::popup::show_at_cursor(&handle))
+        .map_err(|_| "无法显示划词工具条")?;
     Ok(())
 }
 #[tauri::command]
@@ -320,17 +350,21 @@ pub fn safe_copy_status() -> crate::safe_copy::State {
     crate::safe_copy::state()
 }
 #[tauri::command]
-pub fn safe_copy_revoke() -> crate::safe_copy::State {
-    crate::safe_copy::revoke();
-    crate::safe_copy::state()
+pub fn safe_copy_revoke(
+    mode: Option<crate::safe_copy::Mode>,
+) -> Result<crate::safe_copy::State, String> {
+    crate::safe_copy::set_passive_mode(mode.unwrap_or(crate::safe_copy::Mode::Off))
 }
 #[tauri::command]
 pub async fn safe_copy_authorize(
     window: tauri::WebviewWindow,
+    mode: crate::safe_copy::Mode,
 ) -> Result<crate::safe_copy::State, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::safe_copy::request_authorization(window))
-        .await
-        .map_err(|_| "授权确认失败".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::safe_copy::request_authorization(window, mode)
+    })
+    .await
+    .map_err(|_| "授权确认失败".to_string())?
 }
 
 /// ★ 2026-09-17：设置「面板目标网址」（DeepSeek 页面可切换 —— 镜像 / 自托管 / 排障换源）。

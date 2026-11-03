@@ -39,8 +39,13 @@ unsafe extern "system" fn foreground_changed(
 ) {
     let generation = crate::selection_runtime::generation();
     let captured_ms = crate::selection_runtime::now_ms();
-    let (preserved, ticket, show, alive) = crate::popup::preserves_foreground(hwnd.0 as isize);
-    if !preserved {
+    let (preserved, ticket, show, alive, current_foreground) =
+        crate::popup::preserves_foreground(hwnd.0 as isize);
+    if crate::selection::foreground_event_should_invalidate(
+        hwnd.0 as isize,
+        current_foreground,
+        preserved,
+    ) {
         crate::selection_runtime::invalidate_if(generation);
     }
     crate::selection_trace::foreground(
@@ -125,20 +130,39 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let hit = WindowFromPoint(info.pt);
                     let root = GetAncestor(hit, GA_ROOT);
                     let mut owner = 0;
-                    GetWindowThreadProcessId(root, Some(&mut owner));
+                    let hit_thread = GetWindowThreadProcessId(root, Some(&mut owner));
                     let visible = crate::popup::popup_visible();
                     let inside = crate::popup::point_in_popup(info.pt.x, info.pt.y);
-                    let own = owner == GetCurrentProcessId();
+                    let own_pid = GetCurrentProcessId();
+                    let own = owner == own_pid;
+                    let hit_target =
+                        (hit_thread != 0 && !own).then_some(crate::selection::Target {
+                            hwnd: root.0 as isize,
+                            pid: owner,
+                            thread: hit_thread,
+                        });
+                    let root_matches = crate::popup::matches_popup_root(root.0 as isize);
                     let mut armed = false;
                     if own && inside {
                         armed = crate::popup::arm_action(root.0 as isize);
                     } else {
                         crate::selection_runtime::invalidate();
                         if let Ok(mut target) = DOWN_TARGET.lock() {
-                            *target = crate::selection_runtime::target();
+                            *target = crate::selection::mouse_down_target(
+                                crate::selection_runtime::target(),
+                                hit_target,
+                                own_pid,
+                            );
                         }
                     }
                     if visible {
+                        crate::popup::record_action_click(
+                            visible,
+                            inside,
+                            own,
+                            root_matches,
+                            armed,
+                        );
                         crate::selection_trace::click(crate::selection_trace::Click {
                             root: root.0 as isize,
                             x: info.pt.x,

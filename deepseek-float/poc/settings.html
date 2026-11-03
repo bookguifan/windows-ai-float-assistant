@@ -150,8 +150,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
             <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">默认关闭。仅在设置页点击并确认后，本次运行才启用。仅对当前前台且身份已验证的标准 Unicode Edit 控件投递一次 Ctrl+Insert；运行前完整保存白名单文本格式，结束后仅接受一次剪贴板清空及单一格式写入的序列变化，再校验并恢复。多格式写入、HTML、RTF、图片、未知格式和并发变化会拒绝或跳过恢复。Windows 延迟渲染可能同步等待原应用，100 毫秒检查不能中断仍未返回的系统调用；恢复也不保证对所有格式无损。WPS 等自定义控件在无法验证时不支持。</span></div>
-            <label class="switch"><input type="checkbox" data-key="safe-copy" disabled aria-label="授权自动剪贴板划词回退" /><span class="slider"></span></label>
+            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">默认安全模式，仅 UIA / 原生读取。兼容模式需要本机确认，本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
+            <select id="safe-copy-mode" aria-label="自动复制模式" disabled><option value="safe">安全模式（默认）</option><option value="compatibility">兼容模式</option><option value="off">关闭自动复制</option></select>
           </div>
           <div class="toggle-row">
             <div class="meta">
@@ -853,31 +853,35 @@ input.url-box { width: 100%; box-sizing: border-box; }
       }
       let safeCopyRevision=0;
       let safeCopyAvailable=false;
+      let safeCopyPending=false;
       function applySafeCopyStatus(status){
-        const el=document.querySelector('[data-key="safe-copy"]');
+        const el=document.querySelector('#safe-copy-mode');
         safeCopyAvailable=!!(status&&status.available);
-        el.checked=safeCopyAvailable&&!!status.enabled;
+        el.value=safeCopyAvailable&&status.enabled&&status.mode==='compatibility'?'compatibility':status&&status.mode==='off'?'off':'safe';
         el.disabled=!safeCopyAvailable;
         document.querySelector('#safe-copy-hint').textContent=safeCopyAvailable
-          ?'仅本次运行授权。先尝试 UIA 和标准 Unicode Edit 原生读取；仅两者无法读取时，对当前前台且身份已验证的 Edit 控件投递一次 Ctrl+Insert。原剪贴板快照不完整或格式不受支持时不会发送；仅接受一次清空加单一格式写入的序列变化，否则为避免覆盖并发内容会拒绝并跳过恢复。Windows 延迟渲染可能同步等待原应用，100 毫秒检查不能中断仍未返回的系统调用；恢复也不保证所有格式无损。WPS 等自定义控件在无法验证时不支持。'
+          ?'安全模式默认只使用 UIA / 原生读取；兼容模式需原生确认，仅本次运行有效，读取失败后向可信前台目标投递一次 Ctrl+Insert，尝试兼容 WPS、浏览器等应用，不代表已经通过兼容验收。原剪贴板含 HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳，检测到并发修改时跳过恢复。Windows 延迟渲染可能同步等待原应用，超时检查不能中断仍未返回的系统调用；恢复不保证所有格式无损。关闭自动复制不会关闭 UIA / 原生读取。'
           :'此构建未提供自动剪贴板回退。UIA、标准 Unicode Edit 原生读取和主动复制仍可使用。';
+        document.querySelector('#safe-copy-status').textContent=status&&status.last_error?'上次回退失败：'+status.last_error:el.value==='compatibility'?'兼容模式已授权（本次运行）':'未启用自动模拟复制';
       }
+      window.__dsfSafeCopyStatus=(status)=>{if(safeCopyPending)return;++safeCopyRevision;applySafeCopyStatus(status);};
       async function refreshSafeCopy(){
+        if(safeCopyPending)return;
         const revision=safeCopyRevision;
         try{const status=await tauri.core.invoke('safe_copy_status');if(revision===safeCopyRevision)applySafeCopyStatus(status);}
         catch{if(revision===safeCopyRevision)applySafeCopyStatus(null);}
       }
       refreshSafeCopy();
+      document.querySelector('#safe-copy-mode').addEventListener('change',async(event)=>{
+        const el=event.target;if(!safeCopyAvailable){applySafeCopyStatus({available:false,mode:'safe'});return;}if(el.disabled)return;
+        const mode=el.value;const revision=++safeCopyRevision;safeCopyPending=true;el.disabled=true;
+        try{const status=await tauri.core.invoke(mode==='compatibility'?'safe_copy_authorize':'safe_copy_revoke',{mode});if(revision===safeCopyRevision)applySafeCopyStatus(status);}
+        catch(error){try{await tauri.core.invoke('safe_copy_revoke',{mode:'safe'});}catch{}if(revision===safeCopyRevision){applySafeCopyStatus({available:safeCopyAvailable,enabled:false,mode:'safe'});document.querySelector('#safe-copy-status').textContent='切换失败：'+String(error);}}
+        finally{safeCopyPending=false;if(revision===safeCopyRevision)el.disabled=!safeCopyAvailable;}
+      });
       document.querySelectorAll('#features input[type="checkbox"]').forEach((el) => {
         el.addEventListener("change", async () => {
           const key = el.dataset.key;
-          if(key==='safe-copy'){
-            if(el.disabled||!safeCopyAvailable){applySafeCopyStatus({available:false,enabled:false});return;}
-            ++safeCopyRevision; const revision=safeCopyRevision;el.disabled=true;
-            try{const status=await tauri.core.invoke(el.checked?'safe_copy_authorize':'safe_copy_revoke');if(revision===safeCopyRevision)applySafeCopyStatus(status);}
-            catch{try{await tauri.core.invoke('safe_copy_revoke');}catch{}el.checked=false;}finally{el.disabled=!safeCopyAvailable;}
-            return;
-          }
           const on = el.checked;
           if (el.disabled) return;
           if (key === "privileged") {

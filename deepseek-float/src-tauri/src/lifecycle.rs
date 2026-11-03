@@ -416,6 +416,8 @@ pub fn run() {
             #[cfg(feature = "beta2-isolation")]
             crate::ipc::ball_diagnostic,
             crate::ipc::popup_action,
+            crate::ipc::popup_ready,
+            #[cfg(any(debug_assertions, feature = "beta2-isolation"))]
             crate::ipc::popup_trace,
             crate::ipc::settings_save,
             crate::ipc::settings_run,

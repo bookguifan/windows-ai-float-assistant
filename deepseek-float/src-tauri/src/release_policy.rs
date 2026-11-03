@@ -12,24 +12,18 @@ pub(crate) fn validate_automatic_copy_request(enabled: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// Research-only switch; release builds never treat this as authorization.
-pub(crate) const fn experimental_copy_available() -> bool {
-    cfg!(all(
-        debug_assertions,
-        not(feature = "custom-protocol"),
-        feature = "experimental-clipboard-fallback",
-        target_os = "windows"
-    ))
-}
-
-/// The guarded transaction ships in ordinary Windows Release. Debug research
-/// builds may opt in separately; neither build mode is runtime authorization.
+/// The guarded transaction ships in ordinary Windows Release. Ordinary Debug
+/// builds expose the same guarded path for testing; neither build mode grants consent.
 pub(crate) const fn safe_copy_available() -> bool {
     cfg!(all(
         not(debug_assertions),
         feature = "custom-protocol",
         target_os = "windows"
-    )) || experimental_copy_available()
+    )) || cfg!(all(
+        debug_assertions,
+        not(feature = "custom-protocol"),
+        target_os = "windows"
+    ))
 }
 
 /// Native consent and live target/transaction context are all required.

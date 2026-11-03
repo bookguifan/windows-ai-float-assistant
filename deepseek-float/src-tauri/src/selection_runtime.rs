@@ -132,7 +132,14 @@ fn start(app: AppHandle) {
                         })
                         .ok()
                     },
-                    safe_target && clipboard_authorized,
+                    clipboard_authorized
+                        && (safe_target
+                            || crate::selection::compatibility_fallback_allowed(
+                                read.status,
+                                crate::safe_copy::state().mode
+                                    == crate::safe_copy::Mode::Compatibility,
+                                valid(&r),
+                            )),
                     || {
                         if !valid(&r) {
                             return None;
