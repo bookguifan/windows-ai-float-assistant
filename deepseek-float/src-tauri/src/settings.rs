@@ -93,6 +93,32 @@ pub fn open(app: &AppHandle) {
         .revision();
     show(app, &w, String::new(), None, revision);
 }
+
+/// Toggle the settings window from the tray/context menu. Selection actions use
+/// `open_from_selection` below so reopening settings there never consumes a toggle.
+pub fn toggle(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            clear_selection(app);
+            WAS_FOCUSED.store(false, Ordering::Release);
+            if let Err(error) = toggle_visibility(&window) {
+                crate::diag::warn(&format!("settings window toggle failed: {error}"));
+            }
+            return;
+        }
+    }
+    open(app);
+}
+
+fn toggle_visibility<R: tauri::Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    let visible = window.is_visible().map_err(|error| error.to_string())?;
+    if visible {
+        window.hide().map_err(|error| error.to_string())
+    } else {
+        window.show().map_err(|error| error.to_string())
+    }
+}
+
 /// Only an explicit toolbar action may delegate a currently verified selection.
 pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::ToolbarAction) {
     crate::selection_trace::session("settings-handoff-input", action.session());
@@ -248,4 +274,33 @@ pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<
     Some(
         serde_json::json!({"text":text,"prompts":crate::prompts::load(app),"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::{
+        test::{mock_builder, mock_context, noop_assets, MockRuntime},
+        WebviewWindowBuilder,
+    };
+
+    #[test]
+    fn menu_toggle_hides_visible_settings_and_reopens_hidden_settings() {
+        let context = mock_context::<MockRuntime, _>(noop_assets());
+        let app = mock_builder().build(context).unwrap();
+        let window = WebviewWindowBuilder::new(
+            &app,
+            SETTINGS_LABEL,
+            WebviewUrl::App("poc/settings.html".into()),
+        )
+        .visible(true)
+        .build()
+        .unwrap();
+
+        toggle_visibility(&window).unwrap();
+        assert!(!window.is_visible().unwrap());
+
+        toggle_visibility(&window).unwrap();
+        assert!(window.is_visible().unwrap());
+    }
 }
