@@ -97,25 +97,33 @@ pub fn open(app: &AppHandle) {
 /// Toggle the settings window from the tray/context menu. Selection actions use
 /// `open_from_selection` below so reopening settings there never consumes a toggle.
 pub fn toggle(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+    let window = app.get_webview_window(SETTINGS_LABEL);
+    let visible = window.as_ref().and_then(|window| window.is_visible().ok());
+    match settings_toggle_action(visible) {
+        SettingsToggleAction::Hide => {
             clear_selection(app);
             WAS_FOCUSED.store(false, Ordering::Release);
-            if let Err(error) = toggle_visibility(&window) {
-                crate::diag::warn(&format!("settings window toggle failed: {error}"));
+            if let Some(window) = window {
+                if let Err(error) = window.hide() {
+                    crate::diag::warn(&format!("settings window toggle failed: {error}"));
+                }
             }
-            return;
         }
+        SettingsToggleAction::Open => open(app),
     }
-    open(app);
 }
 
-fn toggle_visibility<R: tauri::Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
-    let visible = window.is_visible().map_err(|error| error.to_string())?;
-    if visible {
-        window.hide().map_err(|error| error.to_string())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsToggleAction {
+    Hide,
+    Open,
+}
+
+fn settings_toggle_action(visible: Option<bool>) -> SettingsToggleAction {
+    if visible == Some(true) {
+        SettingsToggleAction::Hide
     } else {
-        window.show().map_err(|error| error.to_string())
+        SettingsToggleAction::Open
     }
 }
 
@@ -279,28 +287,18 @@ pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri::{
-        test::{mock_builder, mock_context, noop_assets, MockRuntime},
-        WebviewWindowBuilder,
-    };
 
     #[test]
-    fn menu_toggle_hides_visible_settings_and_reopens_hidden_settings() {
-        let context = mock_context::<MockRuntime, _>(noop_assets());
-        let app = mock_builder().build(context).unwrap();
-        let window = WebviewWindowBuilder::new(
-            &app,
-            SETTINGS_LABEL,
-            WebviewUrl::App("poc/settings.html".into()),
-        )
-        .visible(true)
-        .build()
-        .unwrap();
-
-        toggle_visibility(&window).unwrap();
-        assert!(!window.is_visible().unwrap());
-
-        toggle_visibility(&window).unwrap();
-        assert!(window.is_visible().unwrap());
+    fn settings_menu_hides_only_a_known_visible_window() {
+        assert_eq!(
+            settings_toggle_action(Some(true)),
+            SettingsToggleAction::Hide
+        );
+        assert_eq!(
+            settings_toggle_action(Some(false)),
+            SettingsToggleAction::Open
+        );
+        assert_eq!(settings_toggle_action(None), SettingsToggleAction::Open);
     }
 }
+
