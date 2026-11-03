@@ -301,4 +301,3 @@ mod tests {
         assert_eq!(settings_toggle_action(None), SettingsToggleAction::Open);
     }
 }
-
