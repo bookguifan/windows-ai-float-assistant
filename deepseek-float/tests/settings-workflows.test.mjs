@@ -174,24 +174,23 @@ test('the newest prompt edit is saved even if an older in-flight snapshot fails'
 });
 
 
-test('release capability locks fallback off even for legacy enabled config and forged change events', async () => {
-  const p = page(c => c === 'config_get' ? Promise.resolve({clipboard_fallback_enabled:true}) : undefined);
+test('session consent is the only path to enable fallback, regardless of legacy config', async () => {
+  const p = page(c => c === 'config_get' ? Promise.resolve({clipboard_fallback_enabled:true}) : c === 'safe_copy_status' ? Promise.resolve({available:true,enabled:false}) : undefined);
   try {
     await tick();
     const box = p.d.querySelector('[data-key="safe-copy"]');
     assert.equal(box.checked, false);
-    assert.equal(box.disabled, true);
-    box.disabled = false;
+    assert.equal(box.disabled, false);
     box.checked = true;
     box.dispatchEvent(new p.w.Event('change'));
     await tick();
     assert.equal(box.checked, false);
-    assert.equal(box.disabled, true);
+    assert.equal(p.calls.filter(c => c.command === 'safe_copy_authorize').length, 1);
     assert.equal(p.calls.filter(c => c.command === 'config_set_clipboard_fallback').length, 0);
   } finally { p.close(); }
 });
 
-test('experimental control stays disabled for missing, false and legacy true settings', async () => {
+test('an unavailable build remains disabled for missing, false and legacy true settings', async () => {
   for (const cfg of [{}, {clipboard_fallback_enabled:false}, {clipboard_fallback_enabled:true}]) {
     const p = page(c => c === 'config_get' ? Promise.resolve(cfg) : undefined);
     try {
@@ -200,7 +199,7 @@ test('experimental control stays disabled for missing, false and legacy true set
       assert.ok(box, 'experimental capability entry exists');
       assert.equal(box.checked, false);
       assert.equal(box.disabled, true);
-      assert.match(box.closest('.toggle-row').textContent, /待安全验收/);
+      assert.match(box.closest('.toggle-row').textContent, /自动复制回退/);
       box.checked = !box.checked;
       box.dispatchEvent(new p.w.Event('change'));
       await tick();

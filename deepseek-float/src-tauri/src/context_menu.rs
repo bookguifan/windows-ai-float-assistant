@@ -369,7 +369,7 @@ fn apply_action(app: &AppHandle, generation: u64, action: MenuAction) {
         MenuAction::Ocr => {
             crate::screenshot::begin_with_mode(app, crate::screenshot::ShotMode::Ocr)
         }
-        MenuAction::Settings => crate::settings::open(app),
+        MenuAction::Settings => crate::settings::toggle(app),
         MenuAction::Favorites => crate::result::open_favorites(app),
         MenuAction::Relogin => {
             crate::show_panel(app);

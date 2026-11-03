@@ -15,6 +15,12 @@ function page(handler=()=>undefined){
 test('legacy config cannot grant new safe copy authorization',async()=>{
  const p=page();try{await tick();assert.equal(p.d.querySelector('[data-key="safe-copy"]').checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
 });
+test('safe copy warning discloses delayed-render blocking and restoration limits',async()=>{
+ const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;assert.match(hint,/延迟渲染.*同步等待/);assert.match(hint,/不能中断仍未返回/);assert.match(hint,/不保证.*无损/);}finally{p.close();}
+});
+test('safe copy warning explains its exact clipboard transaction requirement',async()=>{
+ const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;assert.match(hint,/一次清空加单一格式写入/);assert.match(hint,/跳过恢复/);}finally{p.close();}
+});
 test('native denial leaves the feature off and never invokes legacy enabling',async()=>{
  const p=page(c=>c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:false}):undefined);
  try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');el.click();await tick();assert.equal(el.checked,false);assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);}finally{p.close();}
@@ -88,12 +94,12 @@ test('restore clears the delegated preview even without a separate native expiry
  }finally{p.close();}
 });
 
-test('distribution capability stays disabled after restore even if settings request true',async()=>{
+test('unavailable build stays disabled after restore even if settings request true',async()=>{
  const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:false,enabled:true}):undefined);
  try{await tick();const el=p.d.querySelector('[data-key="safe-copy"]');assert.equal(el.disabled,true);assert.equal(el.checked,false);
  for(let n=0;n<2;n++){p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true});await tick();await tick();assert.equal(el.disabled,true);assert.equal(el.checked,false);}
  el.click();await tick();assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);
- assert.match(p.d.querySelector('#safe-copy-hint').textContent,/本发行构建已禁用/);
+ assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);
  }finally{p.close();}
 });
 
@@ -198,7 +204,7 @@ test('smart selection default and explicit preferences render without a legacy c
    assert.equal(el.checked,cfg.privileged_capture!==false);
    assert.match(el.closest('.toggle-row').textContent,/智能划词增强/);
    assert.equal(p.d.querySelector('[data-key="clipboard-fallback"]'),null);
-   assert.match(p.d.querySelector('#safe-copy-hint').textContent,/待安全验收/);
+   assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);
   }finally{p.close();}
  }
 });

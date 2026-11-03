@@ -93,6 +93,40 @@ pub fn open(app: &AppHandle) {
         .revision();
     show(app, &w, String::new(), None, revision);
 }
+
+/// Toggle the settings window from the tray/context menu. Selection actions use
+/// `open_from_selection` below so reopening settings there never consumes a toggle.
+pub fn toggle(app: &AppHandle) {
+    let window = app.get_webview_window(SETTINGS_LABEL);
+    let visible = window.as_ref().and_then(|window| window.is_visible().ok());
+    match settings_toggle_action(visible) {
+        SettingsToggleAction::Hide => {
+            clear_selection(app);
+            WAS_FOCUSED.store(false, Ordering::Release);
+            if let Some(window) = window {
+                if let Err(error) = window.hide() {
+                    crate::diag::warn(&format!("settings window toggle failed: {error}"));
+                }
+            }
+        }
+        SettingsToggleAction::Open => open(app),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsToggleAction {
+    Hide,
+    Open,
+}
+
+fn settings_toggle_action(visible: Option<bool>) -> SettingsToggleAction {
+    if visible == Some(true) {
+        SettingsToggleAction::Hide
+    } else {
+        SettingsToggleAction::Open
+    }
+}
+
 /// Only an explicit toolbar action may delegate a currently verified selection.
 pub(crate) fn open_from_selection(app: &AppHandle, action: crate::selection::ToolbarAction) {
     crate::selection_trace::session("settings-handoff-input", action.session());
@@ -248,4 +282,22 @@ pub(crate) fn ready_snapshot(app: &AppHandle, window: &WebviewWindow) -> Option<
     Some(
         serde_json::json!({"text":text,"prompts":crate::prompts::load(app),"selection_ticket":ticket.map(|t|t.to_string()),"selection_revision":revision.to_string()}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_menu_hides_only_a_known_visible_window() {
+        assert_eq!(
+            settings_toggle_action(Some(true)),
+            SettingsToggleAction::Hide
+        );
+        assert_eq!(
+            settings_toggle_action(Some(false)),
+            SettingsToggleAction::Open
+        );
+        assert_eq!(settings_toggle_action(None), SettingsToggleAction::Open);
+    }
 }

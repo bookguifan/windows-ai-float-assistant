@@ -46,6 +46,25 @@ pub enum Method {
     NativeEdit,
     Clipboard,
 }
+/// Keep capture methods ordered. The clipboard path is invoked only after the
+/// caller has independently established a safe target and explicit consent.
+pub fn capture_first_available<T>(
+    uia: Option<T>,
+    native: impl FnOnce() -> Option<T>,
+    fallback_allowed: bool,
+    fallback: impl FnOnce() -> Option<T>,
+) -> Option<(Method, T)> {
+    if let Some(value) = uia {
+        return Some((Method::Uia, value));
+    }
+    if let Some(value) = native() {
+        return Some((Method::NativeEdit, value));
+    }
+    fallback_allowed
+        .then(fallback)
+        .flatten()
+        .map(|value| (Method::Clipboard, value))
+}
 #[derive(Clone)]
 pub struct Session {
     pub request: Request,
@@ -209,18 +228,25 @@ pub struct Stamp {
     pub root_hwnd: isize,
     pub owner: Target,
     pub sequence: u32,
+    pub format_count: u32,
 }
-pub fn source_allowed(target: Target, before: u32, stamp: Stamp) -> bool {
+pub fn source_allowed(target: Target, before: u32, focused_control: isize, stamp: Stamp) -> bool {
     target.hwnd != 0
         && target.pid != 0
         && target.thread != 0
+        && focused_control != 0
         && stamp.owner.hwnd != 0
+        && stamp.owner.hwnd == focused_control
         && stamp.root_hwnd == target.hwnd
         && stamp.owner.pid == target.pid
         && stamp.owner.thread == target.thread
         && before != 0
         && stamp.sequence != 0
-        && stamp.sequence != before
+        && (1..=64).contains(&stamp.format_count)
+        // EnumClipboardFormats includes synthesized text formats, which do not
+        // correspond one-to-one with SetClipboardData calls. Accept only the
+        // exact EmptyClipboard + single-format write transaction.
+        && stamp.sequence.wrapping_sub(before) == 2
 }
 pub fn restore_allowed(expected: Stamp, current: Stamp) -> bool {
     expected == current && expected.sequence != 0
@@ -272,10 +298,6 @@ pub fn compose(instruction: &str, raw: &str) -> String {
 }
 
 /// ES_PASSWORD has defined meaning here only for the verified native edit classes.
-pub fn copy_control_allowed(class: &str, style: u32) -> bool {
-    (class == "edit" || class.starts_with("richedit")) && style & 0x20 == 0
-}
-
 /// Native pointer-down proof, distinct from an ordinary/background selection request.
 pub struct ToolbarAction {
     session: Session,

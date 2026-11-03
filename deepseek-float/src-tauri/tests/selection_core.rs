@@ -90,25 +90,67 @@ fn source_and_restore_reject_e01_external_writer_even_if_text_matches() {
     let own = Stamp {
         root_hwnd: 10,
         owner: t,
-        sequence: 8,
+        sequence: 9,
+        format_count: 1,
     };
     let foreign = Stamp {
         root_hwnd: 10,
         owner: Target { pid: 99, ..t },
-        sequence: 9,
+        sequence: 10,
+        format_count: 1,
     };
-    assert!(source_allowed(t, 7, own));
-    assert!(!source_allowed(t, 7, foreign));
+    assert!(source_allowed(t, 7, t.hwnd, own));
+    assert!(!source_allowed(t, 7, t.hwnd, foreign));
+    assert!(!source_allowed(t, 7, 11, own));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 10,
+            ..own
+        }
+    ));
+    assert!(source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 9,
+            format_count: 3,
+            ..own
+        }
+    ));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 10,
+            format_count: 3,
+            ..own
+        }
+    ));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 11,
+            format_count: 3,
+            ..own
+        }
+    ));
     assert!(!restore_allowed(own, foreign));
     assert!(!restore_allowed(
         own,
         Stamp {
             root_hwnd: 10,
-            sequence: 9,
+            sequence: 10,
             ..own
         }
     ));
-    assert!(!source_allowed(t, 8, own));
+    assert!(!source_allowed(t, 8, t.hwnd, own));
 }
 #[test]
 fn snapshot_rejects_rich_unknown_and_incomplete_text_formats() {
@@ -127,21 +169,6 @@ fn session_requires_current_request_and_preserves_raw() {
     assert_eq!(s.normalized, "line indent");
 }
 
-#[test]
-fn native_copy_guard_rejects_password_and_virtual_controls() {
-    assert!(copy_control_allowed("edit", 0));
-    assert!(copy_control_allowed("richedit50w", 0));
-    assert!(!copy_control_allowed("edit", 0x20));
-    assert!(!copy_control_allowed("richedit50w", 0x20));
-    for class in [
-        "Chrome_RenderWidgetHostHWND",
-        "CASCADIA_HOSTING_WINDOW_CLASS",
-        "custom",
-        "button",
-    ] {
-        assert!(!copy_control_allowed(class, 0));
-    }
-}
 #[test]
 fn composition_preserves_raw_newlines_and_whitespace() {
     let raw = "  code\n\tindent 😀\n";
@@ -796,4 +823,82 @@ fn capture_disabled_then_reenabled_cannot_revive_a_previous_generation() {
         }
     )
     .is_none());
+}
+
+#[test]
+fn uia_success_short_circuits_native_and_clipboard_fallbacks() {
+    let result = capture_first_available(
+        Some("uia"),
+        || panic!("native read must not run after UIA succeeds"),
+        true,
+        || panic!("clipboard fallback must not run after UIA succeeds"),
+    );
+    assert_eq!(result, Some((Method::Uia, "uia")));
+}
+
+#[test]
+fn absent_safe_uia_text_still_short_circuits_after_native_success() {
+    let order = std::cell::RefCell::new(Vec::new());
+    let result = capture_first_available(
+        None,
+        || {
+            order.borrow_mut().push("native");
+            Some("native")
+        },
+        true,
+        || {
+            order.borrow_mut().push("clipboard");
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, Some((Method::NativeEdit, "native")));
+    assert_eq!(*order.borrow(), ["native"]);
+}
+
+#[test]
+fn native_edit_success_short_circuits_clipboard_fallback() {
+    let result = capture_first_available(
+        None,
+        || Some("native"),
+        true,
+        || panic!("clipboard fallback must not run after native read succeeds"),
+    );
+    assert_eq!(result, Some((Method::NativeEdit, "native")));
+}
+
+#[test]
+fn unconsented_capture_never_invokes_clipboard_fallback() {
+    use std::cell::Cell;
+    let calls = Cell::new(0);
+    let result = capture_first_available(
+        None,
+        || None::<&str>,
+        false,
+        || {
+            calls.set(calls.get() + 1);
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, None);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn authorized_clipboard_fallback_runs_only_after_uia_and_native_fail() {
+    use std::cell::RefCell;
+    let order = RefCell::new(Vec::new());
+    let result = capture_first_available(
+        None::<&str>,
+        || {
+            order.borrow_mut().push("native");
+            None
+        },
+        true,
+        || {
+            order.borrow_mut().push("clipboard");
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, Some((Method::Clipboard, "clipboard")));
+    assert_eq!(*order.borrow(), ["native", "clipboard"]);
 }

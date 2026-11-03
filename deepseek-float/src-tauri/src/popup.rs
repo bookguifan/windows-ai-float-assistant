@@ -28,7 +28,7 @@ use crate::{capture, inject};
 
 use windows::Win32::{
     Foundation::HWND,
-    UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE},
+    UI::WindowsAndMessaging::{ShowWindow, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE},
 };
 
 pub const POPUP_LABEL: &str = "popup";
@@ -77,6 +77,14 @@ static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// 工具条的屏幕矩形（物理像素）(left, top, right, bottom)，show 时更新。
 static POPUP_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
+fn popup_visibility_command(visible: bool) -> SHOW_WINDOW_CMD {
+    if visible {
+        SW_SHOWNOACTIVATE
+    } else {
+        SW_HIDE
+    }
+}
 
 /// 自动关闭定时器：单一常驻线程 + 消息驱动，取代原先「每次 show 起一个 8s 线程」的做法
 /// （原实现每个工具条弹窗都 spawn 一个线程，频繁划词会堆积大量短命线程）。
@@ -374,16 +382,15 @@ pub fn show_at_cursor(app: &AppHandle) {
     };
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
     crate::selection_trace::event("show-begin", Some(show.ticket), "bound");
-    // Tao's show() uses SW_SHOW even for focusable(false). Its transient foreground
-    // events can revoke this exact session before the first toolbar click.
-    // Pair native show/hide because Tao's cached VISIBLE flag stays false.
     let Ok(hwnd) = win.hwnd() else {
         crate::diag::warn("popup show 失败: 无法取得原生窗口");
         dismiss(app);
         return;
     };
+    // Tao's show() can briefly activate this window and invalidate the selection.
+    // Pair native show/hide because Tao caches the VISIBLE flag as false.
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = ShowWindow(hwnd, popup_visibility_command(true));
     }
     let retained = PENDING_SESSION.lock().ok().is_some_and(|state| {
         state.retains(
@@ -549,7 +556,7 @@ pub fn dismiss(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
         if let Ok(hwnd) = w.hwnd() {
             unsafe {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+                let _ = ShowWindow(hwnd, popup_visibility_command(false));
             }
         }
     }
@@ -994,6 +1001,13 @@ pub(crate) fn expire_session() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE};
+
+    #[test]
+    fn toolbar_window_visibility_does_not_activate_the_source_application() {
+        assert_eq!(popup_visibility_command(true), SW_SHOWNOACTIVATE);
+        assert_eq!(popup_visibility_command(false), SW_HIDE);
+    }
 
     #[test]
     fn closing_more_restores_toolbar_height_even_with_many_overflow_items() {
