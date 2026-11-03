@@ -26,7 +26,10 @@ use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, Webvi
 
 use crate::{capture, inject};
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{ShowWindow, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE},
+};
 
 pub const POPUP_LABEL: &str = "popup";
 /// 首行最多常驻的提示词数量（**复制 + ≤4 项提示词 = 共 5 个按钮**）；
@@ -74,6 +77,14 @@ static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// 工具条的屏幕矩形（物理像素）(left, top, right, bottom)，show 时更新。
 static POPUP_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
+fn popup_visibility_command(visible: bool) -> SHOW_WINDOW_CMD {
+    if visible {
+        SW_SHOWNOACTIVATE
+    } else {
+        SW_HIDE
+    }
+}
 
 /// 自动关闭定时器：单一常驻线程 + 消息驱动，取代原先「每次 show 起一个 8s 线程」的做法
 /// （原实现每个工具条弹窗都 spawn 一个线程，频繁划词会堆积大量短命线程）。
@@ -370,10 +381,15 @@ pub fn show_at_cursor(app: &AppHandle) {
     };
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
     crate::selection_trace::event("show-begin", Some(show.ticket), "bound");
-    if let Err(e) = win.show() {
-        crate::diag::warn(&format!("popup show 失败: {e}"));
+    let Ok(hwnd) = win.hwnd() else {
+        crate::diag::warn("popup show 失败: 无法取得原生窗口");
         dismiss(app);
         return;
+    };
+    // Tauri 的 show() 即使遇到不可聚焦窗口也可能短暂激活它，使首次点击前选区票据失效。
+    // 原生显隐必须成对使用，因为 Tao 缓存的 VISIBLE 状态仍为 false。
+    unsafe {
+        let _ = ShowWindow(hwnd, popup_visibility_command(true));
     }
     let retained = PENDING_SESSION.lock().ok().is_some_and(|state| {
         state.retains(
@@ -516,7 +532,11 @@ pub fn dismiss(app: &AppHandle) {
     SHOW_GEN.fetch_add(1, Ordering::SeqCst);
     POPUP_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
-        let _ = w.hide();
+        if let Ok(hwnd) = w.hwnd() {
+            unsafe {
+                let _ = ShowWindow(hwnd, popup_visibility_command(false));
+            }
+        }
     }
     // 冲刷残留在透明球表面的工具条旧帧（消「悬浮球背景渗出工具条」）。
     crate::flush_ball(app);
@@ -953,6 +973,13 @@ pub(crate) fn expire_session() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE};
+
+    #[test]
+    fn toolbar_window_visibility_does_not_activate_the_source_application() {
+        assert_eq!(popup_visibility_command(true), SW_SHOWNOACTIVATE);
+        assert_eq!(popup_visibility_command(false), SW_HIDE);
+    }
 
     #[test]
     fn clipboard_fallback_policy_never_copies_without_opt_in() {
