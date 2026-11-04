@@ -249,6 +249,12 @@ pub struct Stamp {
 /// Compatibility attribution combines a changed sequence with a separately verified
 /// writer relationship. It is bounded evidence, not proof of writer causality.
 pub fn compatibility_source_allowed(before: u32, stamp: Stamp, related_writer: bool) -> bool {
+    stamp.format_count != 0 && compatibility_observation_allowed(before, stamp, related_writer)
+}
+
+/// A verified writer may briefly own an empty clipboard while publishing formats.
+/// This is only a pending observation, never a readable/restorable copy result.
+pub fn compatibility_observation_allowed(before: u32, stamp: Stamp, related_writer: bool) -> bool {
     related_writer
         && before != 0
         && stamp.sequence != 0
@@ -256,7 +262,7 @@ pub fn compatibility_source_allowed(before: u32, stamp: Stamp, related_writer: b
         && stamp.owner.hwnd != 0
         && stamp.owner.pid != 0
         && stamp.owner.thread != 0
-        && (1..=64).contains(&stamp.format_count)
+        && stamp.format_count <= 64
 }
 
 pub fn compatibility_fallback_allowed(status: &str, authorized: bool, live: bool) -> bool {

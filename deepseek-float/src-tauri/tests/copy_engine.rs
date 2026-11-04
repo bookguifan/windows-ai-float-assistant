@@ -159,6 +159,117 @@ fn compatibility_never_reads_old_clipboard_and_cleans_up_invalid_new_text() {
     assert_eq!(empty.restored, 1);
 }
 #[test]
+fn compatibility_waits_through_identified_empty_publication_before_accepting_text() {
+    let published = Stamp {
+        sequence: 30,
+        format_count: 7,
+        ..Fake::good().stamp.unwrap()
+    };
+    let empty = Stamp {
+        sequence: 15,
+        format_count: 0,
+        ..published
+    };
+    let mut observer = CopyObservation::default();
+    assert!(!compatibility_source_allowed(7, empty, true));
+    assert_eq!(observer.observe(7, Some(empty), true, 0), Ok(None));
+    assert_eq!(observer.observe(7, Some(empty), true, 50), Ok(None));
+    assert_eq!(observer.settled(), None);
+    assert_eq!(observer.observe(7, Some(published), true, 60), Ok(None));
+    assert_eq!(observer.observe(7, Some(published), true, 99), Ok(None));
+    assert_eq!(
+        observer.observe(7, Some(published), true, 100),
+        Ok(Some(published))
+    );
+
+    // A further clear by the same writer invalidates the old settled candidate.
+    let empty_again = Stamp {
+        sequence: 31,
+        ..empty
+    };
+    assert_eq!(observer.observe(7, Some(empty_again), true, 110), Ok(None));
+    assert_eq!(observer.settled(), None);
+    let next = Stamp {
+        sequence: 40,
+        ..published
+    };
+    assert_eq!(observer.observe(7, Some(next), true, 120), Ok(None));
+    assert_eq!(observer.observe(7, Some(next), true, 159), Ok(None));
+    assert_eq!(observer.observe(7, Some(next), true, 160), Ok(Some(next)));
+}
+
+#[test]
+fn empty_publication_never_hides_an_unknown_or_foreign_writer() {
+    let empty = Stamp {
+        format_count: 0,
+        ..Fake::good().stamp.unwrap()
+    };
+    for (observed, related) in [
+        (None, true),
+        (Some(empty), false),
+        (
+            Some(Stamp {
+                sequence: 7,
+                ..empty
+            }),
+            true,
+        ),
+        (
+            Some(Stamp {
+                owner: Target {
+                    hwnd: 0,
+                    ..empty.owner
+                },
+                ..empty
+            }),
+            true,
+        ),
+        (
+            Some(Stamp {
+                owner: Target {
+                    pid: 0,
+                    ..empty.owner
+                },
+                ..empty
+            }),
+            true,
+        ),
+        (
+            Some(Stamp {
+                owner: Target {
+                    thread: 0,
+                    ..empty.owner
+                },
+                ..empty
+            }),
+            true,
+        ),
+    ] {
+        let mut observer = CopyObservation::default();
+        assert_eq!(
+            observer.observe(7, observed, related, 0),
+            Err("COPY_SOURCE_UNVERIFIED")
+        );
+        assert_eq!(
+            observer.observe(7, Fake::good().stamp, true, 100),
+            Err("COPY_SOURCE_UNVERIFIED")
+        );
+        assert_eq!(observer.settled(), None);
+    }
+}
+
+#[test]
+fn compatibility_never_reads_or_restores_a_still_empty_copy_result() {
+    let mut f = Fake {
+        compatibility: true,
+        ..Fake::good()
+    };
+    f.stamp.as_mut().unwrap().format_count = 0;
+    assert_eq!(run_copy(&mut f, target()), Err("COPY_SOURCE_UNVERIFIED"));
+    assert_eq!((f.copies, f.reads, f.restore_attempts), (1, 0, 0));
+}
+
+#[test]
 fn compatibility_waits_for_multiple_writes_to_settle_and_rejects_a_foreign_writer() {
     let stamp = Fake::good().stamp.unwrap();
     let mut observer = CopyObservation::default();
