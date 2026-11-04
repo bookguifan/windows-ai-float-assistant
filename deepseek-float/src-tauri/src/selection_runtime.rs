@@ -54,7 +54,7 @@ pub fn target() -> Option<Target> {
     }
 }
 pub fn capture_enabled() -> bool {
-    crate::config::load().privileged_capture || crate::safe_copy::state().enabled
+    crate::config::load().privileged_capture
 }
 pub fn valid(r: &Request) -> bool {
     !STOP.load(Ordering::Acquire) && capture_enabled() && r.valid(target(), generation(), now_ms())
@@ -101,7 +101,7 @@ fn start(app: AppHandle) {
             let started_ms = now_ms();
             *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
             let cfg = crate::config::load();
-            if cfg.privileged_capture || crate::safe_copy::state().enabled {
+            if cfg.privileged_capture {
                 let Some(read) =
                     crate::selection::read_current(|| valid(&r), || crate::uia::read(&r))
                 else {
@@ -116,34 +116,41 @@ fn start(app: AppHandle) {
                     r.target.pid,
                     started_ms.saturating_sub(r.created_ms)
                 ));
-                if let Some(text) = read.text {
+                let safe_target = read.safe_target;
+                let clipboard_authorized = crate::safe_copy::state().enabled;
+                let native_allowed = cfg.privileged_capture;
+                let captured = crate::selection::capture_first_available(
+                    read.text,
+                    || {
+                        if !safe_target || !native_allowed || !valid(&r) {
+                            return None;
+                        }
+                        crate::native_selection::capture(&r, || valid(&r)).ok()
+                    },
+                    clipboard_authorized
+                        && (safe_target
+                            || crate::selection::compatibility_fallback_allowed(
+                                read.status,
+                                crate::safe_copy::state().mode
+                                    == crate::safe_copy::Mode::Compatibility,
+                                valid(&r),
+                            )),
+                    || {
+                        if !valid(&r) {
+                            return None;
+                        }
+                        crate::safe_copy::capture(&r, &worker_app).ok()
+                    },
+                );
+                if let Some((method, text)) = captured {
                     if valid(&r) {
-                        crate::selection_trace::text("uia-read", &r, r.session_id, &text);
+                        if method == Method::Uia {
+                            crate::selection_trace::text("uia-read", &r, r.session_id, &text);
+                        }
                         crate::popup::accept_session(
                             &worker_app,
-                            Session::new(r.clone(), text, Method::Uia),
+                            Session::new(r.clone(), text, method),
                         );
-                    }
-                } else if read.safe_target && valid(&r) {
-                    let native = crate::native_selection::capture(&r, || {
-                        valid(&r) && crate::config::load().privileged_capture
-                    });
-                    if let Ok(text) = native {
-                        if valid(&r) && crate::config::load().privileged_capture {
-                            crate::popup::accept_session(
-                                &worker_app,
-                                Session::new(r.clone(), text, Method::NativeEdit),
-                            );
-                        }
-                    } else if crate::release_policy::experimental_copy_available() {
-                        if let Ok(text) = crate::safe_copy::capture(&r, &worker_app) {
-                            if valid(&r) {
-                                crate::popup::accept_session(
-                                    &worker_app,
-                                    Session::new(r.clone(), text, Method::Clipboard),
-                                );
-                            }
-                        }
                     }
                 }
             }

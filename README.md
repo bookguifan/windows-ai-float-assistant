@@ -7,7 +7,7 @@
 [![Beta](https://img.shields.io/badge/Beta-v0.1.0--beta.1-orange)](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1)
 [![CI](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml)
 
-> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载与校验值仍对应 `v0.1.0-beta.1`。UIA 优先，失败后仅尝试标准 Unicode Edit 无剪贴板选区读取。发行构建固定禁用自动 Ctrl+C 回退；研究源码及历史风险记录保留，仅显式启用研究特性的非生产 Debug 构建可授权，R01–R03 尚未关闭。见[发行安全门禁](deepseek-float/docs/archive/beta2/uia-beta2-release-safety-gate.md)。 开发代码允许保留已披露缺陷；Beta.2 尚未发布，当前验收标准和剩余事项以[发布准备](deepseek-float/docs/beta2-release-preparation.md)为准；见 [Known Issues 与合并边界](deepseek-float/docs/beta2-known-issues.md)。
+> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载与校验值仍对应 `v0.1.0-beta.1`。智能划词增强默认开启，依次尝试 UIA / 原生选区读取，不操作系统剪贴板。自动复制回退默认关闭，需在本地设置页确认本次运行风险；开启后可选 Ctrl+Insert（默认）或 Ctrl+C，每次只发送所选的一种，失败不自动补发另一种。关闭智能划词会同步撤销回退；重启后须重新授权。原剪贴板含不支持格式时拒绝操作，旧配置/备份不能授权，不承诺所有软件和格式均可恢复。开发代码允许保留已披露缺陷；Beta.2 尚未发布，当前验收标准和剩余事项以[发布准备](deepseek-float/docs/beta2-release-preparation.md)为准；见 [Known Issues 与合并边界](deepseek-float/docs/beta2-known-issues.md)。
 
 ## 下载 Windows 版
 

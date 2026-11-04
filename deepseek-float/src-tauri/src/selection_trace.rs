@@ -15,6 +15,9 @@ static TRACE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static FOREGROUNDS: OnceLock<SyncSender<Foreground>> = OnceLock::new();
 static STOP: AtomicBool = AtomicBool::new(false);
 pub(crate) fn enabled() -> bool {
+    if !cfg!(any(debug_assertions, feature = "beta2-isolation")) {
+        return false;
+    }
     *ENABLED.get_or_init(|| {
         allowed(
             &std::env::var("DSFLOAT_SYNTHETIC_SELECTION_TRACE").unwrap_or_default(),
@@ -152,6 +155,7 @@ pub(crate) fn click(c: Click) {
 pub(crate) fn stop() {
     STOP.store(true, Ordering::Release);
 }
+#[cfg(any(debug_assertions, feature = "beta2-isolation"))]
 pub(crate) fn frontend(stage: &str, action: &str, ticket: Option<u64>) {
     if scoped(ticket)
         && [

@@ -11,7 +11,7 @@
 //!
 //! 关闭条件：
 //!   1) 点了任一动作（复制 / 提示词）→ 动作后立即关闭
-//!   2) 点了「⋮」→ 就地扩高展开浮层（不关闭；点浮层项/设置才关）
+//!   2) 点了「⋮」→ 就地展开/收起浮层（不消费选区；点浮层项/设置才关）
 //!   3) 点了「设置」→ 打开设置窗口后关闭工具条
 //!   4) 点击工具条外的任意处（鼠标钩子 Dismiss）→ 立即关闭
 //!   5) 8s 超时自动关闭
@@ -26,7 +26,10 @@ use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, Webvi
 
 use crate::{capture, inject};
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{ShowWindow, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE},
+};
 
 pub const POPUP_LABEL: &str = "popup";
 /// 首行最多常驻的提示词数量（**复制 + ≤4 项提示词 = 共 5 个按钮**）；
@@ -69,11 +72,23 @@ static SHOW_GEN: AtomicU64 = AtomicU64::new(0);
 /// 触发时抓到的选区文本，等用户在工具条上点按钮时取用。
 static PENDING_SESSION: Mutex<crate::selection::ToolbarSelection> =
     Mutex::new(crate::selection::ToolbarSelection::empty());
+static POPUP_PAGE: Mutex<crate::selection::PopupPageState> =
+    Mutex::new(crate::selection::PopupPageState::empty());
 static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
 /// 工具条当前是否可见（供 mousehook 判断「点击是否落在工具条外」以自动隐藏）。
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Last native click classification, packed as process-relative milliseconds plus safe flags.
+static LAST_ACTION_CLICK: AtomicU64 = AtomicU64::new(0);
 /// 工具条的屏幕矩形（物理像素）(left, top, right, bottom)，show 时更新。
 static POPUP_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
+fn popup_visibility_command(visible: bool) -> SHOW_WINDOW_CMD {
+    if visible {
+        SW_SHOWNOACTIVATE
+    } else {
+        SW_HIDE
+    }
+}
 
 /// 自动关闭定时器：单一常驻线程 + 消息驱动，取代原先「每次 show 起一个 8s 线程」的做法
 /// （原实现每个工具条弹窗都 spawn 一个线程，频繁划词会堆积大量短命线程）。
@@ -149,6 +164,49 @@ pub fn popup_visible() -> bool {
     POPUP_VISIBLE.load(Ordering::SeqCst)
 }
 
+pub(crate) fn matches_popup_root(root: isize) -> bool {
+    root != 0 && root == POPUP_HWND.load(Ordering::Acquire)
+}
+
+pub(crate) fn record_action_click(
+    visible: bool,
+    inside: bool,
+    own: bool,
+    root_matches: bool,
+    armed: bool,
+) {
+    let flags = (visible as u64)
+        | ((inside as u64) << 1)
+        | ((own as u64) << 2)
+        | ((root_matches as u64) << 3)
+        | ((armed as u64) << 4);
+    LAST_ACTION_CLICK.store(
+        (crate::selection_runtime::now_ms() << 8) | flags | (1 << 7),
+        Ordering::Release,
+    );
+}
+
+fn action_click_summary() -> String {
+    let packed = LAST_ACTION_CLICK.load(Ordering::Acquire);
+    if packed == 0 || packed & (1 << 7) == 0 {
+        return "none".into();
+    }
+    let at = packed >> 8;
+    let age = crate::selection_runtime::now_ms().saturating_sub(at);
+    if age > 2_000 {
+        return "stale".into();
+    }
+    let flags = packed as u8;
+    format!(
+        "visible={},inside={},own={},root_match={},armed={},age_ms={age}",
+        flags & 1 != 0,
+        flags & 2 != 0,
+        flags & 4 != 0,
+        flags & 8 != 0,
+        flags & 16 != 0,
+    )
+}
+
 /// 判断某屏幕坐标（物理像素）是否落在工具条内。不可见时返回 false。
 pub fn point_in_popup(x: i32, y: i32) -> bool {
     if !POPUP_VISIBLE.load(Ordering::SeqCst) {
@@ -167,6 +225,7 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
         return Some(w);
     }
+    let page_app = app.clone();
     match crate::isolation::webview_builder(
         app,
         POPUP_LABEL,
@@ -185,6 +244,30 @@ pub fn ensure(app: &AppHandle) -> Option<WebviewWindow> {
     // 免打断工具条：显示时不抢走当前应用的焦点（否则用户刚划的选区会因失焦而丢）
     .focusable(false)
     .visible(false)
+    .on_page_load(move |_, payload| match payload.event() {
+        tauri::webview::PageLoadEvent::Started => {
+            POPUP_PAGE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .page_started();
+        }
+        tauri::webview::PageLoadEvent::Finished => {
+            let queued = POPUP_PAGE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .page_finished();
+            if queued.is_some() {
+                let app = page_app.clone();
+                let main = app.clone();
+                if app
+                    .run_on_main_thread(move || show_at_cursor(&main))
+                    .is_err()
+                {
+                    crate::diag::warn("popup page-load callback could not resume pending show");
+                }
+            }
+        }
+    })
     .build()
     {
         Ok(w) => {
@@ -285,24 +368,49 @@ fn toolbar_width(labels: impl Iterator<Item = String>) -> f64 {
     (w + WIDTH_MARGIN).clamp(MIN_W, MAX_W)
 }
 
-/// 在光标附近弹出工具条：先把**未隐藏**的提示词推给前端渲染，再按内容收缩宽度 + 物理定位 + 翻边。
+/// 在前端确认当前票据已安装后显示工具条，避免首击落在旧票据或空票据上。
 pub fn show_at_cursor(app: &AppHandle) {
     let Some(win) = ensure(app) else {
         clear_pending_text();
         return;
     };
 
-    let _ = win.eval(format!(
-        "window.__dsfSelectionTrace={};",
-        crate::selection_trace::enabled()
-    ));
-    // 推「未隐藏」的提示词列表（顺序 = 设置里的列表顺序，用户可排序）给前端：
-    // 前 ≤4 项进首行、其余进「⋮ 更多」浮层。
+    let Some(ticket) = pending_ticket() else {
+        cancel_pending_show();
+        return;
+    };
+
     let prompts = crate::prompts::load(app);
     let visible: Vec<_> = prompts.into_iter().filter(|p| !p.hidden).collect();
     let list_json = serde_json::to_string(&visible).unwrap_or_else(|_| "[]".into());
+    let page_step = POPUP_PAGE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .request(ticket);
+    match page_step {
+        crate::selection::PopupPageStep::Wait => return,
+        crate::selection::PopupPageStep::Prepare => {
+            let _ = win
+                .eval(format!(
+                    "if(window.__dsfPrepareSelection)window.__dsfPrepareSelection({},{});",
+                    serde_json::json!(ticket),
+                    list_json
+                ))
+                .map_err(|e| {
+                    POPUP_PAGE
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .preparation_failed(ticket);
+                    crate::diag::warn(&format!("popup frontend preparation failed: {e}"));
+                });
+            return;
+        }
+        crate::selection::PopupPageStep::Show => {}
+    }
+
     let _ = win.eval(format!(
-        "if(window.__dsfSetPrompts)window.__dsfSetPrompts({list_json});"
+        "window.__dsfSelectionTrace={};",
+        crate::selection_trace::enabled()
     ));
 
     // 按首行前 ≤4 项（复制之后的提示词）估算宽度；第 5 项起进浮层，不占首行宽。
@@ -365,26 +473,41 @@ pub fn show_at_cursor(app: &AppHandle) {
         )
     });
     let Some(show) = show else {
+        crate::diag::log("popup show-rejected stage=before-show");
         dismiss(app);
         return;
     };
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
     crate::selection_trace::event("show-begin", Some(show.ticket), "bound");
-    if let Err(e) = win.show() {
-        crate::diag::warn(&format!("popup show 失败: {e}"));
+    let Ok(hwnd) = win.hwnd() else {
+        crate::diag::warn("popup show 失败: 无法取得原生窗口");
         dismiss(app);
         return;
+    };
+    // Tao's show() can briefly activate this window and invalidate the selection.
+    // Pair native show/hide because Tao caches the VISIBLE flag as false.
+    unsafe {
+        let _ = ShowWindow(hwnd, popup_visibility_command(true));
     }
-    let retained = PENDING_SESSION.lock().ok().is_some_and(|state| {
+    let retained = PENDING_SESSION.lock().ok().is_some_and(|mut state| {
         state.retains(
             crate::selection_runtime::target(),
             popup_is_foreground(),
             source_alive(&state),
             crate::selection_runtime::generation(),
             crate::selection_runtime::now_ms(),
-        )
+        ) && state.mark_popup_shown(show)
     });
     if !retained {
+        crate::diag::log(&format!(
+            "popup show-rejected stage=after-show ticket={} show_generation={} current_generation={} source_foreground={} popup_foreground={} source_alive={}",
+            show.ticket,
+            show.generation,
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::target() == Some(show.source),
+            popup_is_foreground(),
+            crate::selection_runtime::is_native_target(show.source)
+        ));
         dismiss(app);
         return;
     }
@@ -415,21 +538,22 @@ pub fn show_at_cursor(app: &AppHandle) {
         logical_w,
         visible.len().min(INLINE_MAX) + 2
     ));
-    // 每次弹窗成功显示后，复位前端的一次性锁 fired + 收起浮层（popup.html 暴露的全局函数）。
-    let ticket = PENDING_SESSION
-        .lock()
-        .ok()
-        .and_then(|p| p.ticket())
-        .map(|t| t.to_string());
-    let _ = win.eval(format!("if (window.__dsfResetFired) window.__dsfResetFired({}); if (window.__dsfHideMore) window.__dsfHideMore();",serde_json::json!(ticket)));
     arm_auto_close(app, POPUP_TIMEOUT_MS);
 }
 
-/// 「⋮ 更多」：把常驻工具条窗口**就地扩高**展开自定义浮层，并按「新高度」重新翻边定位。
+fn more_height(expanded: bool, overflow: usize) -> f64 {
+    if !expanded {
+        return POPUP_LOGICAL_H;
+    }
+    let n = overflow.min(FLY_MAX_ROWS);
+    POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 9.0 } else { 0.0 }
+}
+
+/// 「⋮ 更多」：就地展开或收起浮层，并按新高度同步窗口位置和鼠标命中区域。
 ///
 /// 不关闭、不消费待发文本 —— 用户点完浮层里的某项（或点“设置”）才真正关（走 on_action）。
 /// 复用 show 时存下的锚点/工作区/scale，扩高后用 `place_near` 对新高度重新夹取（防止顶出屏幕）。
-fn expand_more(app: &AppHandle) {
+fn set_more_expanded(app: &AppHandle, expanded: bool) {
     let Some(win) = app.get_webview_window(POPUP_LABEL) else {
         return;
     };
@@ -443,15 +567,14 @@ fn expand_more(app: &AppHandle) {
         .filter(|p| !p.hidden)
         .map(|p| p.label.clone())
         .collect();
-    let n = labels.len().saturating_sub(INLINE_MAX).min(FLY_MAX_ROWS);
     // ★ 顶栏保留：窗口宽 = 顶栏宽；高度 = 顶栏 34 + 右下窄下拉（窄宽由 CSS 的 max-content 决定）。
-    let new_h =
-        POPUP_LOGICAL_H + 12.0 + (n as f64 + 1.0) * FLY_ROW_H + if n > 0 { 9.0 } else { 0.0 }; // 分隔线/边距7px及其额外2px间隙
+    let new_h = more_height(expanded, labels.len().saturating_sub(INLINE_MAX));
     if let Err(e) = win.set_size(LogicalSize::new(last.logical_w, new_h)) {
         crate::diag::log(&format!(
-            "popup 展开 set_size({}, {new_h:.0}) 失败: {e}",
+            "popup 更多菜单 set_size({}, {new_h:.0}) 失败: {e}",
             last.logical_w
         ));
+        return;
     }
     let gap = (CURSOR_GAP * last.scale).round() as i32;
     let w = (last.logical_w * last.scale).round() as i32;
@@ -463,9 +586,14 @@ fn expand_more(app: &AppHandle) {
         *g = Some((x, y, x + w, y + h));
     }
     POPUP_VISIBLE.store(true, Ordering::SeqCst);
-    let _ = win.eval("if (window.__dsfShowMore) window.__dsfShowMore();");
+    let script = if expanded {
+        "if (window.__dsfShowMore) window.__dsfShowMore();"
+    } else {
+        "if (window.__dsfHideMore) window.__dsfHideMore();"
+    };
+    let _ = win.eval(script);
     crate::diag::log(&format!(
-        "popup 已展开「更多」（宽 {} 高 {new_h:.0} 逻辑像素，{} 项进下拉，位于 ({x},{y})）",
+        "popup 更多菜单 expanded={expanded}（宽 {} 高 {new_h:.0} 逻辑像素，{} 项进下拉，位于 ({x},{y})）",
         last.logical_w,
         labels.len().saturating_sub(INLINE_MAX)
     ));
@@ -513,10 +641,15 @@ pub fn hide(app: &AppHandle) {
 /// Mouse-down already invalidated the previous generation. Do not invalidate its later mouse-up.
 pub fn dismiss(app: &AppHandle) {
     clear_pending_text();
+    cancel_pending_show();
     SHOW_GEN.fetch_add(1, Ordering::SeqCst);
     POPUP_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(POPUP_LABEL) {
-        let _ = w.hide();
+        if let Ok(hwnd) = w.hwnd() {
+            unsafe {
+                let _ = ShowWindow(hwnd, popup_visibility_command(false));
+            }
+        }
     }
     // 冲刷残留在透明球表面的工具条旧帧（消「悬浮球背景渗出工具条」）。
     crate::flush_ball(app);
@@ -565,14 +698,12 @@ fn source_alive(state: &crate::selection::ToolbarSelection) -> bool {
 }
 /// Called only by the native mouse hook on a verified popup hit. No I/O or UIA calls.
 pub(crate) fn arm_action(root: isize) -> bool {
-    if root == 0 || root != POPUP_HWND.load(Ordering::Acquire) || !popup_visible() {
+    if !matches_popup_root(root) || !popup_visible() {
         return false;
     }
     if let Ok(mut state) = PENDING_SESSION.lock() {
         let alive = source_alive(&state);
-        return state.arm(
-            crate::selection_runtime::target(),
-            popup_is_foreground(),
+        return state.arm_verified_popup_click(
             alive,
             crate::selection_runtime::generation(),
             crate::selection_runtime::now_ms(),
@@ -582,6 +713,19 @@ pub(crate) fn arm_action(root: isize) -> bool {
 }
 pub(crate) fn pending_ticket() -> Option<u64> {
     PENDING_SESSION.lock().ok().and_then(|s| s.ticket())
+}
+pub(crate) fn frontend_prepared(ticket: u64) -> bool {
+    let current = pending_ticket();
+    POPUP_PAGE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .acknowledge(ticket, current)
+}
+fn cancel_pending_show() {
+    POPUP_PAGE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .cancel();
 }
 fn native_identity(hwnd: isize) -> Option<crate::selection::Target> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
@@ -627,10 +771,10 @@ fn return_show_focus(show: crate::selection::PopupShow) {
 }
 /// WinEvent callback: bounded native identity checks only; no formatting, I/O or COM.
 /// A stale/unrelated event is conservatively rejected, never a process-wide focus grant.
-pub(crate) fn preserves_foreground(hwnd: isize) -> (bool, Option<u64>, Option<u64>, bool) {
+pub(crate) fn preserves_foreground(hwnd: isize) -> (bool, Option<u64>, Option<u64>, bool, isize) {
     let fg = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize };
     let Ok(state) = PENDING_SESSION.try_lock() else {
-        return (false, None, None, false);
+        return (false, None, None, false, fg);
     };
     let generation = crate::selection_runtime::generation();
     let now = crate::selection_runtime::now_ms();
@@ -642,6 +786,7 @@ pub(crate) fn preserves_foreground(hwnd: isize) -> (bool, Option<u64>, Option<u6
             state.ticket(),
             state.current_show(generation, now).map(|s| s.serial),
             source_alive(&state),
+            fg,
         );
     }
     let popup = hwnd == POPUP_HWND.load(Ordering::Acquire);
@@ -667,24 +812,34 @@ pub(crate) fn preserves_foreground(hwnd: isize) -> (bool, Option<u64>, Option<u6
         state.ticket(),
         state.current_show(generation, now).map(|s| s.serial),
         alive,
+        fg,
     )
 }
 fn take_pending_action(ticket: u64, consume: bool) -> Option<crate::selection::ToolbarAction> {
-    let mut state = PENDING_SESSION.lock().ok()?;
+    let Ok(mut state) = PENDING_SESSION.lock() else {
+        crate::diag::warn("[selection-action] rejected reason=session-lock-poisoned");
+        return None;
+    };
     let alive = source_alive(&state);
     let fg = crate::selection_runtime::target();
     let popup = popup_is_foreground();
     let generation = crate::selection_runtime::generation();
     let now = crate::selection_runtime::now_ms();
-    let rejection = if crate::selection_trace::enabled() {
-        state.action_rejection(ticket, fg, popup, alive, generation, now)
-    } else {
-        "diagnostics-disabled"
-    };
+    let rejection = state.action_rejection(ticket, fg, popup, alive, generation, now);
     let result = state.take_action(ticket, fg, popup, alive, generation, now, consume);
     drop(state); // Never hold a hook-visible mutex during diagnostic file I/O.
     if let Some(action) = &result {
         crate::selection_trace::session("ticket-action", action.session());
+    } else {
+        let reason = if rejection == "accepted" {
+            "state-changed"
+        } else {
+            rejection
+        };
+        crate::diag::warn(&format!(
+            "[selection-action] rejected reason={reason} click={}",
+            action_click_summary()
+        ));
     }
     crate::selection_trace::event("ticket-check", Some(ticket), rejection);
     result
@@ -780,6 +935,12 @@ fn selection_with_policy(
 ///
 /// 硬约束：绝不发送空内容。
 pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
+    if preset_name == "close-more" {
+        if take_pending_action(ticket, false).is_some() {
+            set_more_expanded(app, false);
+        }
+        return;
+    }
     if preset_name == "open-more" {
         // 「⋮ 更多」：若有溢出项才就地扩高展开浮层；无溢出则直接打开设置（避免空浮层「点了没东西」）。
         let overflow = {
@@ -792,7 +953,7 @@ pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
         let selected = take_pending_action(ticket, overflow == 0);
         if overflow > 0 {
             if selected.is_some() {
-                expand_more(app);
+                set_more_expanded(app, true);
             }
         } else if let Some(selected) = selected {
             crate::settings::open_from_selection(app, selected);
@@ -953,6 +1114,22 @@ pub(crate) fn expire_session() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE};
+
+    #[test]
+    fn toolbar_window_visibility_does_not_activate_the_source_application() {
+        assert_eq!(popup_visibility_command(true), SW_SHOWNOACTIVATE);
+        assert_eq!(popup_visibility_command(false), SW_HIDE);
+    }
+
+    #[test]
+    fn closing_more_restores_toolbar_height_even_with_many_overflow_items() {
+        assert_eq!(more_height(true, 2), 151.0);
+        assert_eq!(more_height(true, 20), 343.0);
+        for overflow in [0, 2, 20] {
+            assert_eq!(more_height(false, overflow), 34.0);
+        }
+    }
 
     #[test]
     fn clipboard_fallback_policy_never_copies_without_opt_in() {

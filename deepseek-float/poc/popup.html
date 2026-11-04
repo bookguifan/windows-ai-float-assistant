@@ -238,8 +238,8 @@
         window.__dsfHideMore();
       };
 
-      // 浮层显隐由 Rust 侧控制：__dsfShowMore 切入「menu-mode」（隐藏顶栏、只留窄下拉，
-      // 豆包式），__dsfHideMore 切回顶栏形态。每次 show_at_cursor 重置时都会调用后者。
+      // 浮层显隐由 Rust 侧控制，并同步调整原生窗口及命中区域；顶栏始终保留。
+      // 每次 show_at_cursor 重置时都会调用 __dsfHideMore。
       window.__dsfShowMore = () => {
         document.body.classList.add("menu-mode");
         document.getElementById("more-box").classList.add("visible");
@@ -249,18 +249,30 @@
         document.getElementById("more-box").classList.remove("visible");
       };
 
-      // 复位一次性锁的确定性入口：由 Rust 侧 show_at_cursor 每次弹窗 show 成功后
-      // 通过 win.eval("__dsfResetFired()") 复位。
+      // 在原生窗口显示前同步安装当前选区票据，并复位一次性动作锁。
       let selectionTicket = null;
       let actionEpoch = 0;
       window.__dsfResetFired = (ticket) => { actionEpoch++; fired = false; selectionTicket = ticket == null ? null : String(ticket); };
+      window.__dsfPrepareSelection = (ticket, prompts) => {
+        window.__dsfSetPrompts(prompts);
+        window.__dsfResetFired(ticket);
+        window.__dsfHideMore();
+        return tauri.core.invoke("popup_ready", { selectionTicket: String(ticket) }).catch((e) => {
+          console.error("[popup] selection preparation failed:", e);
+        });
+      };
 
       function traceClick(stage, preset, ticket = selectionTicket) {
         if (!window.__dsfSelectionTrace) return;
-        const action = ['copy', 'open-more', 'open-settings'].includes(preset) ? preset : 'prompt';
+        const action = preset === 'close-more' ? 'open-more'
+          : ['copy', 'open-more', 'open-settings'].includes(preset) ? preset : 'prompt';
         tauri.core.invoke('popup_trace', { stage, action, selectionTicket: ticket }).catch(() => {});
       }
       function fire(preset) {
+        if (preset === 'open-more' && document.getElementById('more-box').classList.contains('visible')) {
+          preset = 'close-more';
+        }
+        const menuAction = preset === 'open-more' || preset === 'close-more';
         traceClick('click', preset);
         if (fired || selectionTicket === null) {
           traceClick(fired ? 'busy' : 'no-ticket', preset);
@@ -273,11 +285,11 @@
         try {
           traceClick('dispatch', preset, ticket);
           tauri.core.invoke("popup_action", { preset, selectionTicket: ticket }).then(
-            () => { traceClick('resolved', preset, ticket); if (preset === 'open-more') unlock(); },
-            (e) => { traceClick('rejected', preset, ticket); if (preset === 'open-more') unlock(); console.error("[popup] popup_action:", e); }
+            () => { traceClick('resolved', preset, ticket); if (menuAction) unlock(); },
+            (e) => { traceClick('rejected', preset, ticket); if (menuAction) unlock(); console.error("[popup] popup_action:", e); }
           );
           // 菜单完成后立即接受下一项，尚未完成时拒绝重复派发；旧 IPC 不解锁新票据。
-          if (preset !== "open-more") setTimeout(unlock, 400); // 兜底解锁
+          if (!menuAction) setTimeout(unlock, 400); // 兜底解锁
         } catch (e) {
           console.error("[popup] invoke popup_action failed:", e);
           fired = false;

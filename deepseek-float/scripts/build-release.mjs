@@ -131,8 +131,8 @@ const releaseBuildEnvironment = {
   CARGO_ENCODED_RUSTFLAGS: releaseRustflags(),
 };
 
-// ⑤ Only the distribution security invariants run here; the full test suite,
-// formatting and Clippy run once in CI. These tests never operate the clipboard.
+// ⑤ Verify the ordinary Release gate with its actual feature set. Tests never
+// operate the system clipboard; runtime consent and native identity remain required.
 run("cargo", [
   "test",
   "--locked",
@@ -140,7 +140,7 @@ run("cargo", [
   "src-tauri/Cargo.toml",
   "--release",
   "--features",
-  "custom-protocol,experimental-clipboard-fallback",
+  "custom-protocol",
   "--test",
   "release_selection_policy",
 ], releaseBuildEnvironment);

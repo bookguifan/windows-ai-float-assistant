@@ -85,30 +85,202 @@ fn authorizations_never_follow_preferences_or_legacy_config() {
     assert!(!a.matches(epoch));
 }
 #[test]
+fn compatibility_fallback_keeps_password_consent_and_live_request_guards() {
+    for status in [
+        "UIA_PATTERN_UNSUPPORTED",
+        "UIA_TARGET_CHANGED",
+        "UIA_WINDOW_UNVERIFIED",
+        "UIA_EMPTY_SELECTION",
+    ] {
+        assert!(compatibility_fallback_allowed(status, true, true));
+        assert!(!compatibility_fallback_allowed(status, false, true));
+        assert!(!compatibility_fallback_allowed(status, true, false));
+    }
+    assert!(!compatibility_fallback_allowed(
+        "UIA_PROTECTED_CONTROL",
+        true,
+        true
+    ));
+}
+#[test]
+fn compatibility_focus_accepts_related_cross_process_controls_but_not_unknown_or_own_windows() {
+    assert!(compatible_focus_allowed(true, true, 50, 60, 1, false));
+    for (valid, related, pid, thread, modal) in [
+        (false, true, 50, 60, false),
+        (true, false, 50, 60, false),
+        (true, true, 0, 60, false),
+        (true, true, 50, 0, false),
+        (true, true, 1, 60, false),
+        (true, true, 50, 60, true),
+    ] {
+        assert!(!compatible_focus_allowed(
+            valid, related, pid, thread, 1, modal
+        ));
+    }
+}
+#[test]
+fn compatibility_sequence_is_only_change_evidence_and_restore_requires_exact_stamp() {
+    let observed = Stamp {
+        root_hwnd: 10,
+        owner: Target {
+            hwnd: 40,
+            pid: 50,
+            thread: 60,
+        },
+        sequence: 18,
+        format_count: 6,
+    };
+    assert!(compatibility_source_allowed(7, observed, true));
+    assert!(!compatibility_source_allowed(7, observed, false));
+    assert!(!compatibility_source_allowed(18, observed, true));
+    assert!(!compatibility_source_allowed(0, observed, true));
+    assert!(!restore_allowed(
+        observed,
+        Stamp {
+            sequence: 19,
+            ..observed
+        }
+    ));
+    assert!(!restore_allowed(
+        observed,
+        Stamp {
+            owner: target(),
+            ..observed
+        }
+    ));
+}
+#[test]
+fn compatibility_rejects_identified_sensitive_controls_without_restricting_custom_editors() {
+    for class in [
+        "Edit",
+        "RichEdit50W",
+        "CustomPasswordBox",
+        "CredentialInput",
+    ] {
+        assert!(!compatibility_control_allowed(class, true));
+    }
+    for class in [
+        "WpsCustomEditor",
+        "Chrome_RenderWidgetHostHWND",
+        "Edit",
+        "RichEdit50W",
+    ] {
+        assert!(compatibility_control_allowed(class, false));
+    }
+}
+#[test]
+fn compatibility_clipboard_owner_may_be_related_cross_process_child_or_hidden_helper() {
+    let focus = Target {
+        hwnd: 40,
+        pid: 50,
+        thread: 60,
+    };
+    let mut observed = Stamp {
+        root_hwnd: 10,
+        owner: focus,
+        sequence: 18,
+        format_count: 6,
+    };
+    assert!(compatibility_writer_related(
+        target(),
+        focus,
+        observed,
+        10,
+        1
+    ));
+    observed.root_hwnd = 40;
+    observed.owner.hwnd = 41;
+    assert!(compatibility_writer_related(
+        target(),
+        focus,
+        observed,
+        40,
+        1
+    ));
+    observed.owner.pid = 99;
+    assert!(!compatibility_writer_related(
+        target(),
+        focus,
+        observed,
+        40,
+        1
+    ));
+    observed.owner.pid = 1;
+    assert!(!compatibility_writer_related(
+        target(),
+        focus,
+        observed,
+        10,
+        1
+    ));
+}
+#[test]
 fn source_and_restore_reject_e01_external_writer_even_if_text_matches() {
     let t = target();
     let own = Stamp {
         root_hwnd: 10,
         owner: t,
-        sequence: 8,
+        sequence: 9,
+        format_count: 1,
     };
     let foreign = Stamp {
         root_hwnd: 10,
         owner: Target { pid: 99, ..t },
-        sequence: 9,
+        sequence: 10,
+        format_count: 1,
     };
-    assert!(source_allowed(t, 7, own));
-    assert!(!source_allowed(t, 7, foreign));
+    assert!(source_allowed(t, 7, t.hwnd, own));
+    assert!(!source_allowed(t, 7, t.hwnd, foreign));
+    assert!(!source_allowed(t, 7, 11, own));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 10,
+            ..own
+        }
+    ));
+    assert!(source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 9,
+            format_count: 3,
+            ..own
+        }
+    ));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 10,
+            format_count: 3,
+            ..own
+        }
+    ));
+    assert!(!source_allowed(
+        t,
+        7,
+        t.hwnd,
+        Stamp {
+            sequence: 11,
+            format_count: 3,
+            ..own
+        }
+    ));
     assert!(!restore_allowed(own, foreign));
     assert!(!restore_allowed(
         own,
         Stamp {
             root_hwnd: 10,
-            sequence: 9,
+            sequence: 10,
             ..own
         }
     ));
-    assert!(!source_allowed(t, 8, own));
+    assert!(!source_allowed(t, 8, t.hwnd, own));
 }
 #[test]
 fn snapshot_rejects_rich_unknown_and_incomplete_text_formats() {
@@ -127,21 +299,6 @@ fn session_requires_current_request_and_preserves_raw() {
     assert_eq!(s.normalized, "line indent");
 }
 
-#[test]
-fn native_copy_guard_rejects_password_and_virtual_controls() {
-    assert!(copy_control_allowed("edit", 0));
-    assert!(copy_control_allowed("richedit50w", 0));
-    assert!(!copy_control_allowed("edit", 0x20));
-    assert!(!copy_control_allowed("richedit50w", 0x20));
-    for class in [
-        "Chrome_RenderWidgetHostHWND",
-        "CASCADIA_HOSTING_WINDOW_CLASS",
-        "custom",
-        "button",
-    ] {
-        assert!(!copy_control_allowed(class, 0));
-    }
-}
 #[test]
 fn composition_preserves_raw_newlines_and_whitespace() {
     let raw = "  code\n\tindent 😀\n";
@@ -506,8 +663,10 @@ fn action_cannot_delegate_after_a_new_generation_or_expiry() {
 #[test]
 fn external_windows_wrong_labels_hidden_pages_and_ai_pages_cannot_invoke_toolbar_actions() {
     let local = tauri::Url::parse("http://tauri.localhost/poc/popup.html").unwrap();
+    assert!(local_document_page("popup", &local, "popup"));
     assert!(local_page("popup", &local, "popup", true));
     assert!(!local_page("popup", &local, "popup", false));
+    assert!(!local_document_page("panel", &local, "popup"));
     assert!(!local_page("panel", &local, "popup", true));
     for u in [
         "https://chat.example/poc/popup.html",
@@ -521,6 +680,43 @@ fn external_windows_wrong_labels_hidden_pages_and_ai_pages_cannot_invoke_toolbar
             true
         ));
     }
+}
+
+#[test]
+fn popup_waits_for_page_load_and_exact_frontend_ticket_before_showing() {
+    let mut page = PopupPageState::default();
+    assert_eq!(page.request(41), PopupPageStep::Wait);
+    assert_eq!(page.page_finished(), Some(41));
+    assert_eq!(page.request(41), PopupPageStep::Prepare);
+    assert!(!page.acknowledge(40, Some(41)));
+    assert_eq!(page.request(41), PopupPageStep::Wait);
+    assert!(page.acknowledge(41, Some(41)));
+    assert_eq!(page.request(41), PopupPageStep::Show);
+    assert_eq!(page.request(41), PopupPageStep::Wait);
+}
+
+#[test]
+fn stale_popup_acknowledgement_cannot_show_a_replacement_selection() {
+    let mut page = PopupPageState::default();
+    page.page_started();
+    assert_eq!(page.request(41), PopupPageStep::Wait);
+    assert_eq!(page.page_finished(), Some(41));
+    assert_eq!(page.request(41), PopupPageStep::Prepare);
+    assert_eq!(page.request(42), PopupPageStep::Prepare);
+    assert!(!page.acknowledge(41, Some(42)));
+    assert_eq!(page.request(42), PopupPageStep::Wait);
+    assert!(page.acknowledge(42, Some(42)));
+    assert_eq!(page.request(42), PopupPageStep::Show);
+}
+
+#[test]
+fn cancelled_popup_preparation_cannot_be_reused() {
+    let mut page = PopupPageState::default();
+    page.page_finished();
+    assert_eq!(page.request(41), PopupPageStep::Prepare);
+    page.cancel();
+    assert!(!page.acknowledge(41, Some(41)));
+    assert_eq!(page.request(41), PopupPageStep::Prepare);
 }
 
 // Characterization of the whole pure Session/Ticket chain, not a clipboard GUI PASS.
@@ -664,6 +860,117 @@ fn show_survives_only_popup_or_source_not_unrelated_own_windows() {
     assert_eq!(s.ticket(), Some(1));
 }
 #[test]
+fn popup_foreground_keeps_selection_actionable_after_show_focus_lease_expires() {
+    let (mut state, show) = showing();
+    assert!(state.mark_popup_shown(show));
+    state.finish_show(show);
+
+    state.expire(None, true, true, 1, 500);
+    assert_eq!(state.ticket(), Some(1));
+    assert!(state.arm(None, true, true, 1, 501));
+    assert!(state
+        .take_action(1, None, true, true, 1, 502, true)
+        .is_some());
+}
+
+#[test]
+fn verified_click_on_shown_toolbar_survives_transient_foreground_mismatch() {
+    let (mut state, show) = showing();
+    assert!(state.mark_popup_shown(show));
+    state.finish_show(show);
+
+    assert!(state.arm_verified_popup_click(true, 1, 501));
+    assert_eq!(
+        state.action_rejection(1, None, false, true, 1, 502),
+        "accepted"
+    );
+    state.expire(None, false, true, 1, 503);
+    assert_eq!(state.ticket(), Some(1));
+    assert!(state
+        .take_action(1, None, false, true, 1, 504, true)
+        .is_some());
+}
+
+#[test]
+fn stale_foreground_notification_does_not_invalidate_current_selection() {
+    assert!(!foreground_event_should_invalidate(101, 202, false));
+    assert!(foreground_event_should_invalidate(202, 202, false));
+    assert!(!foreground_event_should_invalidate(202, 202, true));
+}
+
+#[test]
+fn verified_popup_click_does_not_survive_generation_change() {
+    let (mut state, show) = showing();
+    assert!(state.mark_popup_shown(show));
+    state.finish_show(show);
+    assert!(state.arm_verified_popup_click(true, 1, 501));
+
+    assert_eq!(
+        state.action_rejection(1, None, false, true, 2, 502),
+        "session-stale"
+    );
+    state.expire(None, false, true, 2, 502);
+    assert_eq!(state.ticket(), None);
+}
+
+#[test]
+fn expired_native_down_cannot_act_but_a_new_verified_down_can_rearm() {
+    let (mut state, show) = showing();
+    assert!(state.mark_popup_shown(show));
+    state.finish_show(show);
+    assert!(state.arm_verified_popup_click(true, 1, 501));
+
+    assert_eq!(
+        state.action_rejection(1, None, false, true, 1, 1501),
+        "native-click-expired"
+    );
+    assert!(state
+        .take_action(1, None, false, true, 1, 1501, true)
+        .is_none());
+    assert!(state.arm_verified_popup_click(true, 1, 1502));
+    assert!(state
+        .take_action(1, None, false, true, 1, 1503, true)
+        .is_some());
+}
+
+#[test]
+fn shown_popup_foreground_event_is_preserved_after_show_lease_expires() {
+    let (mut state, show) = showing();
+    assert!(state.mark_popup_shown(show));
+    state.finish_show(show);
+
+    let popup_focus_allowed = state.allows_popup_focus(1, 500);
+    assert!(popup_focus_allowed);
+    assert!(state.retains(None, popup_focus_allowed, true, 1, 500));
+    assert!(!state.allows_popup_focus(2, 500));
+    assert!(!state.allows_popup_focus(1, 8_100));
+}
+#[test]
+fn shown_popup_session_still_revokes_on_focus_loss_death_generation_change_or_expiry() {
+    for (foreground, popup, alive, generation, now) in [
+        (
+            Some(Target {
+                hwnd: 97,
+                ..popup_target()
+            }),
+            false,
+            true,
+            1,
+            500,
+        ),
+        (None, false, true, 1, 500),
+        (None, true, false, 1, 500),
+        (None, true, true, 2, 500),
+        (None, true, true, 1, 8100),
+    ] {
+        let (mut state, show) = showing();
+        assert!(state.mark_popup_shown(show));
+        state.finish_show(show);
+        state.expire(foreground, popup, alive, generation, now);
+        assert_eq!(state.ticket(), None);
+    }
+}
+#[test]
 fn old_show_and_timer_cannot_change_replacement_or_restore_focus() {
     let (mut s, old) = showing();
     let mut r = request();
@@ -796,4 +1103,82 @@ fn capture_disabled_then_reenabled_cannot_revive_a_previous_generation() {
         }
     )
     .is_none());
+}
+
+#[test]
+fn uia_success_short_circuits_native_and_clipboard_fallbacks() {
+    let result = capture_first_available(
+        Some("uia"),
+        || panic!("native read must not run after UIA succeeds"),
+        true,
+        || panic!("clipboard fallback must not run after UIA succeeds"),
+    );
+    assert_eq!(result, Some((Method::Uia, "uia")));
+}
+
+#[test]
+fn absent_safe_uia_text_still_short_circuits_after_native_success() {
+    let order = std::cell::RefCell::new(Vec::new());
+    let result = capture_first_available(
+        None,
+        || {
+            order.borrow_mut().push("native");
+            Some("native")
+        },
+        true,
+        || {
+            order.borrow_mut().push("clipboard");
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, Some((Method::NativeEdit, "native")));
+    assert_eq!(*order.borrow(), ["native"]);
+}
+
+#[test]
+fn native_edit_success_short_circuits_clipboard_fallback() {
+    let result = capture_first_available(
+        None,
+        || Some("native"),
+        true,
+        || panic!("clipboard fallback must not run after native read succeeds"),
+    );
+    assert_eq!(result, Some((Method::NativeEdit, "native")));
+}
+
+#[test]
+fn unconsented_capture_never_invokes_clipboard_fallback() {
+    use std::cell::Cell;
+    let calls = Cell::new(0);
+    let result = capture_first_available(
+        None,
+        || None::<&str>,
+        false,
+        || {
+            calls.set(calls.get() + 1);
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, None);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn authorized_clipboard_fallback_runs_only_after_uia_and_native_fail() {
+    use std::cell::RefCell;
+    let order = RefCell::new(Vec::new());
+    let result = capture_first_available(
+        None::<&str>,
+        || {
+            order.borrow_mut().push("native");
+            None
+        },
+        true,
+        || {
+            order.borrow_mut().push("clipboard");
+            Some("clipboard")
+        },
+    );
+    assert_eq!(result, Some((Method::Clipboard, "clipboard")));
+    assert_eq!(*order.borrow(), ["native", "clipboard"]);
 }

@@ -1,5 +1,6 @@
 [package]
 name = "deepseek-float"
+default-run = "deepseek-float"
 version = "0.1.0"
 description = "DeepSeek floating window desktop shell"
 # 发布前需补齐的元数据（当前为占位，非真实身份，请勿编造后提交）：
@@ -35,7 +36,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # 注意该 cfg 是在 **tauri-macros 这个 proc-macro crate 编译时**求值的，所以
 # 真正要打开的是映射目标 `tauri/custom-protocol`（下面这一行就是干这个的）。
 custom-protocol = ["tauri/custom-protocol"]
-# Research only. Even this feature cannot unlock release builds.
+# Debug research toggle. Release capability is built in but still requires
+# guarded runtime consent and transaction checks in release_policy.rs.
 experimental-clipboard-fallback = []
 beta2-isolation = []
 
@@ -115,7 +117,7 @@ png = "0.17"
 #   保持默认可避免意外关闭 schemars 依赖的其他特性。
 indexmap = { version = "1.9", features = ["std"] }
 
-# D1 划词管线需要直接调用 Win32：SendInput 合成 Ctrl+C、剪贴板读/写与序列号、鼠标钩子、UIA。
+# D1 划词管线需要直接调用 Win32：SendInput 合成 Ctrl+Insert、剪贴板读/写与序列号、鼠标钩子、UIA。
 # 0.61.3 已在 Cargo.lock 里（tauri 传递依赖带入且已缓存），显式声明不会触发新的下载。
 # 本项目目标平台仅 Windows（tauri.conf.json / 图标 / 交互均按 Windows 设计），故不做 target 门控。
 windows = { version = "0.61", features = [
@@ -129,6 +131,7 @@ windows = { version = "0.61", features = [
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_Threading",
+  "Win32_System_StationsAndDesktops",
   "Win32_System_Registry",
   "Win32_System_Com",
   "Win32_UI_Input_KeyboardAndMouse",
