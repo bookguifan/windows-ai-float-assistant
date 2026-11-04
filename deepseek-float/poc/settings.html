@@ -889,6 +889,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
       let safeCopyGrantBlocked=false;
       let safeCopyShortcut='ctrl-insert';
       let safeCopyMessage='';
+      let safeCopyNativeMessage='';
       let smartSelectionEnabled=true;
       // Keep an explicit local off choice fenced against delayed native snapshots.
       let smartSelectionChoice=null;
@@ -906,13 +907,14 @@ input.url-box { width: 100%; box-sizing: border-box; }
         document.getElementById('safe-copy-hint').textContent=safeCopyAvailable
           ?'智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板；每次只向可信前台目标发送一次所选快捷键，不会自动尝试另一种。默认关闭，需本机确认，仅本次运行有效。原剪贴板仅支持空内容、Unicode / ANSI / OEM 文本及区域格式；HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳；并发修改时跳过恢复。延迟渲染可能同步等待原应用，超时不能中断仍未返回的系统调用；不保证所有格式无损，不代表已经通过兼容验收。'
           :'此构建未提供自动剪贴板回退。智能划词增强开启时仍可使用 UIA / 标准 Unicode Edit 读取；主动复制不受此开关影响。';
-        document.getElementById('safe-copy-status').textContent=safeCopyMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
+        document.getElementById('safe-copy-status').textContent=safeCopyMessage||safeCopyNativeMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
       }
       function invalidateSafeCopy(){
         ++safeCopyRevision;
         safeCopyGrantBlocked=true;
         safeCopyGranted=false;
         safeCopyMessage='';
+        safeCopyNativeMessage='';
         renderSafeCopy();
       }
       function setSmartSelection(on){
@@ -930,7 +932,10 @@ input.url-box { width: 100%; box-sizing: border-box; }
         }
         safeCopyGranted=!!(nativeGranted&&smartSelectionEnabled&&!safeCopyGrantBlocked);
         if(!safeCopyGrantBlocked&&status&&['ctrl-insert','ctrl-c'].includes(status.shortcut))safeCopyShortcut=status.shortcut;
-        if(status&&status.last_error)safeCopyMessage='上次回退失败：'+status.last_error;
+        // Native transaction failures expire with a current successful status.
+        // Keep local consent/revocation/persistence failures separate so a push
+        // cannot erase an unresolved operation error.
+        safeCopyNativeMessage=status&&status.last_error?'上次回退失败：'+status.last_error:'';
         renderSafeCopy();
       }
       window.__dsfSafeCopyStatus=(status)=>{

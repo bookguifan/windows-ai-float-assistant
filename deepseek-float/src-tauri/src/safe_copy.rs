@@ -483,7 +483,7 @@ pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
 fn copy_failure_reason(code: &str) -> &'static str {
     match code {
         "COPY_UNAUTHORIZED" => "尚未在设置页确认本次运行的剪贴板回退",
-        "COPY_FORMAT_UNSAFE" => "原剪贴板含不支持或无法完整保存的格式，未发送快捷键",
+        "COPY_FORMAT_UNSAFE" => "原剪贴板含 HTML、RTF、图片等不支持格式，或无法完整保存，未发送快捷键。确认原内容无需保留后，可在 Windows 记事本中重新复制纯文本再试；直接复制网页或 PDF 可能再次带入复杂格式",
         "COPY_CLIPBOARD_BUSY" => "复制前无法取得剪贴板快照，未发送快捷键",
         "COPY_CAPTURE_BUSY" => "目标已触发剪贴板变化，但剪贴板持续被占用，无法确认来源",
         "COPY_READ_BUSY" => "复制结果读取时剪贴板持续被占用，正在尝试安全恢复",
