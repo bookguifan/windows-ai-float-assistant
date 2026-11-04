@@ -53,6 +53,31 @@ test('DeepSeek attachment sibling is scoped separately from the send controls', 
  } finally { p.close(); }
 });
 
+test('DeepSeek completed upload ignores a loading indicator inside a transparent overlay', () => {
+ const p=page('https://chat.deepseek.com/');
+ try {
+  p.d.querySelector('form').outerHTML='<div id="composer"><div id="attachments"></div><div><textarea></textarea><button aria-label="Send">send</button><input type="file" accept="image/png"></div></div>';
+  p.api.shotReset();
+  p.d.querySelector('#attachments').innerHTML='<div><img src="blob:new-capture"><div id="overlay" style="opacity:0"><div><div><div class="ds-loading"></div></div></div></div></div>';
+  assert.equal(p.api.hasAttachment(),true,'completed DeepSeek uploads retain a transparent loading overlay');
+  p.d.querySelector('#overlay').style.opacity='1';
+  assert.equal(p.api.hasAttachment(),false,'a visible upload indicator must still block OCR');
+  p.d.querySelector('#overlay').style.opacity='0';
+  assert.equal(p.api.hasAttachment(),true);
+ } finally {p.close();}
+});
+
+test('a new attachment hidden by its ancestor cannot confirm screenshot upload', () => {
+ const p=page('https://chat.deepseek.com/');
+ try {
+  p.api.shotReset();
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div id="attachment" style="opacity:0"><img src="blob:hidden-capture"></div>');
+  assert.equal(p.api.hasAttachment(),false,'an invisible image is not confirmation of a usable attachment');
+  p.d.querySelector('#attachment').style.opacity='1';
+  assert.equal(p.api.hasAttachment(),true);
+ } finally {p.close();}
+});
+
 test('ChatGPT model completion cannot finish an answer while its renderer still reveals content', () => {
  const p=page('https://chatgpt.com/');
  try {
