@@ -2532,15 +2532,30 @@
       return false;
     }
   }
-  // 复核信号：输入区是否出现图片附件缩略图（blob: / data:image）。仅用于诊断日志。
+  // DeepSeek retains the loading indicator after upload, under an opacity:0
+  // overlay. Check the ancestor chain only inside the attachment boundary.
+  function attachmentNodeVisible(el, root) {
+    for (let node = el; node; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' ||
+          style.visibility === 'collapse' || style.opacity === '0') return false;
+      if (node === root) return true;
+    }
+    return false;
+  }
+
+  // Confirm a new visible attachment; active upload indicators still block OCR.
   function hasAttachment() {
     const root = attachmentRoot();
-    if (!root || root.querySelector('[aria-busy="true"], [role="progressbar"]')) return false;
-    if (location.hostname === 'chat.deepseek.com' && root.querySelector('.ds-loading')) return false;
+    if (!root) return false;
+    const busy = '[aria-busy="true"], [role="progressbar"]' +
+      (location.hostname === 'chat.deepseek.com' ? ', .ds-loading' : '');
+    if (Array.from(root.querySelectorAll(busy)).some(el => attachmentNodeVisible(el, root))) return false;
     const imgs = root.querySelectorAll('img');
     for (let i = 0; i < imgs.length; i++) {
       const src = String(imgs[i].getAttribute('src') || '');
-      if (src && !attachmentBaseline.has(src) && /^(blob:|data:image\/|https?:)/i.test(src)) {
+      if (src && !attachmentBaseline.has(src) && /^(blob:|data:image\/|https?:)/i.test(src) &&
+          attachmentNodeVisible(imgs[i], root)) {
         const r = imgs[i].getBoundingClientRect();
         if (r.width > 8 && r.height > 8) return true;
       }

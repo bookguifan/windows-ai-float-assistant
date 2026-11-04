@@ -86,6 +86,21 @@
       }
       .hotkey-box.recording { border-color: #2b5cff; color: #2b5cff; background: #eef2ff; }
       .hotkey-box.error { border-color: #dc2626; color: #dc2626; background: #fef2f2; }
+      .shortcut-row { gap: 16px; }
+      .shortcut-row .meta { flex: 1; min-width: 0; }
+      .shortcut-row .hotkey-box, .copy-shortcut-select { box-sizing: border-box; width: 154px; min-height: 34px; }
+      .copy-shortcut-select {
+        flex-shrink: 0; padding: 6px 28px 6px 12px; border: 1px solid #d1d5db;
+        border-radius: 8px; background: #fff; color: #111827; font: inherit; font-size: 12px;
+        cursor: pointer;
+      }
+      .copy-shortcut-select:hover { border-color: #9ca3af; }
+      .copy-shortcut-select:focus-visible, .hotkey-box:focus-visible { outline: 2px solid #2b5cff; outline-offset: 2px; }
+      .copy-shortcut-select:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
+      @media (max-width: 380px) {
+        .shortcut-row { flex-wrap: wrap; gap: 8px; }
+        .shortcut-row .meta { flex-basis: 100%; }
+      }
       [hidden] { display: none !important; }
       .save-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 24px; margin-top: 8px; font-size: 12px; color: #6b7280; }
       .save-feedback [data-state="error"] { color: #b91c1c; overflow-wrap: anywhere; }
@@ -153,16 +168,23 @@ input.url-box { width: 100%; box-sizing: border-box; }
             <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板。默认关闭，需本机确认，仅本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
             <label class="switch"><input type="checkbox" id="safe-copy-enabled" aria-label="自动复制回退" aria-describedby="safe-copy-hint safe-copy-status" disabled /><span class="slider"></span></label>
           </div>
-          <div class="toggle-row" id="safe-copy-shortcut-row" hidden>
+          <div class="toggle-row shortcut-row" id="safe-copy-shortcut-row" hidden>
             <div class="meta"><span class="t-label">复制快捷键</span><span class="t-hint">更换快捷键需重新确认；取消后回退关闭，不会自动尝试另一种快捷键。</span></div>
-            <select id="safe-copy-shortcut" aria-label="复制快捷键" hidden disabled><option value="ctrl-insert">Ctrl+Insert（默认）</option><option value="ctrl-c">Ctrl+C</option></select>
+            <select id="safe-copy-shortcut" class="copy-shortcut-select" aria-label="复制快捷键" hidden disabled><option value="ctrl-insert">Ctrl+Insert（默认）</option><option value="ctrl-c">Ctrl+C</option></select>
           </div>
-          <div class="toggle-row">
+          <div class="toggle-row shortcut-row">
             <div class="meta">
-              <span class="t-label">截图热键</span>
+              <span class="t-label">截图提问快捷键</span>
               <span class="t-hint" id="hotkey-hint">点右侧框后按组合键（如 Ctrl+Alt+1）；留空 = 关闭</span>
             </div>
-            <input id="hotkey-input" class="hotkey-box" type="text" readonly placeholder="未设置" />
+            <input id="hotkey-input" class="hotkey-box" type="text" readonly placeholder="未设置" aria-label="截图提问快捷键" aria-describedby="hotkey-hint" />
+          </div>
+          <div class="toggle-row shortcut-row">
+            <div class="meta">
+              <span class="t-label">截图识字快捷键</span>
+              <span class="t-hint" id="ocr-hotkey-hint">点右侧框后按组合键；默认未设置</span>
+            </div>
+            <input id="ocr-hotkey-input" class="hotkey-box" type="text" readonly placeholder="未设置" aria-label="截图识字快捷键" aria-describedby="ocr-hotkey-hint" />
           </div>
           <div class="toggle-row" style="align-items:flex-start;">
             <div class="meta">
@@ -867,6 +889,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
       let safeCopyGrantBlocked=false;
       let safeCopyShortcut='ctrl-insert';
       let safeCopyMessage='';
+      let safeCopyNativeMessage='';
       let smartSelectionEnabled=true;
       // Keep an explicit local off choice fenced against delayed native snapshots.
       let smartSelectionChoice=null;
@@ -884,13 +907,14 @@ input.url-box { width: 100%; box-sizing: border-box; }
         document.getElementById('safe-copy-hint').textContent=safeCopyAvailable
           ?'智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板；每次只向可信前台目标发送一次所选快捷键，不会自动尝试另一种。默认关闭，需本机确认，仅本次运行有效。原剪贴板仅支持空内容、Unicode / ANSI / OEM 文本及区域格式；HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳；并发修改时跳过恢复。延迟渲染可能同步等待原应用，超时不能中断仍未返回的系统调用；不保证所有格式无损，不代表已经通过兼容验收。'
           :'此构建未提供自动剪贴板回退。智能划词增强开启时仍可使用 UIA / 标准 Unicode Edit 读取；主动复制不受此开关影响。';
-        document.getElementById('safe-copy-status').textContent=safeCopyMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
+        document.getElementById('safe-copy-status').textContent=safeCopyMessage||safeCopyNativeMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
       }
       function invalidateSafeCopy(){
         ++safeCopyRevision;
         safeCopyGrantBlocked=true;
         safeCopyGranted=false;
         safeCopyMessage='';
+        safeCopyNativeMessage='';
         renderSafeCopy();
       }
       function setSmartSelection(on){
@@ -908,7 +932,10 @@ input.url-box { width: 100%; box-sizing: border-box; }
         }
         safeCopyGranted=!!(nativeGranted&&smartSelectionEnabled&&!safeCopyGrantBlocked);
         if(!safeCopyGrantBlocked&&status&&['ctrl-insert','ctrl-c'].includes(status.shortcut))safeCopyShortcut=status.shortcut;
-        if(status&&status.last_error)safeCopyMessage='上次回退失败：'+status.last_error;
+        // Native transaction failures expire with a current successful status.
+        // Keep local consent/revocation/persistence failures separate so a push
+        // cannot erase an unresolved operation error.
+        safeCopyNativeMessage=status&&status.last_error?'上次回退失败：'+status.last_error:'';
         renderSafeCopy();
       }
       window.__dsfSafeCopyStatus=(status)=>{
@@ -1094,17 +1121,6 @@ input.url-box { width: 100%; box-sizing: border-box; }
       // 交互：点输入框 → 进入「录制」（清空并提示）→ 按下组合键 → 立即 `set_hotkey`。
       // ★ 前置校验放前端只为**即时反馈**（与 Rust `hotkey::parse` 同口径）；Rust 仍是权威 ——
       //   注册失败 / 被别的程序占用由它返回错误，前端据此回滚显示并给出原因。
-      const HOTKEY_HINT_DEFAULT = "点右侧框后按组合键（如 Ctrl+Alt+1）；留空 = 关闭";
-      const elHotkey = document.getElementById("hotkey-input");
-      const elHotkeyHint = document.getElementById("hotkey-hint");
-      let hotkeySaved = "";
-      let hotkeyRecording = false;
-
-      function hotkeyShow(spec) {
-        elHotkey.value = spec || "";
-        elHotkey.placeholder = spec ? "" : "未设置";
-      }
-
       // KeyboardEvent → `{spec}` / `{err}` / `null`（null = 还要继续等按键）。
       function eventToSpec(e) {
         const mods = [];
@@ -1123,73 +1139,62 @@ input.url-box { width: 100%; box-sizing: border-box; }
         return { spec: mods.join("+") + "+" + key };
       }
 
-      function hotkeyStopRecording() {
-        hotkeyRecording = false;
-        elHotkey.classList.remove("recording");
-        hotkeyShow(hotkeySaved);
-        elHotkeyHint.textContent = HOTKEY_HINT_DEFAULT;
+      function hotkeyRecorder(id, field, command, statusCommand) {
+        const input = document.getElementById(id + '-input');
+        const hint = document.getElementById(id + '-hint');
+        const defaultHint = '点击后按组合键；Esc 取消，Backspace / Delete 关闭';
+        let saved = '', recording = false, saving = false, revision = 0;
+        function show() { input.value = saved; input.placeholder = saved ? '' : '未设置'; }
+        function stop() {
+          recording = false;
+          input.classList.remove('recording');
+          show();
+          hint.textContent = defaultHint;
+        }
+        input.addEventListener('click', () => {
+          if (saving) return;
+          recording = true;
+          input.classList.add('recording'); input.classList.remove('error');
+          input.value = ''; input.placeholder = '请按组合键…';
+          hint.textContent = defaultHint;
+        });
+        input.addEventListener('keydown', async e => {
+          if (!recording || saving) return;
+          e.preventDefault();
+          if (e.key === 'Escape') { stop(); return; }
+          const clear = !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && /^(Backspace|Delete)$/.test(e.key);
+          const result = clear ? {spec:''} : eventToSpec(e);
+          if (!result) return;
+          if (result.err) { hint.textContent = result.err; return; }
+          saving = true; recording = false; revision++;
+          input.disabled = true;
+          try {
+            const applied = await tauri.core.invoke(command, {spec:result.spec});
+            saved = applied || '';
+            input.classList.remove('error'); stop();
+            hint.textContent = saved ? '已生效：' + saved : '已关闭此快捷键';
+          } catch (error) {
+            stop(); input.classList.add('error');
+            hint.textContent = String(error || '设置失败');
+          } finally { saving = false; input.disabled = false; }
+        });
+        input.addEventListener('blur', () => { if (recording) stop(); });
+        return async function load() {
+          const requestedRevision = revision;
+          try {
+            const cfg = await tauri.core.invoke('config_get');
+            const actual = await tauri.core.invoke(statusCommand);
+            if (requestedRevision !== revision || recording || saving) return;
+            saved = cfg && cfg[field] || ''; show();
+            hint.textContent = saved && actual !== saved
+              ? '配置为 ' + saved + '，但当前未注册（可能与其它快捷键冲突）'
+              : actual ? '当前生效：' + actual : defaultHint;
+          } catch (error) { console.error('[settings] hotkey:', error); }
+        };
       }
-
-      elHotkey.addEventListener("click", () => {
-        hotkeyRecording = true;
-        elHotkey.classList.add("recording");
-        elHotkey.classList.remove("error");
-        elHotkey.value = "";
-        elHotkey.placeholder = "请按组合键…";
-        elHotkeyHint.textContent = "按下组合键（Esc 取消）；至少要有一个修饰键";
-      });
-
-      elHotkey.addEventListener("keydown", async (e) => {
-        if (!hotkeyRecording) return;
-        e.preventDefault();
-        if (e.key === "Escape") {
-          hotkeyStopRecording();
-          return;
-        }
-        const r = eventToSpec(e);
-        if (!r) return;
-        if (r.err) {
-          elHotkeyHint.textContent = r.err;
-          return;
-        }
-        try {
-          const applied = await tauri.core.invoke("set_hotkey", { spec: r.spec });
-          hotkeySaved = applied || "";
-          elHotkey.classList.remove("error");
-          hotkeyStopRecording();
-          elHotkeyHint.textContent = hotkeySaved ? "已生效：" + hotkeySaved : "已关闭截图热键";
-        } catch (err) {
-          hotkeyRecording = false;
-          elHotkey.classList.remove("recording");
-          elHotkey.classList.add("error");
-          hotkeyShow(hotkeySaved);
-          elHotkeyHint.textContent = String(err || "设置失败");
-        }
-      });
-
-      // 失焦即结束录制（回滚显示），避免「点了别处还停在录制态」。
-      elHotkey.addEventListener("blur", () => {
-        if (hotkeyRecording) hotkeyStopRecording();
-      });
-
-      /// 读「想要的 spec」（`config_get`）与「实际生效的 spec」（`hotkey_status`）。
-      /// 两者不一致（配置了但没注册上，多为被占用）时明确提示 —— 不假装已启用。
-      async function loadHotkey() {
-        try {
-          const cfg = await tauri.core.invoke("config_get");
-          hotkeySaved = (cfg && cfg.hotkey) || "";
-          hotkeyShow(hotkeySaved);
-          const actual = await tauri.core.invoke("hotkey_status");
-          if (hotkeySaved && !actual) {
-            elHotkeyHint.textContent =
-              "配置为 " + hotkeySaved + "，但当前未注册（可能被其它程序占用）";
-          } else if (actual) {
-            elHotkeyHint.textContent = "当前生效：" + actual;
-          }
-        } catch (e) {
-          console.error("[settings] hotkey:", e);
-        }
-      }
+      const loadQuestionHotkey = hotkeyRecorder('hotkey','hotkey','set_hotkey','hotkey_status');
+      const loadOcrHotkey = hotkeyRecorder('ocr-hotkey','ocr_hotkey','set_ocr_hotkey','ocr_hotkey_status');
+      async function loadHotkey() { await Promise.all([loadQuestionHotkey(), loadOcrHotkey()]); }
 
       window.__dsfSettingsSelectionExpired = (revision) => {
         const next = revision == null ? selectionRevision : BigInt(revision);

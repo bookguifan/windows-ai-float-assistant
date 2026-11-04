@@ -264,12 +264,14 @@ pub fn run() {
             //   回调只发信号，真正的截图流程在 hotkey 模块的 worker 线程上跑（同 mousehook 纪律）。
             {
                 let hk_app = app.handle().clone();
-                let spec = crate::config::load().hotkey;
+                let config = crate::config::load();
+                let spec = config.hotkey;
                 let ready = crate::hotkey::start(
-                    move || {
-                        crate::screenshot::begin_with_mode(&hk_app, crate::screenshot::ShotMode::Ask);
+                    move |mode| {
+                        crate::screenshot::begin_with_mode(&hk_app, mode);
                     },
                     spec.as_deref(),
+                    config.ocr_hotkey.as_deref(),
                 );
                 crate::diag::log(&format!(
                     "hotkey: 初始化完成（泵就绪={ready}，配置 spec={:?}，实际生效={:?}）",
@@ -435,6 +437,8 @@ pub fn run() {
             crate::ipc::panel_sites_save,
             crate::ipc::set_hotkey,
             crate::ipc::hotkey_status,
+            crate::ipc::set_ocr_hotkey,
+            crate::ipc::ocr_hotkey_status,
             crate::ipc::shot_commit,
             crate::ipc::shot_cancel,
             crate::ipc::shot_preview_ready,

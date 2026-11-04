@@ -40,6 +40,9 @@ pub struct AppConfig {
     ///   会让「无 config.json 的全新安装」与「JSON 缺该字段」得到两种不同结果。
     #[serde(default = "default_hotkey")]
     pub hotkey: Option<String>,
+    /// 截图识字的独立热键；旧配置和新安装均默认不注册。
+    #[serde(default)]
+    pub ocr_hotkey: Option<String>,
     /// ★ 面板目标网址（可切换）：默认官方 `https://chat.deepseek.com/`；`None`/空 = 用默认。
     ///
     /// 用于「镜像 / 自托管 / 企业网关 / 排障换个源」等诉求。
@@ -84,6 +87,7 @@ impl Default for AppConfig {
             privileged_capture: default_smart_selection(),
             clipboard_fallback_enabled: false,
             hotkey: default_hotkey(),
+            ocr_hotkey: None,
             panel_url: None,
             custom_sites: Vec::new(),
         }
@@ -262,6 +266,12 @@ fn atomic_write(p: &std::path::Path, json: &str) -> std::io::Result<()> {
 /// 用户显式保存配置时必须返回写盘错误；失败不改变内存缓存。
 pub fn try_update(f: impl FnOnce(&mut AppConfig)) -> Result<AppConfig, String> {
     let _data = crate::data_store::write_guard();
+    try_update_under_data_lock(f)
+}
+
+pub(crate) fn try_update_under_data_lock(
+    f: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, String> {
     let mut guard = cache().lock().unwrap_or_else(|p| p.into_inner());
     let current = guard.get_or_insert_with(load_from_disk);
     let path = store_path().ok_or("无法定位配置目录（缺少 LOCALAPPDATA）")?;
@@ -296,6 +306,19 @@ fn commit_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ocr_hotkey_survives_config_roundtrip_without_replacing_question_hotkey() {
+        let cfg: AppConfig = serde_json::from_value(serde_json::json!({
+            "hotkey": "Ctrl+Alt+2", "ocr_hotkey": "Ctrl+Alt+3"
+        }))
+        .unwrap();
+        let saved = serde_json::to_value(cfg).unwrap();
+        assert_eq!(saved["ocr_hotkey"], "Ctrl+Alt+3");
+        assert_eq!(saved["hotkey"], "Ctrl+Alt+2");
+        let legacy: AppConfig = serde_json::from_str(r#"{"hotkey":"Ctrl+Alt+2"}"#).unwrap();
+        assert!(legacy.ocr_hotkey.is_none());
+        assert!(AppConfig::default().ocr_hotkey.is_none());
+    }
     #[test]
     fn smart_selection_defaults_on_but_preserves_explicit_choices_and_restart() {
         assert!(AppConfig::default().privileged_capture);

@@ -22,6 +22,61 @@ function page(handler = () => undefined) {
   return {w:dom.window,d,calls,close:()=>dom.window.close()};
 }
 
+test('OCR hotkey recording saves independently of the existing screenshot question hotkey', async () => {
+  const p = page((c,a) => c === 'config_get' ? Promise.resolve({hotkey:'Ctrl+Alt+2'}) :
+    c === 'hotkey_status' ? Promise.resolve('Ctrl+Alt+2') :
+    c === 'set_ocr_hotkey' ? Promise.resolve(a.spec) : undefined);
+  try {
+    await tick();
+    const ocr = p.d.getElementById('ocr-hotkey-input');
+    assert.ok(ocr, 'OCR has its own recorder');
+    assert.equal(ocr.value, '');
+    ocr.click();
+    ocr.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'3',ctrlKey:true,altKey:true,bubbles:true}));
+    await tick();
+    assert.equal(ocr.value, 'Ctrl+Alt+3');
+    assert.equal(p.d.getElementById('hotkey-input').value, 'Ctrl+Alt+2');
+    assert.deepEqual(p.calls.filter(c=>c.command.startsWith('set_')).map(c=>[c.command,c.args.spec]),
+      [['set_ocr_hotkey','Ctrl+Alt+3']]);
+  } finally { p.close(); }
+});
+
+test('OCR hotkey conflict keeps the previous key and reports the registration error', async () => {
+  const p = page(c => c === 'config_get' ? Promise.resolve({hotkey:'Ctrl+Alt+2',ocr_hotkey:'Ctrl+Alt+3'}) :
+    c === 'ocr_hotkey_status' ? Promise.resolve('Ctrl+Alt+3') :
+    c === 'set_ocr_hotkey' ? Promise.reject('该热键已被截图提问使用') : undefined);
+  try {
+    await tick();
+    const ocr = p.d.getElementById('ocr-hotkey-input');
+    assert.ok(ocr);
+    ocr.click();
+    ocr.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'2',ctrlKey:true,altKey:true,bubbles:true}));
+    await tick();
+    assert.equal(ocr.value, 'Ctrl+Alt+3');
+    assert.match(p.d.getElementById('ocr-hotkey-hint').textContent,/截图提问/);
+  } finally { p.close(); }
+});
+
+test('hotkey recording can be cancelled or explicitly disabled without changing the other action', async () => {
+  const p = page((c,a) => c === 'config_get' ? Promise.resolve({hotkey:'Ctrl+Alt+2',ocr_hotkey:'Ctrl+Alt+3'}) :
+    c === 'set_ocr_hotkey' ? Promise.resolve(a.spec) : undefined);
+  try {
+    await tick();
+    const ocr = p.d.getElementById('ocr-hotkey-input');
+    assert.ok(ocr);
+    ocr.click();
+    ocr.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    assert.equal(ocr.value,'Ctrl+Alt+3');
+    assert.equal(p.calls.filter(c=>c.command==='set_ocr_hotkey').length,0);
+    ocr.click();
+    ocr.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Backspace',bubbles:true}));
+    await tick();
+    assert.equal(ocr.value,'');
+    assert.equal(p.calls.find(c=>c.command==='set_ocr_hotkey').args.spec,'');
+    assert.equal(p.d.getElementById('hotkey-input').value,'Ctrl+Alt+2');
+  } finally { p.close(); }
+});
+
 test('prompt save failure is visible and retry preserves the edited snapshot', async () => {
   let fails = true;
   const p = page((c,a) => c === 'settings_save' ? (fails ? Promise.reject('磁盘写入失败') : Promise.resolve(a.prompts)) : undefined);

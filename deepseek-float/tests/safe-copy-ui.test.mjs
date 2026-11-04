@@ -25,6 +25,31 @@ const choose=(p,on)=>change(p,fallback(p),on);
 const commands=(p,name)=>p.calls.filter(c=>c.command===name);
 const plain=value=>JSON.parse(JSON.stringify(value));
 
+test('a current successful fallback status clears the previous native failure without revoking consent',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted('ctrl-c')):undefined);
+ try{
+  await tick();
+  p.w.__dsfSafeCopyStatus({...granted('ctrl-c'),last_error:'原剪贴板格式不支持，未发送快捷键'});
+  assert.match(p.d.querySelector('#safe-copy-status').textContent,/上次回退失败/);
+  p.w.__dsfSafeCopyStatus(granted('ctrl-c'));
+  assert.doesNotMatch(p.d.querySelector('#safe-copy-status').textContent,/上次回退失败|格式不支持/);
+  assert.match(p.d.querySelector('#safe-copy-status').textContent,/已授权/);
+  assert.equal(fallback(p).checked,true);
+  assert.equal(shortcut(p).value,'ctrl-c');
+ }finally{p.close();}
+});
+
+test('a stale other-shortcut status cannot clear the current shortcut failure',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted('ctrl-c')):undefined);
+ try{
+  await tick();
+  p.w.__dsfSafeCopyStatus({...granted('ctrl-c'),last_error:'当前回退失败'});
+  p.w.__dsfSafeCopyStatus(granted('ctrl-insert'));
+  assert.match(p.d.querySelector('#safe-copy-status').textContent,/当前回退失败/);
+  assert.equal(shortcut(p).value,'ctrl-c');
+ }finally{p.close();}
+});
+
 test('two switches default to smart on and fallback off with the shortcut hidden',async()=>{
  const p=page();try{await tick();assert.equal(master(p).checked,true);assert.equal(fallback(p).type,'checkbox');assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,false);assert.equal(shortcut(p).hidden,true);assert.equal(shortcut(p).value,'ctrl-insert');assert.deepEqual([...shortcut(p).options].map(o=>o.value),['ctrl-insert','ctrl-c']);assert.equal(p.d.querySelector('#safe-copy-mode'),null);}finally{p.close();}
 });
