@@ -20,6 +20,7 @@
 //!    保证「改键失败反而把原本能用的键也弄没了」不会发生；
 //! 3. **失败降级不阻塞启动**：注册失败只落 `diag`，右键菜单 / 托盘入口照常可用。
 
+use crate::screenshot_state::ShotMode;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
@@ -37,8 +38,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// 热键 id（进程内唯一）。
 const HOTKEY_ID: i32 = 0xD5F1;
+const OCR_HOTKEY_ID: i32 = 0xD5F2;
 /// 自定义线程消息：请求（重新）注册。`wParam` = 修饰键位（0 = 注销），`lParam` = 主键 vk。
 const WM_APP_HOTKEY_SET: u32 = 0x8000 + 0x51;
+const WM_APP_OCR_HOTKEY_SET: u32 = WM_APP_HOTKEY_SET + 1;
 /// `RegisterHotKey` 在「该热键已被其它程序注册」时置的错误码（1409）。
 const ERR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 /// 等泵线程就绪 / 应答的超时。
@@ -48,9 +51,12 @@ static PUMP_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 /// 「该截图了」信号（worker 线程消费）。
-static SIGNAL: Mutex<Option<Sender<()>>> = Mutex::new(None);
+static SIGNAL: Mutex<Option<Sender<ShotMode>>> = Mutex::new(None);
 /// 当前**已注册**的 `(修饰键位, 主键)`；`None` = 未注册。改注册失败时用它回滚。
 static CURRENT: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+static OCR_CURRENT: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+// One reply channel is shared by the two commands; serialize callers until their reply arrives.
+static APPLY_LOCK: Mutex<()> = Mutex::new(());
 /// `apply()` 的应答通道（由泵线程回填结果）。
 static APPLY_REPLY: Mutex<Option<Sender<Result<(), String>>>> = Mutex::new(None);
 
@@ -158,9 +164,9 @@ pub fn format(mods: u32, vk: u32) -> String {
 ///
 /// `initial` 为 `None` / 空串 ⇒ 不注册（用户把热键关掉了）。返回泵线程是否就绪
 /// （**注册失败不影响就绪判定** —— 失败只落日志，托盘/右键菜单仍是有效入口）。
-pub fn start<F>(on_hotkey: F, initial: Option<&str>) -> bool
+pub fn start<F>(on_hotkey: F, initial: Option<&str>, ocr_initial: Option<&str>) -> bool
 where
-    F: Fn() + Send + 'static,
+    F: Fn(ShotMode) + Send + 'static,
 {
     if STARTED.swap(true, Ordering::SeqCst) {
         return true;
@@ -168,13 +174,13 @@ where
     log("hotkey::start 被调用");
 
     // worker：真正的截图流程是重活（遮罩/抓图/编码），绝不放泵线程（同 mousehook 的纪律）。
-    let (tx, rx) = channel::<()>();
+    let (tx, rx) = channel::<ShotMode>();
     if let Ok(mut g) = SIGNAL.lock() {
         *g = Some(tx);
     }
     std::thread::spawn(move || {
-        while rx.recv().is_ok() {
-            on_hotkey();
+        while let Ok(mode) = rx.recv() {
+            on_hotkey(mode);
         }
     });
 
@@ -192,21 +198,40 @@ where
         None => None,
     };
 
+    let ocr_parsed = ocr_initial.filter(|s| !s.trim().is_empty()).and_then(|s| {
+        parse(s)
+            .map_err(|e| warn(&format!("截图识字热键无效: {e}")))
+            .ok()
+    });
     let (ready_tx, ready_rx) = channel::<bool>();
     std::thread::spawn(move || unsafe {
         PUMP_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
         if let Some((m, v)) = initial_parsed {
             // 失败已有日志（do_register 内部），此处不改变「泵就绪」的语义。
-            let _ = do_register(m, v);
+            let _ = do_register(ShotMode::Ask, m, v);
+        }
+        if let Some((m, v)) = ocr_parsed {
+            if let Err(e) = do_register(ShotMode::Ocr, m, v) {
+                warn(&format!("截图识字热键未注册: {e}"));
+            }
         }
         let _ = ready_tx.send(true);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             match msg.message {
-                WM_HOTKEY => emit(),
-                WM_APP_HOTKEY_SET => {
-                    let r = do_register(msg.wParam.0 as u32, msg.lParam.0 as u32);
+                WM_HOTKEY => {
+                    if let Some(mode) = mode_for_id(msg.wParam.0 as i32) {
+                        emit(mode);
+                    }
+                }
+                WM_APP_HOTKEY_SET | WM_APP_OCR_HOTKEY_SET => {
+                    let mode = if msg.message == WM_APP_OCR_HOTKEY_SET {
+                        ShotMode::Ocr
+                    } else {
+                        ShotMode::Ask
+                    };
+                    let r = do_register(mode, msg.wParam.0 as u32, msg.lParam.0 as u32);
                     reply(r);
                 }
                 _ => {}
@@ -216,6 +241,7 @@ where
         }
         // 退出：`UnregisterHotKey` 必须在注册它的线程上调用 ⇒ 就在这里收尾。
         let _ = UnregisterHotKey(None, HOTKEY_ID);
+        let _ = UnregisterHotKey(None, OCR_HOTKEY_ID);
         log("热键泵线程已退出，热键已注销");
     });
 
@@ -227,6 +253,15 @@ where
 /// 解析在**调用线程**完成（非法 spec 立即失败，不必打扰泵线程）；真正的注册/注销由泵线程执行
 /// —— 因为 `UnregisterHotKey` 必须由注册它的线程调用。
 pub fn apply(spec: Option<&str>) -> Result<(), String> {
+    apply_for(ShotMode::Ask, spec)
+}
+
+pub fn apply_ocr(spec: Option<&str>) -> Result<(), String> {
+    apply_for(ShotMode::Ocr, spec)
+}
+
+fn apply_for(mode: ShotMode, spec: Option<&str>) -> Result<(), String> {
+    let _apply = APPLY_LOCK.lock().map_err(|_| "热键更新锁不可用")?;
     let (mods, vk) = match spec.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => parse(s)?,
         None => (0, 0),
@@ -242,7 +277,11 @@ pub fn apply(spec: Option<&str>) -> Result<(), String> {
     unsafe {
         if PostThreadMessageW(
             id,
-            WM_APP_HOTKEY_SET,
+            if mode == ShotMode::Ocr {
+                WM_APP_OCR_HOTKEY_SET
+            } else {
+                WM_APP_HOTKEY_SET
+            },
             WPARAM(mods as usize),
             LPARAM(vk as isize),
         )
@@ -267,17 +306,25 @@ pub fn shutdown() {
 
 /// 当前生效的热键 spec（`None` = 未注册 / 已关闭）—— 设置页回显用。
 pub fn current() -> Option<String> {
-    CURRENT
+    current_for(ShotMode::Ask)
+}
+
+pub fn ocr_current() -> Option<String> {
+    current_for(ShotMode::Ocr)
+}
+
+fn current_for(mode: ShotMode) -> Option<String> {
+    binding(mode)
         .lock()
         .ok()
         .and_then(|g| *g)
         .map(|(m, v)| format(m, v))
 }
 
-fn emit() {
+fn emit(mode: ShotMode) {
     let tx = SIGNAL.lock().ok().and_then(|g| g.as_ref().cloned());
     if let Some(tx) = tx {
-        let _ = tx.send(());
+        let _ = tx.send(mode);
     }
 }
 
@@ -289,15 +336,49 @@ fn reply(r: Result<(), String>) {
     }
 }
 
-/// 在**泵线程**上执行注册 / 注销（`mods == 0` 或 `vk == 0` ⇒ 注销）。
-///
-/// 事务性：无论成功失败，最终「已注册的键」都处于**明确且可用**的状态 ——
-/// 失败时回滚为旧键，绝不把用户的旧热键一起弄丢。
-unsafe fn do_register(mods: u32, vk: u32) -> Result<(), String> {
-    let old = CURRENT.lock().ok().and_then(|g| *g);
+fn binding(mode: ShotMode) -> &'static Mutex<Option<(u32, u32)>> {
+    match mode {
+        ShotMode::Ask => &CURRENT,
+        ShotMode::Ocr => &OCR_CURRENT,
+    }
+}
+
+fn mode_for_id(id: i32) -> Option<ShotMode> {
+    match id {
+        HOTKEY_ID => Some(ShotMode::Ask),
+        OCR_HOTKEY_ID => Some(ShotMode::Ocr),
+        _ => None,
+    }
+}
+
+fn ensure_distinct(requested: (u32, u32), other: Option<(u32, u32)>) -> Result<(), String> {
+    if requested.1 != 0 && other == Some(requested) {
+        return Err("截图提问与截图识字不能使用相同的快捷键".into());
+    }
+    Ok(())
+}
+
+/// 只在泵线程改注册；冲突提前拒绝，注册失败时尝试恢复该动作的旧键。
+unsafe fn do_register(mode: ShotMode, mods: u32, vk: u32) -> Result<(), String> {
+    let state = binding(mode);
+    let other = binding(if mode == ShotMode::Ask {
+        ShotMode::Ocr
+    } else {
+        ShotMode::Ask
+    });
+    ensure_distinct((mods, vk), other.lock().ok().and_then(|g| *g))?;
+    let id = if mode == ShotMode::Ask {
+        HOTKEY_ID
+    } else {
+        OCR_HOTKEY_ID
+    };
+    let old = state.lock().ok().and_then(|g| *g);
+    if old == Some((mods, vk)) {
+        return Ok(());
+    }
     if old.is_some() {
-        let _ = UnregisterHotKey(None, HOTKEY_ID);
-        if let Ok(mut g) = CURRENT.lock() {
+        UnregisterHotKey(None, id).map_err(|e| format!("无法注销原热键: {e}"))?;
+        if let Ok(mut g) = state.lock() {
             *g = None;
         }
     }
@@ -305,9 +386,9 @@ unsafe fn do_register(mods: u32, vk: u32) -> Result<(), String> {
         log("已注销全局热键（关闭）");
         return Ok(());
     }
-    match RegisterHotKey(None, HOTKEY_ID, HOT_KEY_MODIFIERS(mods) | MOD_NOREPEAT, vk) {
+    match RegisterHotKey(None, id, HOT_KEY_MODIFIERS(mods) | MOD_NOREPEAT, vk) {
         Ok(()) => {
-            if let Ok(mut g) = CURRENT.lock() {
+            if let Ok(mut g) = state.lock() {
                 *g = Some((mods, vk));
             }
             log(&format!("已注册全局热键 {}", format(mods, vk)));
@@ -317,9 +398,8 @@ unsafe fn do_register(mods: u32, vk: u32) -> Result<(), String> {
             let code = GetLastError().0;
             // ★ 回滚：把旧键注册回去，避免「改键失败 → 连原本能用的键也没了」。
             if let Some((om, ov)) = old {
-                if RegisterHotKey(None, HOTKEY_ID, HOT_KEY_MODIFIERS(om) | MOD_NOREPEAT, ov).is_ok()
-                {
-                    if let Ok(mut g) = CURRENT.lock() {
+                if RegisterHotKey(None, id, HOT_KEY_MODIFIERS(om) | MOD_NOREPEAT, ov).is_ok() {
+                    if let Ok(mut g) = state.lock() {
                         *g = Some((om, ov));
                     }
                     warn(&format!(
@@ -340,6 +420,22 @@ unsafe fn do_register(mods: u32, vk: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_actions_route_independently_and_ignore_unknown_messages() {
+        assert_eq!(mode_for_id(0xD5F1), Some(ShotMode::Ask));
+        assert_eq!(mode_for_id(0xD5F2), Some(ShotMode::Ocr));
+        assert_eq!(mode_for_id(0), None);
+    }
+
+    #[test]
+    fn conflicting_binding_is_rejected_before_unregistering_either_action() {
+        let other = Some(parse("Ctrl+Alt+2").unwrap());
+        assert!(ensure_distinct(parse("alt+ctrl+2").unwrap(), other).is_err());
+        assert!(ensure_distinct(parse("Ctrl+Alt+3").unwrap(), other).is_ok());
+        assert!(ensure_distinct((0, 0), other).is_ok());
+        assert!(ensure_distinct(parse("Ctrl+Alt+2").unwrap(), None).is_ok());
+    }
 
     #[test]
     fn parse_accepts_default_spec() {

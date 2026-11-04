@@ -407,6 +407,10 @@ pub fn context_menu_switch_site(
 /// 键」这种下次启动才暴露的不一致。`apply` 内部保证事务性（失败回滚旧键）。
 #[tauri::command]
 pub fn set_hotkey(spec: String) -> Result<String, String> {
+    set_screenshot_hotkey(spec, false)
+}
+
+fn set_screenshot_hotkey(spec: String, ocr: bool) -> Result<String, String> {
     let trimmed = spec.trim().to_string();
     let opt = if trimmed.is_empty() {
         None
@@ -414,9 +418,35 @@ pub fn set_hotkey(spec: String) -> Result<String, String> {
         Some(trimmed)
     };
     let _data = crate::data_store::write_guard();
-    crate::hotkey::apply(opt.as_deref())?;
-    crate::config::update_under_data_lock(|c| c.hotkey = opt);
-    Ok(crate::hotkey::current().unwrap_or_default())
+    let current = || {
+        if ocr {
+            crate::hotkey::ocr_current()
+        } else {
+            crate::hotkey::current()
+        }
+    };
+    let apply = |spec: Option<&str>| {
+        if ocr {
+            crate::hotkey::apply_ocr(spec)
+        } else {
+            crate::hotkey::apply(spec)
+        }
+    };
+    let previous = current();
+    apply(opt.as_deref())?;
+    if let Err(error) = crate::config::try_update_under_data_lock(|c| {
+        if ocr {
+            c.ocr_hotkey = opt
+        } else {
+            c.hotkey = opt
+        }
+    }) {
+        return match apply(previous.as_deref()) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}；恢复原热键失败：{rollback}")),
+        };
+    }
+    Ok(current().unwrap_or_default())
 }
 
 /// ★ R13-S4：当前**实际生效**的热键（`None` = 未注册 —— 可能被其它程序占用，或用户已关闭）。
@@ -426,6 +456,16 @@ pub fn set_hotkey(spec: String) -> Result<String, String> {
 #[tauri::command]
 pub fn hotkey_status() -> Option<String> {
     crate::hotkey::current()
+}
+
+#[tauri::command]
+pub fn set_ocr_hotkey(spec: String) -> Result<String, String> {
+    set_screenshot_hotkey(spec, true)
+}
+
+#[tauri::command]
+pub fn ocr_hotkey_status() -> Option<String> {
+    crate::hotkey::ocr_current()
 }
 
 // ---- 「截图提问」S1 命令（遮罩页经 window.__TAURI__.core.invoke 调用）----
