@@ -50,14 +50,22 @@ impl CopyObservation {
         now_ms: u64,
     ) -> Result<Option<Stamp>, &'static str> {
         if self.rejected
-            || !stamp
-                .is_some_and(|s| crate::selection::compatibility_source_allowed(before, s, related))
+            || !stamp.is_some_and(|s| {
+                crate::selection::compatibility_observation_allowed(before, s, related)
+            })
         {
             self.rejected = true;
             self.settled = None;
             return Err("COPY_SOURCE_UNVERIFIED");
         }
         let stamp = stamp.expect("verified observation");
+        if stamp.format_count == 0 {
+            // Some applications clear/close before publishing their formats. Keep
+            // waiting within the existing deadline, but never settle empty data.
+            self.candidate = None;
+            self.settled = None;
+            return Ok(None);
+        }
         if self.candidate != Some(stamp) {
             self.candidate = Some(stamp);
             self.since_ms = now_ms;

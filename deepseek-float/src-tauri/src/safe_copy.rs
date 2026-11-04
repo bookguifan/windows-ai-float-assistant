@@ -283,7 +283,9 @@ unsafe fn stamp() -> Option<Stamp> {
         previous = format;
     }
     let sequence = GetClipboardSequenceNumber();
-    if sequence == 0 || format_count == 0 {
+    // Preserve an identifiable writer's empty publication phase for wait(). The
+    // observer and final source gate still forbid reading/restoring empty data.
+    if sequence == 0 {
         return None;
     }
     Some(Stamp {
@@ -607,7 +609,8 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
                                 return Ok(settled);
                             }
                         }
-                    } else if let Some(observed) = observed {
+                    } else if let Some(observed) = observed.filter(|stamp| stamp.format_count != 0)
+                    {
                         return Ok(observed);
                     }
                 }
