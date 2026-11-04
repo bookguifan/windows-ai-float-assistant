@@ -1,6 +1,6 @@
 # Windows Native Clipboard Acceptance Plan
 
-Status: prepared only. No system clipboard was read or written while preparing this plan. Run this only after separate, explicit authorization for the native copy fallback.
+Status: plan with the authorized PR #9 Dev results recorded below. Run clipboard actions only after separate, explicit authorization for the native copy fallback.
 
 ## Safety Setup
 
@@ -72,6 +72,29 @@ Use the current PR #9 Tauri Dev build, with separately authorized synthetic clip
 6. Change foreground window during a selection and verify no shortcut is sent after identity validation fails. A verified in-flight clipboard result may be restored only if its exact transaction stamp is still current.
 7. Generic fallback may use a stable, related cross-process editing focus without standard Edit or pre-read text proof. Preserve the basic window relationship, password/sensitive-control exclusions and foreign-writer protection. A tested WPS Writer case does not establish PDF compatibility; record each chosen shortcut and actual restore result separately.
 8. Revoke the authorization and restart the app; the setting must be off. Legacy config and imported backups must not grant it.
+
+### PR #9 Dev Results — 2026-11-04
+
+Tested source: `6fa716ed138f0308fc2feb679ab40f6ac4c3047f`, using `pnpm tauri dev` in the existing flow checkout. The maintainer explicitly authorized both shortcuts against synthetic content and manually operated selection, settings and native confirmations. No ordinary Release EXE was launched or rebuilt for this acceptance.
+
+| Application | Read path | Shortcut input | Text correct | Clipboard preservation | Result |
+|---|---|---|---|---|---|
+| Windows Notepad | NativeEdit | None | Maintainer confirmed | Sentinel 003 hash, formats and sequence unchanged | PASS |
+| WPS Writer | Clipboard | Ctrl+Insert, request 297 | Maintainer confirmed | Sentinel 003 hash and formats restored | PASS |
+| WPS PDF, Ctrl+Insert | No completed capture | Mixed batch; individual input not attributed | No toolbar | Batch-end sentinel unchanged; individual result not established | FAIL |
+| WPS PDF, Ctrl+C | Clipboard | Ctrl+C, requests 616/706 | Maintainer confirmed | Sentinel 004 hash and formats restored | PASS |
+| Chrome / Edge | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+| VS Code | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+| Microsoft Word / other PDF readers | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+
+- Native master/fallback dependency, risk-dialog cancel/accept, default Ctrl+Insert, and switching to Ctrl+C with native confirmation: PASS, confirmed by the maintainer.
+- Fallback off: PASS. WPS PDF produced no new toolbar; no shortcut input was logged, and sentinel 004 hash, formats and sequence remained unchanged.
+- Unsupported original HTML clipboard: PASS for rejection, not restoration. The dedicated sample retained `UnicodeText`, `Text`, `HTML Format` and sequence 5748; 18 requests reported `COPY_FORMAT_UNSAFE`, with no shortcut input. Its content was not read. Copying PDF or web rich text manually can therefore prevent later fallback until the original clipboard contains supported data; do not describe this as arbitrary rich-format support.
+- Restart consent expiry: PASS. After exiting an authorized run and restarting, the maintainer confirmed fallback off, shortcut controls hidden, and a fresh native prompt; cancel kept fallback off. The restarted run logged no shortcut input.
+- Configuration files were backed up outside the app-data directory and hashes verified before testing. Favorites and prompts remained byte-identical. Only `privileged_capture` and `hide_on_fullscreen` differed from the backup; the maintainer confirmed both manual changes. Formal WebView2 login data was used with consent; no account credentials, autostart or backup restoration were operated.
+- Earlier mixed trials included manual Ctrl+C and `COPY_RESTORE_SKIPPED`; their sentinel baseline was invalid, so they establish neither successful restoration nor definite automatic data loss. The later sentinel 004 run above had `COPY_SUCCESS` and matching restored data. Deliberate concurrency, delayed-rendering and restoration-failure injection were not performed on the desktop.
+
+The minimum Dev compatibility criteria passed for the tested paths. General application coverage and lossless complex-format restoration are not established. A brief ordinary Release smoke test from the final merged source remains necessary before publication.
 
 ## A01 Native Acceptance
 
