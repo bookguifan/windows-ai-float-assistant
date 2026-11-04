@@ -62,15 +62,15 @@ powershell.exe -NoProfile -STA -File .\scripts\windows-clipboard-acceptance.ps1 
 
 ## Automatic Selection Fallback Acceptance
 
-Status: planned only; this task does not start the EXE or access the system clipboard.
+Use the current PR #9 Tauri Dev build, with separately authorized synthetic clipboard data. These steps require maintenance assistance; automated/Mock passes are not native passes.
 
 1. Confirm UIA success and standard Unicode Edit success each avoid `SendInput`.
-2. In Notepad, with only the known sentinel on the clipboard, authorize the session in settings and select synthetic text. Verify one Ctrl+Insert sequence, one toolbar, exact Unicode text, and restoration of the sentinel.
-3. Repeat with ordinary browser text only if the browser exposes a verified standard Edit focus. Do not assume a rendered page has a Win32 Edit control.
+2. Verify the smart-selection master (default on), fallback (default off), native confirmation/cancel, and hidden shortcut selector until authorization succeeds. Turning off the master must revoke fallback, disable its switch and invalidate queued input. Restart must not retain consent or override an explicitly saved master preference.
+3. With only the known sentinel on the clipboard, test Notepad, WPS Writer, Chrome/Edge and VS Code; test Word/PDF readers if installed. Record UIA / NativeEdit / Clipboard separately. For fallback, manually choose Ctrl+Insert (default) or Ctrl+C; changing the shortcut requires new confirmation. Verify exact selected Unicode text, one chosen chord and restoration of the sentinel. Never automatically try the other chord; exclude console/terminal and sensitive targets.
 4. Test a prepared HTML/RTF/image/multiformat clipboard. The copy fallback must reject before input when any format is outside the exact snapshot whitelist; verify the clipboard formats remain unchanged. Do not claim this covers delayed rendering, which cannot be reliably preflighted or interrupted by the current API path.
-5. Simulate clipboard contention and third-party sequence changes with the deterministic fake backend. Native acceptance must confirm that the target performs exactly one clipboard-empty operation plus one concrete format write (sequence delta 2); synthesized text formats reported by `EnumClipboardFormats` do not count as concrete writes. Any other delta rejects attribution. On native contention, verify clear refusal and no retry.
+5. Simulate clipboard contention, restoration failure and third-party writes with the existing deterministic fake backend. Sequence changes alone do not prove authorship; stable target/focus and associated writer evidence are required. Do not deliberately manufacture unsafe failures on the real desktop. Verify clear refusal and no second shortcut.
 6. Change foreground window during a selection and verify no shortcut is sent after identity validation fails. A verified in-flight clipboard result may be restored only if its exact transaction stamp is still current.
-7. WPS remains unsupported unless its focused control is verified as a same-process, standard Unicode `Edit` with stable native selection proof. Never relax cross-process checks to make WPS pass.
+7. Generic fallback may use a stable, related cross-process editing focus without standard Edit or pre-read text proof. Preserve the basic window relationship, password/sensitive-control exclusions and foreign-writer protection. A tested WPS Writer case does not establish PDF compatibility; record each chosen shortcut and actual restore result separately.
 8. Revoke the authorization and restart the app; the setting must be off. Legacy config and imported backups must not grant it.
 
 ## A01 Native Acceptance

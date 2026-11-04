@@ -228,6 +228,9 @@ pub(crate) fn update_under_data_lock(f: impl FnOnce(&mut AppConfig)) -> AppConfi
     let cfg_ref = guard.as_mut().expect("上面刚初始化为 Some");
     f(cfg_ref);
     cfg_ref.enforce_release_policy();
+    if !cfg_ref.privileged_capture {
+        crate::safe_copy::revoke();
+    }
     let cfg = cfg_ref.clone();
     // 落盘（保持锁不释放，直到写完）。写盘失败**不**向上传播：本函数在窗口事件线程 /
     // 去抖线程 / IPC 线程都会被调用，返回 Result 只会逼每一处调用点写样板降级代码；
@@ -280,6 +283,9 @@ fn commit_at(
     let mut candidate = current.clone();
     f(&mut candidate);
     candidate.enforce_release_policy();
+    if !candidate.privileged_capture {
+        crate::safe_copy::revoke();
+    }
     let json =
         serde_json::to_string_pretty(&candidate).map_err(|e| format!("配置序列化失败：{e}"))?;
     atomic_write(path, &json).map_err(|e| format!("配置保存失败：{e}"))?;

@@ -330,7 +330,7 @@ pub fn config_set_privileged(enable: bool) -> bool {
         // Revoke under the config write lock, before another enable/read can observe
         // the new preference. Failed disk writes retain the config but cancel old work.
         if !enable {
-            crate::selection_runtime::invalidate();
+            crate::safe_copy::revoke();
         }
         c.privileged_capture = enable;
     })
@@ -358,10 +358,15 @@ pub fn safe_copy_revoke(
 #[tauri::command]
 pub async fn safe_copy_authorize(
     window: tauri::WebviewWindow,
-    mode: crate::safe_copy::Mode,
+    mode: Option<crate::safe_copy::Mode>,
+    shortcut: Option<crate::safe_copy::CopyShortcut>,
 ) -> Result<crate::safe_copy::State, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::safe_copy::request_authorization(window, mode)
+        crate::safe_copy::request_authorization(
+            window,
+            mode.unwrap_or(crate::safe_copy::Mode::Compatibility),
+            shortcut.unwrap_or_default(),
+        )
     })
     .await
     .map_err(|_| "授权确认失败".to_string())?

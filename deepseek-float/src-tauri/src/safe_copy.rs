@@ -41,11 +41,35 @@ pub enum Mode {
     Compatibility,
 }
 static MODE: Mutex<Mode> = Mutex::new(Mode::Safe);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CopyShortcut {
+    #[default]
+    CtrlInsert,
+    CtrlC,
+}
+impl CopyShortcut {
+    fn key(self) -> VIRTUAL_KEY {
+        match self {
+            Self::CtrlInsert => VK_INSERT,
+            Self::CtrlC => VK_C,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::CtrlInsert => "Ctrl+Insert",
+            Self::CtrlC => "Ctrl+C",
+        }
+    }
+}
+static SHORTCUT: Mutex<CopyShortcut> = Mutex::new(CopyShortcut::CtrlInsert);
 static LAST_ERROR: Mutex<Option<&'static str>> = Mutex::new(None);
 static TRANSACTION: Mutex<()> = Mutex::new(());
 static PROMPTING: AtomicBool = AtomicBool::new(false);
 #[derive(serde::Serialize)]
 pub struct State {
+    pub smart_enabled: bool,
+    pub shortcut: CopyShortcut,
     pub mode: Mode,
     pub last_error: Option<&'static str>,
     pub enabled: bool,
@@ -54,11 +78,16 @@ pub struct State {
     pub session_only: bool,
 }
 pub fn state() -> State {
-    let enabled = crate::release_policy::safe_copy_available()
-        && CONSENT.lock().unwrap_or_else(|p| p.into_inner()).allows();
+    let smart_enabled = crate::config::load().privileged_capture;
+    let consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
+    let enabled = copy_authorized(smart_enabled, &consent, consent.epoch());
     let mode = *MODE.lock().unwrap_or_else(|p| p.into_inner());
+    let shortcut = *SHORTCUT.lock().unwrap_or_else(|p| p.into_inner());
+    drop(consent);
     let last_error = *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
     State {
+        smart_enabled,
+        shortcut,
         mode,
         last_error,
         enabled,
@@ -67,10 +96,18 @@ pub fn state() -> State {
         session_only: true,
     }
 }
-pub fn revoke() {
-    CONSENT.lock().unwrap_or_else(|p| p.into_inner()).revoke();
+fn revoke_epoch() -> u64 {
+    let epoch = {
+        let mut consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
+        consent.revoke();
+        consent.epoch()
+    };
     *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = None;
     crate::selection_runtime::invalidate();
+    epoch
+}
+pub fn revoke() {
+    revoke_epoch();
 }
 pub fn set_passive_mode(mode: Mode) -> Result<State, String> {
     if mode == Mode::Compatibility {
@@ -84,8 +121,12 @@ fn epoch() -> Option<u64> {
     if !crate::release_policy::safe_copy_available() {
         return None;
     }
+    let smart_enabled = crate::config::load().privileged_capture;
     let c = CONSENT.lock().ok()?;
-    c.allows().then_some(c.epoch())
+    copy_authorized(smart_enabled, &c, c.epoch()).then_some(c.epoch())
+}
+fn copy_authorized(smart_enabled: bool, consent: &Consent, epoch: u64) -> bool {
+    crate::release_policy::safe_copy_available() && smart_enabled && consent.matches(epoch)
 }
 fn granted(e: u64) -> bool {
     CONSENT.lock().map(|c| c.matches(e)).unwrap_or(false)
@@ -116,7 +157,11 @@ pub(crate) fn trusted(window: &WebviewWindow) -> bool {
         .unwrap_or(false)
 }
 /// The IPC is only a request: only the real native modal's OK can grant this process.
-pub fn request_authorization(window: WebviewWindow, mode: Mode) -> Result<State, String> {
+pub fn request_authorization(
+    window: WebviewWindow,
+    mode: Mode,
+    shortcut: CopyShortcut,
+) -> Result<State, String> {
     if !crate::release_policy::safe_copy_available() {
         return Err("此构建未提供自动剪贴板回退".into());
     }
@@ -125,6 +170,9 @@ pub fn request_authorization(window: WebviewWindow, mode: Mode) -> Result<State,
     }
     if mode != Mode::Compatibility {
         return set_passive_mode(mode);
+    }
+    if !crate::config::load().privileged_capture {
+        return Err("请先开启智能划词增强".into());
     }
     if PROMPTING.swap(true, Ordering::AcqRel) {
         return Err("授权确认正在进行".into());
@@ -136,19 +184,26 @@ pub fn request_authorization(window: WebviewWindow, mode: Mode) -> Result<State,
         }
     }
     let _reset = Reset;
-    let start_epoch = CONSENT.lock().unwrap_or_else(|p| p.into_inner()).epoch();
+    // Suspend the old grant while choosing a new shortcut or showing a new modal.
+    let start_epoch = revoke_epoch();
     let hwnd = window.hwnd().map_err(|_| "设置窗口不可用")?;
+    let message: Vec<u16> = format!("自动复制回退会在智能划词失败时模拟复制快捷键，并尝试恢复原剪贴板。操作可能短暂修改 Windows 剪贴板；特殊格式、异步复制或其他程序并发修改时，可能无法完整恢复。请避免用于敏感内容。是否仅在本次运行中开启？\n\n本次仅发送一次 {}，不会自动尝试另一种快捷键。原剪贴板仅支持空内容及 Unicode/ANSI/OEM 文本和区域格式；HTML、RTF、图片等会在发送前拒绝。", shortcut.label()).encode_utf16().chain(Some(0)).collect();
     let answer = unsafe {
         MessageBoxW(
             Some(HWND(hwnd.0)),
-            w!("兼容模式会模拟复制快捷键，以便在 WPS、浏览器及其他应用中尝试读取选中文本。操作可能短暂修改 Windows 剪贴板；特殊格式、异步复制或其他程序同时修改时，可能无法完整恢复原内容。请避免在敏感内容中使用。可随时关闭。\n\nUIA / 原生读取优先；失败后仅发送一次 Ctrl+Insert。原剪贴板仅支持空内容及 Unicode/ANSI/OEM 文本和区域格式；HTML、RTF、图片等在操作前拒绝。目标与剪贴板来源使用窗口关联和稳定性判断，不能保证所有程序的文本来源及恢复绝对准确。Windows 延迟渲染可能同步等待原应用，超时检查不能中断仍未返回的系统调用。\n\n本次授权仅在当前运行有效；旧配置、备份和历史授权不能开启兼容模式。"),
+            windows::core::PCWSTR(message.as_ptr()),
             w!("授权自动剪贴板划词回退"),
             MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
         )
     };
     let still_trusted = trusted(&window);
+    // Same lock order as config writes: data -> config -> consent. A master-off
+    // change cannot race between the final check and granting the new epoch.
+    let data = crate::data_store::read_guard();
+    let smart_enabled = crate::config::load_under_data_lock().privileged_capture;
     let mut consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
-    if answer == IDOK && consent.epoch() == start_epoch && still_trusted {
+    if answer == IDOK && consent.epoch() == start_epoch && still_trusted && smart_enabled {
+        *SHORTCUT.lock().unwrap_or_else(|p| p.into_inner()) = shortcut;
         consent.grant(POLICY_VERSION);
         *MODE.lock().unwrap_or_else(|p| p.into_inner()) = Mode::Compatibility;
     } else {
@@ -156,6 +211,7 @@ pub fn request_authorization(window: WebviewWindow, mode: Mode) -> Result<State,
         *MODE.lock().unwrap_or_else(|p| p.into_inner()) = Mode::Safe;
     }
     drop(consent);
+    drop(data);
     Ok(state())
 }
 struct Clipboard;
@@ -330,17 +386,8 @@ fn current(r: &Request, e: u64, p: &Process) -> bool {
     ) && unsafe { GetExitCodeProcess(p.0, &mut code).is_ok() }
         && code == 259
 }
-unsafe fn copy_chord() -> crate::copy_engine::SendStatus {
-    if !crate::release_policy::safe_copy_available() {
-        return crate::copy_engine::SendStatus::Rejected;
-    }
-    if [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN, VK_INSERT]
-        .iter()
-        .any(|v| GetAsyncKeyState(i32::from(v.0)) < 0)
-    {
-        return crate::copy_engine::SendStatus::Rejected;
-    }
-    let key = |v: VIRTUAL_KEY, flags| INPUT {
+fn key_input(v: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
@@ -351,23 +398,57 @@ unsafe fn copy_chord() -> crate::copy_engine::SendStatus {
                 dwExtraInfo: 0,
             },
         },
-    };
-    // Use the legacy-tested chord once; never fall back to another global chord.
-    let sent = SendInput(
-        &[
-            key(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
-            key(VK_INSERT, KEYBD_EVENT_FLAGS(0)),
-            key(VK_INSERT, KEYEVENTF_KEYUP),
-            key(VK_CONTROL, KEYEVENTF_KEYUP),
+    }
+}
+fn copy_inputs(
+    shortcut: CopyShortcut,
+    authorized: bool,
+    mut pressed: impl FnMut(VIRTUAL_KEY) -> bool,
+) -> Option<[INPUT; 4]> {
+    if !authorized
+        || [
+            VK_CONTROL,
+            VK_MENU,
+            VK_SHIFT,
+            VK_LWIN,
+            VK_RWIN,
+            shortcut.key(),
+        ]
+        .into_iter()
+        .any(&mut pressed)
+    {
+        return None;
+    }
+    Some([
+        key_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
+        key_input(shortcut.key(), KEYBD_EVENT_FLAGS(0)),
+        key_input(shortcut.key(), KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ])
+}
+fn release_inputs(shortcut: CopyShortcut, sent: u32) -> Vec<INPUT> {
+    match sent {
+        1 | 3 => vec![key_input(VK_CONTROL, KEYEVENTF_KEYUP)],
+        2 => vec![
+            key_input(shortcut.key(), KEYEVENTF_KEYUP),
+            key_input(VK_CONTROL, KEYEVENTF_KEYUP),
         ],
-        std::mem::size_of::<INPUT>() as i32,
-    );
+        _ => Vec::new(),
+    }
+}
+unsafe fn copy_chord(shortcut: CopyShortcut, authorized: bool) -> crate::copy_engine::SendStatus {
+    if !crate::release_policy::safe_copy_available() {
+        return crate::copy_engine::SendStatus::Rejected;
+    }
+    let Some(inputs) = copy_inputs(shortcut, authorized, |v| {
+        GetAsyncKeyState(i32::from(v.0)) < 0
+    }) else {
+        return crate::copy_engine::SendStatus::Rejected;
+    };
+    // Exactly one chosen chord; cleanup can only release keys, never try another copy.
+    let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     if sent != 4 && sent > 0 {
-        let mut releases = Vec::with_capacity(2);
-        if sent >= 2 {
-            releases.push(key(VK_INSERT, KEYEVENTF_KEYUP));
-        }
-        releases.push(key(VK_CONTROL, KEYEVENTF_KEYUP));
+        let releases = release_inputs(shortcut, sent);
         let _ = SendInput(&releases, std::mem::size_of::<INPUT>() as i32);
     }
     match sent {
@@ -415,7 +496,7 @@ fn copy_failure_reason(code: &str) -> &'static str {
         "COPY_SELECTION_CHANGED" => "读取期间选区发生变化，未采纳该文本",
         "COPY_RESTORE_SKIPPED" => "复制结果来源不明、未稳定或事务期间发生变化；为避免覆盖新内容已跳过恢复，剪贴板中可能仍有本次复制内容",
         "COPY_RESTORE_FAILED" => "原剪贴板恢复未完整完成，剪贴板中可能仍有本次复制内容",
-        "COPY_INPUT_FAILED" => "Windows 未完整接收一次 Ctrl+Insert 输入",
+        "COPY_INPUT_FAILED" => "Windows 未完整接收所选复制快捷键输入",
         "COPY_SOURCE_UNVERIFIED" => "剪贴板写入者与目标无可信关联或复制结果不稳定，未采纳且未覆盖该内容",
         "COPY_DESKTOP_PROTECTED" => "当前不是可验证的普通交互桌面，未发送快捷键",
         "COPY_SENSITIVE_CONTROL" => "识别到密码框或敏感输入目标，未发送快捷键",
@@ -425,6 +506,7 @@ fn copy_failure_reason(code: &str) -> &'static str {
 struct NativeIo<'a> {
     request: &'a Request,
     epoch: u64,
+    shortcut: CopyShortcut,
     process: Process,
     app: &'a AppHandle,
     focus: Target,
@@ -469,7 +551,35 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
         {
             return crate::copy_engine::SendStatus::Rejected;
         }
-        unsafe { copy_chord() }
+        // Serialize the final permission check + SendInput with config writes and
+        // revocation. A queued request cannot slip through after either switch is off.
+        let _data = crate::data_store::read_guard();
+        let smart_enabled = crate::config::load_under_data_lock().privileged_capture;
+        let consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
+        let target_current = self.request.valid(
+            crate::selection_runtime::target(),
+            crate::selection_runtime::generation(),
+            crate::selection_runtime::now_ms(),
+        ) && crate::selection_runtime::is_native_target(self.request.target)
+            && if self.compatibility {
+                compatibility_focus(self.request.target).ok() == Some(self.focus)
+            } else {
+                native_focus(self.request.target) == Some(self.focus.hwnd)
+            };
+        let status = unsafe {
+            copy_chord(
+                self.shortcut,
+                target_current
+                    && copy_authorized(smart_enabled, &consent, self.epoch)
+                    && self.sequence() == self.prepared_sequence,
+            )
+        };
+        crate::diag::log(&format!(
+            "selection copy_shortcut={} input_status={status:?} request={}",
+            self.shortcut.label(),
+            self.request.generation
+        ));
+        status
     }
     fn wait(&mut self, before: u32) -> Result<Stamp, crate::copy_engine::WaitFailure> {
         let deadline = Instant::now() + Duration::from_millis(400);
@@ -745,6 +855,13 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
     }
     let _serial = TRANSACTION.try_lock().map_err(|_| "COPY_BUSY")?;
     let e = epoch().ok_or("COPY_UNAUTHORIZED")?;
+    let shortcut = {
+        let consent = CONSENT.lock().unwrap_or_else(|p| p.into_inner());
+        if !consent.matches(e) {
+            return Err("COPY_UNAUTHORIZED");
+        }
+        *SHORTCUT.lock().unwrap_or_else(|p| p.into_inner())
+    };
     unsafe {
         let process = Process(
             OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, r.target.pid)
@@ -776,6 +893,7 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
             &mut NativeIo {
                 request: r,
                 epoch: e,
+                shortcut,
                 process,
                 app,
                 focus,
@@ -790,6 +908,57 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn keys(inputs: &[INPUT]) -> Vec<(u16, u32)> {
+        inputs
+            .iter()
+            .map(|input| {
+                assert_eq!(input.r#type, INPUT_KEYBOARD);
+                let key = unsafe { input.Anonymous.ki };
+                (key.wVk.0, key.dwFlags.0)
+            })
+            .collect()
+    }
+    #[test]
+    fn selected_shortcut_emits_exactly_one_complete_chord() {
+        for (shortcut, expected) in [
+            (
+                CopyShortcut::CtrlInsert,
+                vec![(17, 0), (45, 0), (45, 2), (17, 2)],
+            ),
+            (
+                CopyShortcut::CtrlC,
+                vec![(17, 0), (67, 0), (67, 2), (17, 2)],
+            ),
+        ] {
+            assert_eq!(
+                keys(&copy_inputs(shortcut, true, |_| false).unwrap()),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn revoked_queued_copy_or_held_modifier_never_produces_input() {
+        for shortcut in [CopyShortcut::CtrlInsert, CopyShortcut::CtrlC] {
+            let mut consent = Consent::empty();
+            consent.grant(POLICY_VERSION);
+            let queued_epoch = consent.epoch();
+            consent.revoke();
+            assert!(copy_inputs(shortcut, consent.matches(queued_epoch), |_| false).is_none());
+            for held in [17, 18, 16, 91, 92, shortcut.key().0] {
+                assert!(copy_inputs(shortcut, true, |key| key.0 == held).is_none());
+            }
+        }
+    }
+    #[test]
+    fn partial_input_cleanup_releases_only_the_selected_keys() {
+        for (shortcut, key) in [(CopyShortcut::CtrlInsert, 45), (CopyShortcut::CtrlC, 67)] {
+            assert!(release_inputs(shortcut, 0).is_empty());
+            assert_eq!(keys(&release_inputs(shortcut, 1)), vec![(17, 2)]);
+            assert_eq!(keys(&release_inputs(shortcut, 2)), vec![(key, 2), (17, 2)]);
+            assert_eq!(keys(&release_inputs(shortcut, 3)), vec![(17, 2)]);
+            assert!(release_inputs(shortcut, 4).is_empty());
+        }
+    }
     #[test]
     fn snapshot_timeout_reason_does_not_claim_it_can_interrupt_delayed_rendering() {
         let reason = copy_failure_reason("COPY_SNAPSHOT_UNSTABLE");
@@ -821,15 +990,18 @@ mod tests {
     }
     #[test]
     fn state_and_epoch_follow_the_build_gate_but_old_config_never_grants_consent() {
-        CONSENT
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .grant(POLICY_VERSION);
+        let mut consent = Consent::empty();
         let available = crate::release_policy::safe_copy_available();
-        assert_eq!(state().available, available);
-        assert_eq!(state().enabled, available);
-        assert_eq!(epoch().is_some(), available);
-        revoke();
+        assert!(!copy_authorized(true, &consent, consent.epoch()));
+        consent.grant(POLICY_VERSION);
+        let queued = consent.epoch();
+        assert_eq!(copy_authorized(true, &consent, queued), available);
+        assert!(!copy_authorized(false, &consent, queued));
+        consent.revoke();
+        assert!(!copy_authorized(true, &consent, queued));
+        consent.grant(POLICY_VERSION);
+        assert!(!copy_authorized(true, &consent, queued));
+        assert!(!copy_authorized(true, &Consent::empty(), 0));
     }
     #[test]
     fn centralized_policy_requires_all_gates() {

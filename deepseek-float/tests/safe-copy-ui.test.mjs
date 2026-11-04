@@ -3,71 +3,171 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {JSDOM} from 'jsdom';
 const tick=()=>new Promise(r=>setTimeout(r,0));
-test('compatibility mode requires native consent and safe/off revoke without legacy config writes',async()=>{
- const p=page((command,args)=>command==='safe_copy_authorize'
-  ?Promise.resolve({available:true,enabled:true,mode:args.mode})
-  :command==='safe_copy_revoke'?Promise.resolve({available:true,enabled:false,mode:args.mode}):undefined);
- try{await tick();const mode=p.d.querySelector('#safe-copy-mode');assert.ok(mode);
-  assert.equal(mode.value,'safe');mode.value='compatibility';mode.dispatchEvent(new p.w.Event('change'));await tick();
-  assert.equal(mode.value,'compatibility');assert.deepEqual(JSON.parse(JSON.stringify(p.calls.find(c=>c.command==='safe_copy_authorize').args)),{mode:'compatibility'});
-  mode.value='off';mode.dispatchEvent(new p.w.Event('change'));await tick();assert.equal(mode.value,'off');
-  assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);
- }finally{p.close();}
-});
+const nativeStatus=(overrides={})=>({smart_enabled:true,available:true,enabled:false,shortcut:'ctrl-insert',mode:'safe',last_error:null,session_only:true,...overrides});
+const granted=(shortcut='ctrl-insert')=>nativeStatus({enabled:true,mode:'compatibility',shortcut});
 function page(handler=()=>undefined){
  const dom=new JSDOM(readFileSync(new URL('../poc/settings.html',import.meta.url),'utf8'),{runScripts:'outside-only',url:'https://tauri.localhost'});
+ let smart=true;
  const calls=[];dom.window.__TAURI_INTERNALS__={invoke:(command,args)=>{
-  calls.push({command,args});return handler(command,args)??Promise.resolve(command==='config_get'?{clipboard_fallback_enabled:true}:command==='safe_copy_status'?{available:true,enabled:false}:true);
+  calls.push({command,args});const result=handler(command,args);if(result!==undefined)return result;
+  if(command==='config_set_privileged')smart=args.enable;
+  return Promise.resolve(command==='config_get'?{privileged_capture:smart,clipboard_fallback_enabled:true}:['safe_copy_status','safe_copy_revoke'].includes(command)?nativeStatus({smart_enabled:smart}):true);
  }};dom.window.alert=()=>{};dom.window.confirm=()=>{throw Error('Frontend confirmation must not authorize');};
  for(const s of dom.window.document.querySelectorAll('script'))dom.window.eval(s.textContent);
  dom.window.__dsfSettingsInit({prompts:[]});
  return {w:dom.window,d:dom.window.document,calls,close:()=>dom.window.close()};
 }
-const choose=(p,value)=>{const el=p.d.querySelector('#safe-copy-mode');el.value=value;el.dispatchEvent(new p.w.Event('change'));return el;};
+const fallback=p=>{const el=p.d.querySelector('#safe-copy-enabled');assert.ok(el,'auto copy checkbox exists');return el;};
+const shortcut=p=>{const el=p.d.querySelector('#safe-copy-shortcut');assert.ok(el,'granted shortcut selector exists');return el;};
+const master=p=>p.d.querySelector('[data-key="privileged"]');
+const change=(p,el,value)=>{if(el.type==='checkbox')el.checked=value;else el.value=value;el.dispatchEvent(new p.w.Event('change'));return el;};
+const choose=(p,on)=>change(p,fallback(p),on);
+const commands=(p,name)=>p.calls.filter(c=>c.command===name);
+const plain=value=>JSON.parse(JSON.stringify(value));
+
+test('two switches default to smart on and fallback off with the shortcut hidden',async()=>{
+ const p=page();try{await tick();assert.equal(master(p).checked,true);assert.equal(fallback(p).type,'checkbox');assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,false);assert.equal(shortcut(p).hidden,true);assert.equal(shortcut(p).value,'ctrl-insert');assert.deepEqual([...shortcut(p).options].map(o=>o.value),['ctrl-insert','ctrl-c']);assert.equal(p.d.querySelector('#safe-copy-mode'),null);}finally{p.close();}
+});
+test('fallback requires native consent and revokes without legacy config writes',async()=>{
+ const p=page(c=>c==='safe_copy_authorize'?Promise.resolve(granted()):undefined);
+ try{await tick();choose(p,true);await tick();assert.equal(fallback(p).checked,true);assert.equal(shortcut(p).hidden,false);assert.deepEqual(plain(commands(p,'safe_copy_authorize')[0].args),{mode:'compatibility',shortcut:'ctrl-insert'});
+  choose(p,false);await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.deepEqual(plain(commands(p,'safe_copy_revoke')[0].args),{mode:'safe'});assert.equal(commands(p,'config_set_clipboard_fallback').length,0);
+ }finally{p.close();}
+});
 test('legacy config and imported flags cannot grant compatibility consent',async()=>{
- const p=page();try{await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true,copy_mode:'compatibility'});await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+ const p=page();try{await tick();assert.equal(fallback(p).checked,false);p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true,copy_mode:'compatibility',shortcut:'ctrl-c'});await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.equal(commands(p,'safe_copy_authorize').length,0);assert.equal(commands(p,'config_set_clipboard_fallback').length,0);}finally{p.close();}
 });
 test('compatibility warning describes shared clipboard risk and supported snapshot limits',async()=>{
- const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;for(const pattern of [/延迟渲染.*同步等待/,/不能中断仍未返回/,/不保证.*无损/,/HTML.*RTF.*图片/,/跳过恢复/,/一次 Ctrl\+Insert/,/不代表已经通过兼容验收/])assert.match(hint,pattern);}finally{p.close();}
+ const p=page();try{await tick();const hint=p.d.querySelector('#safe-copy-hint').textContent;for(const pattern of [/延迟渲染.*同步等待/,/不能中断仍未返回/,/不保证.*无损/,/HTML.*RTF.*图片/,/跳过恢复/,/空.*Unicode.*ANSI.*OEM.*区域/,/本次运行/,/一次.*快捷键/,/不.*自动.*另/])assert.match(hint,pattern);}finally{p.close();}
 });
 test('native denial leaves compatibility off without invoking the legacy setting',async()=>{
- const p=page(c=>c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:false,mode:'safe'}):undefined);
- try{await tick();choose(p,'compatibility');await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);assert.equal(p.calls.filter(c=>c.command==='config_set_clipboard_fallback').length,0);}finally{p.close();}
+ const p=page(c=>c==='safe_copy_authorize'?Promise.resolve(nativeStatus()):undefined);
+ try{await tick();choose(p,true);await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.equal(commands(p,'safe_copy_authorize').length,1);assert.equal(commands(p,'config_set_clipboard_fallback').length,0);}finally{p.close();}
 });
 test('pending native consent prevents duplicate requests',async()=>{
  let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
- try{await tick();const el=choose(p,'compatibility');assert.equal(el.disabled,true);choose(p,'compatibility');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,1);done({available:true,enabled:false,mode:'safe'});await tick();assert.equal(el.disabled,false);assert.equal(el.value,'safe');}finally{p.close();}
+ try{await tick();const el=choose(p,true);assert.equal(el.disabled,true);assert.equal(el.checked,false);choose(p,true);assert.equal(commands(p,'safe_copy_authorize').length,1);done(nativeStatus());await tick();assert.equal(el.disabled,false);assert.equal(el.checked,false);}finally{p.close();}
 });
-test('native status push cannot cancel or unlock a pending mode change',async()=>{
- for(const requested of ['compatibility','off','safe']){
+test('native status push cannot cancel or unlock a pending fallback change',async()=>{
+ for(const requested of [true,false]){
   let done;const p=page(c=>['safe_copy_authorize','safe_copy_revoke'].includes(c)?new Promise(r=>done=r):undefined);
-  try{await tick();const el=choose(p,requested);
-   p.w.__dsfSafeCopyStatus({available:true,enabled:false,mode:'safe',last_error:'old transaction'});
+  try{await tick();if(!requested)p.w.__dsfSafeCopyStatus(granted());const el=choose(p,requested);
+   p.w.__dsfSafeCopyStatus(nativeStatus({last_error:'old transaction'}));
    assert.equal(el.disabled,true,'status push must not unlock an outstanding native request');
    choose(p,requested);assert.equal(p.calls.filter(c=>['safe_copy_authorize','safe_copy_revoke'].includes(c.command)).length,1);
-   done({available:true,enabled:requested==='compatibility',mode:requested});await tick();
-   assert.equal(el.value,requested);assert.equal(el.disabled,false);
+   done(requested?granted():nativeStatus());await tick();
+   assert.equal(el.checked,requested);assert.equal(el.disabled,false);
   }finally{p.close();}
  }
 });
 test('authorization errors fail closed with a visible reason and allow retry',async()=>{
  const p=page(c=>c==='safe_copy_authorize'?Promise.reject(Error('native denied')):undefined);
- try{await tick();const el=choose(p,'compatibility');await tick();assert.equal(el.value,'safe');assert.equal(el.disabled,false);assert.match(p.d.querySelector('#safe-copy-status').textContent,/native denied/);}finally{p.close();}
+ try{await tick();const el=choose(p,true);await tick();assert.equal(el.checked,false);assert.equal(el.disabled,false);assert.equal(shortcut(p).hidden,true);assert.match(p.d.querySelector('#safe-copy-status').textContent,/native denied/);choose(p,true);await tick();assert.equal(commands(p,'safe_copy_authorize').length,2);}finally{p.close();}
 });
 test('late status read cannot override a newer native authorization',async()=>{
- let status,reads=0;const p=page(c=>c==='safe_copy_status'?(++reads===1?Promise.resolve({available:true,enabled:false,mode:'safe'}):new Promise(r=>status=r)):c==='safe_copy_authorize'?Promise.resolve({available:true,enabled:true,mode:'compatibility'}):undefined);
- try{await tick();p.w.__dsfSettingsDataRestored({prompts:[]});await tick();const el=choose(p,'compatibility');await tick();assert.equal(el.value,'compatibility');status({available:true,enabled:false,mode:'safe'});await tick();assert.equal(el.value,'compatibility');}finally{p.close();}
+ let status,delay=false;const p=page(c=>c==='safe_copy_status'?(delay?new Promise(r=>status=r):Promise.resolve(nativeStatus())):c==='safe_copy_authorize'?Promise.resolve(granted()):undefined);
+ try{await tick();delay=true;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();const el=choose(p,true);await tick();assert.equal(el.checked,true);status(nativeStatus());await tick();assert.equal(el.checked,true);}finally{p.close();}
 });
 test('restore reflects runtime revocation rather than imported flags',async()=>{
- let enabled=true;const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:true,enabled,mode:'compatibility'}):undefined);
- try{await tick();const el=p.d.querySelector('#safe-copy-mode');assert.equal(el.value,'compatibility');enabled=false;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();await tick();assert.equal(el.value,'safe');assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+ let enabled=true;const p=page(c=>c==='safe_copy_status'?Promise.resolve(nativeStatus({enabled,mode:'compatibility'})):undefined);
+ try{await tick();const el=fallback(p);assert.equal(el.checked,true);enabled=false;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();await tick();assert.equal(el.checked,false);assert.equal(commands(p,'safe_copy_authorize').length,0);}finally{p.close();}
 });
-test('safe and off revoke without an authorization dialog',async()=>{
- const p=page((c,args)=>c==='safe_copy_revoke'?Promise.resolve({available:true,enabled:false,mode:args.mode}):undefined);
- try{await tick();for(const mode of ['off','safe']){choose(p,mode);await tick();assert.equal(p.d.querySelector('#safe-copy-mode').value,mode);}assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);}finally{p.close();}
+test('both passive native modes render off and revoke without an authorization dialog',async()=>{
+ for(const mode of ['off','safe']){const p=page(c=>c==='safe_copy_status'?Promise.resolve(nativeStatus({mode})):undefined);
+  try{await tick();assert.equal(fallback(p).checked,false);p.w.__dsfSafeCopyStatus(granted());choose(p,false);await tick();assert.equal(fallback(p).checked,false);assert.equal(commands(p,'safe_copy_revoke').length,1);assert.equal(commands(p,'safe_copy_authorize').length,0);}finally{p.close();}}
 });
 test('transaction failure is visible without clipboard text',async()=>{
- const p=page();try{await tick();p.w.__dsfSafeCopyStatus({available:true,enabled:true,mode:'compatibility',last_error:'原剪贴板格式不支持'});assert.match(p.d.querySelector('#safe-copy-status').textContent,/原剪贴板格式不支持/);}finally{p.close();}
+ const p=page();try{await tick();p.w.__dsfSafeCopyStatus({...granted(),last_error:'原剪贴板格式不支持'});assert.match(p.d.querySelector('#safe-copy-status').textContent,/原剪贴板格式不支持/);}finally{p.close();}
+});
+
+test('changing the granted shortcut uses one new native consent transaction',async()=>{
+ let done;const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
+ try{await tick();change(p,shortcut(p),'ctrl-c');assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.equal(shortcut(p).disabled,true);assert.deepEqual(plain(commands(p,'safe_copy_authorize')[0].args),{mode:'compatibility',shortcut:'ctrl-c'});assert.equal(commands(p,'safe_copy_revoke').length,0);
+  change(p,shortcut(p),'ctrl-insert');choose(p,true);assert.equal(commands(p,'safe_copy_authorize').length,1);done(granted('ctrl-c'));await tick();assert.equal(fallback(p).checked,true);assert.equal(shortcut(p).hidden,false);assert.equal(shortcut(p).value,'ctrl-c');assert.equal(shortcut(p).disabled,false);
+ }finally{p.close();}
+});
+test('canceled shortcut consent revokes the old grant and stale pushes cannot restore it',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_authorize'?Promise.resolve(nativeStatus({shortcut:'ctrl-c'})):undefined);
+ try{await tick();change(p,shortcut(p),'ctrl-c');await tick();p.w.__dsfSafeCopyStatus(granted());assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.equal(fallback(p).disabled,false);}finally{p.close();}
+});
+test('unchanged or hidden shortcut cannot open native consent',async()=>{
+ const p=page();try{await tick();change(p,shortcut(p),'ctrl-c');assert.equal(commands(p,'safe_copy_authorize').length,0);p.w.__dsfSafeCopyStatus(granted());change(p,shortcut(p),'ctrl-insert');assert.equal(commands(p,'safe_copy_authorize').length,0);}finally{p.close();}
+});
+test('shortcut consent rejection fails closed and displays the native error',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_authorize'?Promise.reject(Error('shortcut consent failed')):undefined);
+ try{await tick();change(p,shortcut(p),'ctrl-c');await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);assert.equal(commands(p,'safe_copy_revoke').length,1);assert.match(p.d.querySelector('#safe-copy-status').textContent,/shortcut consent failed/);}finally{p.close();}
+});
+test('smart off revokes fallback immediately, persists once, and refreshes native status',async()=>{
+ let enabled=true;const p=page((c,args)=>c==='safe_copy_status'?Promise.resolve(nativeStatus({smart_enabled:enabled,enabled,mode:'compatibility'})):c==='config_set_privileged'?(enabled=args.enable,Promise.resolve(true)):undefined);
+ try{await tick();const reads=commands(p,'safe_copy_status').length;master(p).click();assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,true);assert.equal(shortcut(p).hidden,true);await tick();assert.deepEqual(plain(commands(p,'config_set_privileged').map(c=>c.args)),[{enable:false}]);assert.equal(commands(p,'safe_copy_revoke').length,1);assert.ok(commands(p,'safe_copy_status').length>reads);
+  fallback(p).disabled=false;choose(p,true);change(p,shortcut(p),'ctrl-c');assert.equal(fallback(p).disabled,true);assert.equal(commands(p,'safe_copy_authorize').length,0);
+  p.w.__dsfSafeCopyStatus(granted());assert.equal(master(p).checked,false);assert.equal(fallback(p).checked,false);
+ }finally{p.close();}
+});
+test('late authorization and pushes cannot override master off or unlock duplicate consent',async()=>{
+ let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
+ try{await tick();choose(p,true);master(p).click();await tick();p.w.__dsfSafeCopyStatus(granted());assert.equal(fallback(p).disabled,true);done(granted());await tick();assert.equal(master(p).checked,false);assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,true);assert.equal(shortcut(p).hidden,true);assert.equal(commands(p,'safe_copy_authorize').length,1);}finally{p.close();}
+});
+test('off then on during consent still requires a fresh grant after the old modal resolves',async()=>{
+ let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
+ try{await tick();choose(p,true);master(p).click();await tick();master(p).click();await tick();assert.equal(master(p).checked,true);assert.equal(fallback(p).disabled,true);done(granted());await tick();assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,false);choose(p,true);assert.equal(commands(p,'safe_copy_authorize').length,2);done(nativeStatus());await tick();}finally{p.close();}
+});
+test('native master-off push invalidates a pending authorization without unlocking it',async()=>{
+ let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
+ try{await tick();choose(p,true);p.w.__dsfSafeCopyStatus(nativeStatus({smart_enabled:false}));assert.equal(master(p).checked,false);assert.equal(fallback(p).disabled,true);done(granted());await tick();assert.equal(master(p).checked,false);assert.equal(fallback(p).checked,false);}finally{p.close();}
+});
+test('turning smart back on refreshes status but never restores an old fallback grant',async()=>{
+ let smart=false;const p=page((c,args)=>c==='config_get'?Promise.resolve({privileged_capture:smart}):c==='safe_copy_status'?Promise.resolve(nativeStatus({smart_enabled:smart,enabled:true,mode:'compatibility'})):c==='config_set_privileged'?(smart=args.enable,Promise.resolve(true)):undefined);
+ try{await tick();assert.equal(master(p).checked,false);assert.equal(fallback(p).checked,false);const reads=commands(p,'safe_copy_status').length;master(p).click();await tick();assert.equal(master(p).checked,true);assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,false);assert.ok(commands(p,'safe_copy_status').length>reads);assert.equal(commands(p,'safe_copy_authorize').length,0);}finally{p.close();}
+});
+test('failed master persistence rolls back master, keeps fallback revoked, and exposes the error',async()=>{
+ for(const failure of [false,Error('disk failed')]){const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='config_set_privileged'?(failure instanceof Error?Promise.reject(failure):Promise.resolve(failure)):undefined);
+  try{await tick();p.w.console.error=()=>{};master(p).click();await tick();assert.equal(master(p).checked,true);assert.equal(master(p).disabled,false);assert.equal(fallback(p).checked,false);assert.match(p.d.querySelector('#safe-copy-status').textContent,/保存失败|disk failed/);}finally{p.close();}}
+});
+test('revoke failure stays off even after stale enabled status and permits a new consent',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_revoke'?Promise.reject(Error('revoke failed')):c==='safe_copy_authorize'?Promise.resolve(granted()):undefined);
+ try{await tick();choose(p,false);await tick();p.w.__dsfSafeCopyStatus(granted());assert.equal(fallback(p).checked,false);assert.match(p.d.querySelector('#safe-copy-status').textContent,/revoke failed/);choose(p,true);await tick();assert.equal(fallback(p).checked,true);}finally{p.close();}
+});
+test('status read failure disables fallback and exposes a reason',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.reject(Error('status unavailable')):undefined);
+ try{await tick();assert.equal(fallback(p).checked,false);assert.equal(fallback(p).disabled,true);assert.equal(shortcut(p).hidden,true);assert.match(p.d.querySelector('#safe-copy-status').textContent,/status unavailable/);}finally{p.close();}
+});
+test('late enabled read cannot undo a newer native revocation push',async()=>{
+ const reads=[];const p=page(c=>c==='safe_copy_status'?new Promise(r=>reads.push(r)):undefined);
+ try{await tick();p.w.__dsfSafeCopyStatus(nativeStatus({smart_enabled:false}));reads.forEach(r=>r(granted()));await tick();assert.equal(master(p).checked,false);assert.equal(fallback(p).checked,false);}finally{p.close();}
+});
+test('restore invalidates pending consent and never grants from imported flags',async()=>{
+ let done;const p=page(c=>c==='safe_copy_authorize'?new Promise(r=>done=r):undefined);
+ try{await tick();choose(p,true);p.w.__dsfSettingsDataRestored({prompts:[],privileged_capture:true,clipboard_fallback_enabled:true});await tick();done(granted());await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);}finally{p.close();}
+});
+
+test('runtime revocation cannot be undone by a delayed enabled push',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):undefined);
+ try{await tick();p.w.__dsfSafeCopyStatus(nativeStatus());p.w.__dsfSafeCopyStatus(granted());assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);}finally{p.close();}
+});
+test('a native master-off notification does not become a permanent user preference',async()=>{
+ const p=page();try{
+  await tick();master(p).click();await tick();master(p).click();await tick();
+  assert.equal(master(p).checked,true);
+  p.w.__dsfSafeCopyStatus(nativeStatus({smart_enabled:false}));
+  assert.equal(fallback(p).checked,false);
+  // A fresh native snapshot must be able to reflect the persisted master-on choice.
+  p.w.__dsfSafeCopyStatus(nativeStatus({smart_enabled:true}));
+  assert.equal(master(p).checked,true);
+  assert.equal(fallback(p).checked,false);
+ }finally{p.close();}
+});
+test('old shortcut status cannot replace a newly authorized shortcut',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_authorize'?Promise.resolve(granted('ctrl-c')):undefined);
+ try{await tick();change(p,shortcut(p),'ctrl-c');await tick();p.w.__dsfSafeCopyStatus(granted());assert.equal(fallback(p).checked,true);assert.equal(shortcut(p).value,'ctrl-c');}finally{p.close();}
+});
+test('authorization response for a different shortcut cannot grant the requested shortcut',async()=>{
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_authorize'?Promise.resolve(granted()):undefined);
+ try{await tick();change(p,shortcut(p),'ctrl-c');await tick();assert.equal(fallback(p).checked,false);assert.equal(shortcut(p).hidden,true);}finally{p.close();}
+});
+test('native master state takes precedence over a conflicting late config snapshot',async()=>{
+ const reads=[];const p=page(c=>c==='config_get'?new Promise(r=>reads.push(r)):c==='safe_copy_status'?Promise.resolve(nativeStatus({smart_enabled:false,enabled:true,mode:'compatibility'})):undefined);
+ try{await tick();reads.forEach(r=>r({privileged_capture:true,clipboard_fallback_enabled:true}));await tick();assert.equal(master(p).checked,false);assert.equal(fallback(p).disabled,true);assert.equal(fallback(p).checked,false);}finally{p.close();}
 });
 
 test('settings selection expiry removes preview and disables stale run controls',async()=>{
@@ -117,8 +217,18 @@ test('restore clears the delegated preview even without a separate native expiry
 });
 
 test('unavailable build stays disabled after restore even with imported flags',async()=>{
- const p=page(c=>c==='safe_copy_status'?Promise.resolve({available:false,enabled:true,mode:'compatibility'}):undefined);
- try{await tick();const el=p.d.querySelector('#safe-copy-mode');assert.equal(el.disabled,true);assert.equal(el.value,'safe');p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true});await tick();await tick();assert.equal(el.disabled,true);choose(p,'compatibility');await tick();assert.equal(p.calls.filter(c=>c.command==='safe_copy_authorize').length,0);assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);}finally{p.close();}
+ for(const cfg of [{},{clipboard_fallback_enabled:false},{clipboard_fallback_enabled:true}]){const p=page(c=>c==='config_get'?Promise.resolve(cfg):c==='safe_copy_status'?Promise.resolve(nativeStatus({available:false,enabled:true,mode:'compatibility'})):undefined);
+  try{await tick();const el=fallback(p);assert.equal(el.disabled,true);assert.equal(el.checked,false);p.w.__dsfSettingsDataRestored({prompts:[],clipboard_fallback_enabled:true});await tick();await tick();assert.equal(el.disabled,true);el.disabled=false;choose(p,true);await tick();assert.equal(el.disabled,true);assert.equal(el.checked,false);assert.equal(commands(p,'safe_copy_authorize').length,0);assert.equal(commands(p,'config_set_clipboard_fallback').length,0);assert.match(p.d.querySelector('#safe-copy-hint').textContent,/此构建未提供/);}finally{p.close();}}
+});
+
+test('delayed legacy config cannot reenable an unavailable fallback',async()=>{
+ const reads=[];const p=page(c=>c==='config_get'?new Promise(r=>reads.push(r)):c==='safe_copy_status'?Promise.resolve(nativeStatus({available:false})):undefined);
+ try{await tick();fallback(p).disabled=false;choose(p,true);reads.forEach(r=>r({clipboard_fallback_enabled:true}));await tick();assert.equal(fallback(p).disabled,true);assert.equal(fallback(p).checked,false);assert.equal(commands(p,'safe_copy_authorize').length,0);}finally{p.close();}
+});
+
+test('pending master save rejects duplicates and stale config cannot overwrite the saved choice',async()=>{
+ let save,delay=false;const reads=[];const p=page(c=>c==='config_get'?(delay?new Promise(r=>reads.push(r)):Promise.resolve({privileged_capture:true})):c==='config_set_privileged'?new Promise(r=>save=r):undefined);
+ try{await tick();delay=true;p.w.__dsfSettingsDataRestored({prompts:[]});await tick();master(p).click();assert.equal(master(p).disabled,true);master(p).click();assert.equal(commands(p,'config_set_privileged').length,1);save(true);await tick();reads.forEach(r=>r({privileged_capture:true}));await tick();assert.equal(master(p).checked,false);assert.equal(master(p).disabled,false);assert.equal(fallback(p).disabled,true);}finally{p.close();}
 });
 
 test('cold settings page asks for current native snapshot after handlers are ready',async()=>{
@@ -226,7 +336,7 @@ test('clicking visible more collapses it and reopening preserves the selection t
 
 test('smart selection default and explicit preferences render without a legacy control',async()=>{
  for(const cfg of [{}, {privileged_capture:false}, {privileged_capture:true}]){
-  const p=page(c=>c==='config_get'?Promise.resolve(cfg):c==='safe_copy_status'?Promise.resolve({available:false,enabled:false}):undefined);
+  const p=page(c=>c==='config_get'?Promise.resolve(cfg):c==='safe_copy_status'?Promise.resolve(nativeStatus({smart_enabled:cfg.privileged_capture!==false,available:false})):undefined);
   try{await tick();
    const el=p.d.querySelector('[data-key="privileged"]');
    assert.equal(el.checked,cfg.privileged_capture!==false);

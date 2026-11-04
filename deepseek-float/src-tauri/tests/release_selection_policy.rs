@@ -85,7 +85,7 @@ fn every_copy_entry_and_side_effect_is_guarded_in_the_backend() {
         "pub fn request_authorization(",
         "fn epoch()",
         "unsafe fn snapshot()",
-        "unsafe fn copy_chord()",
+        "unsafe fn copy_chord(",
         "fn capture_inner(",
         "fn restore(",
     ] {

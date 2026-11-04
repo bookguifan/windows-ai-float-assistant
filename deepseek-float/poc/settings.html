@@ -145,13 +145,17 @@ input.url-box { width: 100%; box-sizing: border-box; }
           <div class="toggle-row">
             <div class="meta">
               <span class="t-label">智能划词增强</span>
-              <span class="t-hint">优先 UIA；失败时尝试标准 Unicode Edit 原生选区读取，不模拟复制、不读取密码控件，不提升 Windows 权限</span>
+              <span class="t-hint">优先通过 UIA 和原生控件读取选中文本，不操作系统剪贴板。关闭后同时撤销自动复制回退。</span>
             </div>
-            <label class="switch"><input type="checkbox" data-key="privileged" /><span class="slider"></span></label>
+            <label class="switch"><input type="checkbox" data-key="privileged" aria-label="智能划词增强" checked /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">默认安全模式，仅 UIA / 原生读取。兼容模式需要本机确认，本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
-            <select id="safe-copy-mode" aria-label="自动复制模式" disabled><option value="safe">安全模式（默认）</option><option value="compatibility">兼容模式</option><option value="off">关闭自动复制</option></select>
+            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板。默认关闭，需本机确认，仅本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
+            <label class="switch"><input type="checkbox" id="safe-copy-enabled" aria-label="自动复制回退" aria-describedby="safe-copy-hint safe-copy-status" disabled /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row" id="safe-copy-shortcut-row" hidden>
+            <div class="meta"><span class="t-label">复制快捷键</span><span class="t-hint">更换快捷键需重新确认；取消后回退关闭，不会自动尝试另一种快捷键。</span></div>
+            <select id="safe-copy-shortcut" aria-label="复制快捷键" hidden disabled><option value="ctrl-insert">Ctrl+Insert（默认）</option><option value="ctrl-c">Ctrl+C</option></select>
           </div>
           <div class="toggle-row">
             <div class="meta">
@@ -708,6 +712,10 @@ input.url-box { width: 100%; box-sizing: border-box; }
         try {
           window.__dsfSettingsSelectionExpired();
           panelSwitchRevision++;
+          // A restored preference is never session consent; invalidate any open dialog.
+          ++smartSelectionRevision;
+          smartSelectionChoice = null;
+          invalidateSafeCopy();
           const restored = payload && Array.isArray(payload.prompts) ? payload.prompts : [];
           prompts = restored.map((x) => ({
             id:String(x.id || ''), label:String(x.label || ''), instruction:String(x.instruction || ''),
@@ -829,7 +837,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
           setFeatureToggle("autostart", cfg && cfg.autostart);
           setFeatureToggle("fullscreen", cfg && cfg.hide_on_fullscreen);
           if (!smartSelectionSaving && smartRevision === smartSelectionRevision) {
-            setFeatureToggle("privileged", !!cfg && cfg.privileged_capture !== false);
+            setSmartSelection(!cfg || cfg.privileged_capture !== false);
           }
           refreshSafeCopy();
           const pu = document.getElementById("panel-url-input");
@@ -852,34 +860,122 @@ input.url-box { width: 100%; box-sizing: border-box; }
         }
       }
       let safeCopyRevision=0;
+      let safeCopyReadRevision=0;
       let safeCopyAvailable=false;
-      let safeCopyPending=false;
-      function applySafeCopyStatus(status){
-        const el=document.querySelector('#safe-copy-mode');
-        safeCopyAvailable=!!(status&&status.available);
-        el.value=safeCopyAvailable&&status.enabled&&status.mode==='compatibility'?'compatibility':status&&status.mode==='off'?'off':'safe';
-        el.disabled=!safeCopyAvailable;
-        document.querySelector('#safe-copy-hint').textContent=safeCopyAvailable
-          ?'安全模式默认只使用 UIA / 原生读取；兼容模式需原生确认，仅本次运行有效，读取失败后向可信前台目标投递一次 Ctrl+Insert，尝试兼容 WPS、浏览器等应用，不代表已经通过兼容验收。原剪贴板含 HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳，检测到并发修改时跳过恢复。Windows 延迟渲染可能同步等待原应用，超时检查不能中断仍未返回的系统调用；恢复不保证所有格式无损。关闭自动复制不会关闭 UIA / 原生读取。'
-          :'此构建未提供自动剪贴板回退。UIA、标准 Unicode Edit 原生读取和主动复制仍可使用。';
-        document.querySelector('#safe-copy-status').textContent=status&&status.last_error?'上次回退失败：'+status.last_error:el.value==='compatibility'?'兼容模式已授权（本次运行）':'未启用自动模拟复制';
+      let safeCopyPending=null;
+      let safeCopyGranted=false;
+      let safeCopyGrantBlocked=false;
+      let safeCopyShortcut='ctrl-insert';
+      let safeCopyMessage='';
+      let smartSelectionEnabled=true;
+      // Keep an explicit local off choice fenced against delayed native snapshots.
+      let smartSelectionChoice=null;
+      const safeCopyToggle=document.getElementById('safe-copy-enabled');
+      const safeCopyShortcutSelect=document.getElementById('safe-copy-shortcut');
+      const smartSelectionToggle=document.querySelector('[data-key="privileged"]');
+      function renderSafeCopy(){
+        smartSelectionToggle.checked=smartSelectionEnabled;
+        safeCopyToggle.checked=smartSelectionEnabled&&safeCopyGranted;
+        safeCopyToggle.disabled=!smartSelectionEnabled||!safeCopyAvailable||smartSelectionSaving||!!safeCopyPending;
+        safeCopyShortcutSelect.value=safeCopyShortcut;
+        safeCopyShortcutSelect.hidden=!safeCopyToggle.checked;
+        safeCopyShortcutSelect.disabled=safeCopyToggle.disabled||!safeCopyToggle.checked;
+        document.getElementById('safe-copy-shortcut-row').hidden=safeCopyShortcutSelect.hidden;
+        document.getElementById('safe-copy-hint').textContent=safeCopyAvailable
+          ?'智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板；每次只向可信前台目标发送一次所选快捷键，不会自动尝试另一种。默认关闭，需本机确认，仅本次运行有效。原剪贴板仅支持空内容、Unicode / ANSI / OEM 文本及区域格式；HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳；并发修改时跳过恢复。延迟渲染可能同步等待原应用，超时不能中断仍未返回的系统调用；不保证所有格式无损，不代表已经通过兼容验收。'
+          :'此构建未提供自动剪贴板回退。智能划词增强开启时仍可使用 UIA / 标准 Unicode Edit 读取；主动复制不受此开关影响。';
+        document.getElementById('safe-copy-status').textContent=safeCopyMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
       }
-      window.__dsfSafeCopyStatus=(status)=>{if(safeCopyPending)return;++safeCopyRevision;applySafeCopyStatus(status);};
+      function invalidateSafeCopy(){
+        ++safeCopyRevision;
+        safeCopyGrantBlocked=true;
+        safeCopyGranted=false;
+        safeCopyMessage='';
+        renderSafeCopy();
+      }
+      function setSmartSelection(on){
+        smartSelectionEnabled=!!on;
+        if(!on){safeCopyGrantBlocked=true;safeCopyGranted=false;}
+        renderSafeCopy();
+      }
+      function applySafeCopyStatus(status){
+        const nativeGranted=!!(status&&status.available&&status.enabled&&status.mode==='compatibility'&&['ctrl-insert','ctrl-c'].includes(status.shortcut));
+        if(safeCopyGranted&&!nativeGranted)safeCopyGrantBlocked=true;
+        safeCopyAvailable=!!(status&&status.available);
+        if(status&&typeof status.smart_enabled==='boolean'&&!smartSelectionSaving){
+          ++smartSelectionRevision;
+          setSmartSelection(smartSelectionChoice===false?false:status.smart_enabled);
+        }
+        safeCopyGranted=!!(nativeGranted&&smartSelectionEnabled&&!safeCopyGrantBlocked);
+        if(!safeCopyGrantBlocked&&status&&['ctrl-insert','ctrl-c'].includes(status.shortcut))safeCopyShortcut=status.shortcut;
+        if(status&&status.last_error)safeCopyMessage='上次回退失败：'+status.last_error;
+        renderSafeCopy();
+      }
+      window.__dsfSafeCopyStatus=(status)=>{
+        // A native off notification is restrictive even while a consent dialog is open.
+        if(status&&status.smart_enabled===false&&!smartSelectionSaving){
+          ++smartSelectionRevision;
+          // A native snapshot is not a new explicit user preference. A later
+          // current snapshot must be able to reflect a saved master-on choice.
+          invalidateSafeCopy();
+          setSmartSelection(false);
+        }
+        if(safeCopyPending||smartSelectionSaving)return;
+        // An older transaction's enabled push cannot change the consented shortcut.
+        if(status&&status.smart_enabled!==false&&status.enabled&&safeCopyGranted&&status.shortcut!==safeCopyShortcut)return;
+        ++safeCopyRevision;
+        applySafeCopyStatus(status);
+      };
       async function refreshSafeCopy(){
-        if(safeCopyPending)return;
         const revision=safeCopyRevision;
-        try{const status=await tauri.core.invoke('safe_copy_status');if(revision===safeCopyRevision)applySafeCopyStatus(status);}
-        catch{if(revision===safeCopyRevision)applySafeCopyStatus(null);}
+        const read=++safeCopyReadRevision;
+        try{
+          const status=await tauri.core.invoke('safe_copy_status');
+          if(read===safeCopyReadRevision&&revision===safeCopyRevision&&!safeCopyPending&&!smartSelectionSaving)applySafeCopyStatus(status);
+        }catch(error){
+          if(read===safeCopyReadRevision&&revision===safeCopyRevision&&!safeCopyPending&&!smartSelectionSaving){
+            applySafeCopyStatus(null);
+            safeCopyMessage='读取回退状态失败：'+String(error);
+            renderSafeCopy();
+          }
+        }
       }
       refreshSafeCopy();
-      document.querySelector('#safe-copy-mode').addEventListener('change',async(event)=>{
-        const el=event.target;if(!safeCopyAvailable){applySafeCopyStatus({available:false,mode:'safe'});return;}if(el.disabled)return;
-        const mode=el.value;const revision=++safeCopyRevision;safeCopyPending=true;el.disabled=true;
-        try{const status=await tauri.core.invoke(mode==='compatibility'?'safe_copy_authorize':'safe_copy_revoke',{mode});if(revision===safeCopyRevision)applySafeCopyStatus(status);}
-        catch(error){try{await tauri.core.invoke('safe_copy_revoke',{mode:'safe'});}catch{}if(revision===safeCopyRevision){applySafeCopyStatus({available:safeCopyAvailable,enabled:false,mode:'safe'});document.querySelector('#safe-copy-status').textContent='切换失败：'+String(error);}}
-        finally{safeCopyPending=false;if(revision===safeCopyRevision)el.disabled=!safeCopyAvailable;}
+      async function changeSafeCopy(enable,shortcut=safeCopyShortcut){
+        if(!safeCopyAvailable||!smartSelectionEnabled||smartSelectionSaving||safeCopyPending){renderSafeCopy();return;}
+        invalidateSafeCopy();
+        const revision=safeCopyRevision;
+        const request={revision};
+        safeCopyPending=request;
+        safeCopyShortcut=shortcut;
+        renderSafeCopy();
+        try{
+          // Native code revokes the old grant before prompting, and owns the entire transaction.
+          const status=await tauri.core.invoke(enable?'safe_copy_authorize':'safe_copy_revoke',enable?{mode:'compatibility',shortcut}:{mode:'safe'});
+          if(revision===safeCopyRevision&&smartSelectionEnabled&&!smartSelectionSaving){
+            const granted=!!(enable&&status&&status.available&&status.enabled&&status.smart_enabled===true&&status.mode==='compatibility'&&status.shortcut===shortcut);
+            safeCopyGrantBlocked=!granted;
+            applySafeCopyStatus(status);
+            if(enable&&status&&status.enabled&&!granted)throw new Error('授权状态与请求不一致，自动复制回退已关闭');
+          }else if(enable&&status&&status.enabled){
+            // An off/restore action invalidated this dialog; never accept its late result.
+            await tauri.core.invoke('safe_copy_revoke',{mode:'safe'});
+          }
+        }catch(error){
+          if(enable){try{await tauri.core.invoke('safe_copy_revoke',{mode:'safe'});}catch{}}
+          if(revision===safeCopyRevision){safeCopyGranted=false;safeCopyGrantBlocked=true;safeCopyMessage='切换失败：'+String(error);}
+        }finally{
+          if(safeCopyPending===request)safeCopyPending=null;
+          renderSafeCopy();
+        }
+      }
+      safeCopyToggle.addEventListener('change',()=>changeSafeCopy(safeCopyToggle.checked));
+      safeCopyShortcutSelect.addEventListener('change',()=>{
+        const shortcut=safeCopyShortcutSelect.value;
+        if(!safeCopyGranted||shortcut===safeCopyShortcut||!['ctrl-insert','ctrl-c'].includes(shortcut)){renderSafeCopy();return;}
+        changeSafeCopy(true,shortcut);
       });
-      document.querySelectorAll('#features input[type="checkbox"]').forEach((el) => {
+      document.querySelectorAll('#features input[type="checkbox"][data-key]').forEach((el) => {
         el.addEventListener("change", async () => {
           const key = el.dataset.key;
           const on = el.checked;
@@ -889,17 +985,30 @@ input.url-box { width: 100%; box-sizing: border-box; }
             ++smartSelectionRevision;
             smartSelectionSaving = true;
             el.disabled = true;
+            const previous=smartSelectionEnabled;
+            smartSelectionChoice=on;
+            invalidateSafeCopy();
+            setSmartSelection(on);
+            // Revoke immediately, including while an older consent dialog is pending.
+            const revoke=on?Promise.resolve():tauri.core.invoke('safe_copy_revoke',{mode:'safe'}).catch(error=>{
+              safeCopyMessage='关闭回退失败：'+String(error);
+            });
             try {
               const saved = await tauri.core.invoke("config_set_privileged", { enable: on });
               if (saved === false) throw new Error('智能划词设置保存失败');
             } catch (error) {
-              el.checked = !on;
+              smartSelectionChoice=previous;
+              setSmartSelection(previous);
+              safeCopyMessage='智能划词设置保存失败：'+String(error);
               console.error("[settings] smart selection save:", error);
             } finally {
+              await revoke;
               // Also reject reads started while the preference save was in flight.
               ++smartSelectionRevision;
               smartSelectionSaving = false;
               el.disabled = false;
+              renderSafeCopy();
+              refreshSafeCopy();
             }
             return;
           }

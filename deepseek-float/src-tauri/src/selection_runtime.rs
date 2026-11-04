@@ -54,7 +54,7 @@ pub fn target() -> Option<Target> {
     }
 }
 pub fn capture_enabled() -> bool {
-    crate::config::load().privileged_capture || crate::safe_copy::state().enabled
+    crate::config::load().privileged_capture
 }
 pub fn valid(r: &Request) -> bool {
     !STOP.load(Ordering::Acquire) && capture_enabled() && r.valid(target(), generation(), now_ms())
@@ -101,7 +101,7 @@ fn start(app: AppHandle) {
             let started_ms = now_ms();
             *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
             let cfg = crate::config::load();
-            if cfg.privileged_capture || crate::safe_copy::state().enabled {
+            if cfg.privileged_capture {
                 let Some(read) =
                     crate::selection::read_current(|| valid(&r), || crate::uia::read(&r))
                 else {
@@ -118,19 +118,14 @@ fn start(app: AppHandle) {
                 ));
                 let safe_target = read.safe_target;
                 let clipboard_authorized = crate::safe_copy::state().enabled;
-                let native_allowed = cfg.privileged_capture || clipboard_authorized;
+                let native_allowed = cfg.privileged_capture;
                 let captured = crate::selection::capture_first_available(
                     read.text,
                     || {
                         if !safe_target || !native_allowed || !valid(&r) {
                             return None;
                         }
-                        crate::native_selection::capture(&r, || {
-                            valid(&r)
-                                && (crate::config::load().privileged_capture
-                                    || crate::safe_copy::state().enabled)
-                        })
-                        .ok()
+                        crate::native_selection::capture(&r, || valid(&r)).ok()
                     },
                     clipboard_authorized
                         && (safe_target
