@@ -8,7 +8,7 @@ Windows x64 绿色版：解压完整 ZIP，运行 deepseek-float.exe。请保留
 
 升级前正常退出旧实例。程序会使用当前用户的正式配置、收藏和 WebView2 登录数据；不要删除 AppData 来升级或排障。AI 请求会发送给所配置的服务商，请避免提交敏感内容。
 
-本候选尚待合并后 main CI 和普通 Release 原生验收。版本变化及已知问题见 RELEASE_NOTES.md。Issue #2 保持开放：https://github.com/bookguifan/windows-ai-float-assistant/issues/2
+本版为 Beta 预发布，版本变化及已知问题见 RELEASE_NOTES.md。Issue #2 保持开放：https://github.com/bookguifan/windows-ai-float-assistant/issues/2
 
 HASH.txt 是 EXE SHA256；CHECKSUMS.csv 覆盖包内文件（不包含自身）；ZIP 外的 .sha256 用于检查完整下载包。摘要校验不等于发布者签名。
 

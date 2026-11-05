@@ -1003,7 +1003,20 @@ pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
         return;
     };
     let prompt = crate::selection::compose(&p.instruction, &text);
-    send_prompt(app, prompt, p.label.clone(), text, p.show_card);
+    let anchor = crate::result::AnchorRect {
+        x: request.point.0,
+        y: request.point.1,
+        w: 0,
+        h: 0,
+    };
+    send_prompt(
+        app,
+        prompt,
+        p.label.clone(),
+        text,
+        p.show_card,
+        Some(anchor),
+    );
 }
 
 /// 设置窗口里点「运行」某条提示词时调用（与 on_action 的提示词分支等价，走 settings-run 事件）。
@@ -1016,7 +1029,7 @@ pub fn run_prompt(app: &AppHandle, id: &str, text: String) {
     let prompt = crate::selection::compose(&p.instruction, &text);
     let label = p.label.clone();
     let show_card = p.show_card;
-    send_prompt(app, prompt, label.clone(), text, show_card);
+    send_prompt(app, prompt, label.clone(), text, show_card, None);
     crate::diag::log(&format!(
         "settings-run: 已运行「{label}」（交付方式={}）",
         if show_card { "结果卡" } else { "面板" }
@@ -1030,7 +1043,14 @@ pub fn run_prompt(app: &AppHandle, id: &str, text: String) {
 ///   - `false` = **弹出面板**：唤出面板并聚焦，注入后**不起回读**（用户自己在面板里看回答）。
 ///
 /// ★ `label` / `quote` 只用于结果卡的 UI 文案（标题与引用原句），不参与任何判据。
-fn send_prompt(app: &AppHandle, prompt: String, label: String, quote: String, show_card: bool) {
+fn send_prompt(
+    app: &AppHandle,
+    prompt: String,
+    label: String,
+    quote: String,
+    show_card: bool,
+    anchor: Option<crate::result::AnchorRect>,
+) {
     if prompt.trim().is_empty() {
         crate::diag::warn("send_prompt: 待发送内容为空，已取消");
         return;
@@ -1078,7 +1098,7 @@ fn send_prompt(app: &AppHandle, prompt: String, label: String, quote: String, sh
     crate::readback::begin_watch(
         app,
         prompt,
-        None,
+        anchor,
         crate::readback::WatchOpts {
             tag: "popup".to_string(),
             source: format!("划词 · {label}"),
