@@ -43,6 +43,8 @@ struct Fake {
     live_sequence: u32,
     wait_error: Option<&'static str>,
     change_during_wait: bool,
+    unrestorable_notices: u32,
+    recovery_attempts: u32,
 }
 impl Fake {
     fn good() -> Self {
@@ -61,6 +63,28 @@ impl Fake {
             ..Default::default()
         }
     }
+}
+
+#[test]
+fn complex_formats_never_read_payloads_and_snapshot_errors_cannot_degrade_to_discard() {
+    for formats in [vec![13, 0xc000], vec![13, 0xc001], vec![2], vec![15]] {
+        let plan = prepare_snapshot::<()>(&formats, || {
+            panic!("must not render complex clipboard data")
+        });
+        assert!(matches!(plan, Ok(PreparedSnapshot::Unrecoverable)));
+    }
+    for error in [
+        "COPY_SNAPSHOT_FAILED",
+        "COPY_SNAPSHOT_INVALID",
+        "COPY_SNAPSHOT_UNSTABLE",
+        "COPY_CLIPBOARD_BUSY",
+    ] {
+        assert!(matches!(prepare_snapshot::<()>(&[13], || Err(error)), Err(code) if code == error));
+    }
+    assert!(matches!(
+        prepare_snapshot::<()>(&[0], || panic!("invalid metadata must fail first")),
+        Err("COPY_SNAPSHOT_FAILED")
+    ));
 }
 
 #[test]
@@ -113,7 +137,7 @@ fn compatibility_keeps_snapshot_timeout_concurrency_and_restore_failure_guards()
             ..Fake::good()
         };
         match scenario {
-            0 => f.formats = vec![13, 0xc000],
+            0 => f.snapshot_rejected = true,
             1 => f.timeout = true,
             2 => f.race_read = true,
             3 => f.race_restore = true,
@@ -361,12 +385,15 @@ impl ClipboardIo for Fake {
             text,
         })
     }
-    fn prepare(&mut self) -> Result<((), u32), &'static str> {
-        if self.busy || self.snapshot_rejected || !formats_allowed(&self.formats) {
-            Err("COPY_FORMAT_UNSAFE")
+    fn prepare(&mut self) -> Result<(PreparedSnapshot<()>, u32), &'static str> {
+        if self.busy || self.snapshot_rejected {
+            Err("COPY_SNAPSHOT_FAILED")
         } else {
-            Ok(((), 7))
+            Ok((prepare_snapshot(&self.formats, || Ok(()))?, 7))
         }
+    }
+    fn unrestorable_copy_started(&mut self) {
+        self.unrestorable_notices += 1;
     }
     fn sequence(&self) -> u32 {
         self.live_sequence
@@ -408,6 +435,7 @@ impl ClipboardIo for Fake {
         target: Target,
         focused_control: isize,
     ) -> Result<(), &'static str> {
+        self.recovery_attempts += 1;
         let observed = self.stamp.ok_or("COPY_RESTORE_SKIPPED")?;
         // Match the native backend: a failed wait did not retain a trustworthy
         // stable candidate. A later related stamp cannot establish provenance.
@@ -436,6 +464,13 @@ impl ClipboardIo for Fake {
             })
         }
     }
+    fn verify_unrestored(&mut self, expected: Stamp) -> Result<(), &'static str> {
+        if self.race_restore || self.stamp != Some(expected) {
+            Err("COPY_SOURCE_UNVERIFIED")
+        } else {
+            Ok(())
+        }
+    }
     fn restore(&mut self, _: (), expected: Stamp) -> Result<(), &'static str> {
         self.restore_attempts += 1;
         if self.race_restore {
@@ -457,6 +492,24 @@ impl ClipboardIo for Fake {
     }
 }
 #[test]
+fn complex_copy_rejects_a_third_party_write_after_read_without_overwriting_it() {
+    let mut f = Fake {
+        formats: vec![2],
+        race_restore: true,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut f, target()), Err("COPY_SOURCE_UNVERIFIED"));
+    assert_eq!(
+        (
+            f.copies,
+            f.reads,
+            f.restore_attempts,
+            f.unrestorable_notices
+        ),
+        (1, 1, 0, 1)
+    );
+}
+#[test]
 fn unconsented_context_never_snapshots_or_sends() {
     let mut f = Fake::good();
     f.valid = false;
@@ -473,10 +526,11 @@ fn unicode_and_all_text_variants_restore_once() {
         };
         assert_eq!(run_copy(&mut f, target()).unwrap(), "合成\n  code 😀");
         assert_eq!((f.copies, f.reads, f.restored), (1, 1, 1));
+        assert_eq!(f.unrestorable_notices, 0);
     }
 }
 #[test]
-fn unsafe_snapshots_never_send() {
+fn authorized_complex_formats_copy_without_attempting_partial_restoration() {
     for formats in [
         vec![2],
         vec![13, 8],
@@ -491,8 +545,97 @@ fn unsafe_snapshots_never_send() {
             formats,
             ..Fake::good()
         };
+        assert_eq!(run_copy(&mut f, target()).unwrap(), "合成\n  code 😀");
+        assert_eq!((f.copies, f.reads, f.restore_attempts), (1, 1, 0));
+        assert_eq!(f.unrestorable_notices, 1);
+    }
+}
+#[test]
+fn complex_formats_do_not_bypass_permission_source_or_read_failures() {
+    for scenario in 0..5 {
+        let mut f = Fake {
+            compatibility: true,
+            formats: vec![13, 0xc000],
+            ..Fake::good()
+        };
+        match scenario {
+            0 => f.valid = false,
+            1 => f.related_writer = false,
+            2 => f.read_fail = true,
+            3 => f.revoke = true,
+            _ => {
+                f.wait_error = Some("COPY_SOURCE_UNVERIFIED");
+                f.change_during_wait = true;
+            }
+        }
         assert!(run_copy(&mut f, target()).is_err());
-        assert_eq!(f.copies, 0);
+        assert_eq!(f.restore_attempts, 0);
+        assert_eq!(f.recovery_attempts, 0);
+        assert_eq!(f.copies, if scenario == 0 { 0 } else { 1 });
+        assert_eq!(f.unrestorable_notices, if scenario == 0 { 0 } else { 1 });
+    }
+}
+#[test]
+fn complex_copy_never_retries_or_claims_recovery_after_timeout_partial_input_or_invalid_text() {
+    for scenario in 0..4 {
+        let mut f = Fake {
+            compatibility: true,
+            formats: vec![2],
+            ..Fake::good()
+        };
+        let expected = match scenario {
+            0 => {
+                f.timeout = true;
+                "COPY_TIMEOUT"
+            }
+            1 => {
+                f.sent = 2;
+                "COPY_INPUT_FAILED"
+            }
+            2 => {
+                f.empty_text = true;
+                "COPY_TEXT_INVALID"
+            }
+            _ => {
+                f.race_read = true;
+                "COPY_SOURCE_UNVERIFIED"
+            }
+        };
+        assert_eq!(run_copy(&mut f, target()), Err(expected));
+        assert_eq!(
+            (
+                f.copies,
+                f.restore_attempts,
+                f.recovery_attempts,
+                f.unrestorable_notices
+            ),
+            (1, 0, 0, 1)
+        );
+    }
+    let mut rejected = Fake {
+        formats: vec![2],
+        sent: 0,
+        ..Fake::good()
+    };
+    assert_eq!(run_copy(&mut rejected, target()), Err("COPY_INPUT_FAILED"));
+    assert_eq!(
+        (
+            rejected.wait_calls,
+            rejected.restore_attempts,
+            rejected.unrestorable_notices
+        ),
+        (0, 0, 0)
+    );
+}
+#[test]
+fn invalid_format_enumeration_is_not_a_complex_format_permission() {
+    for formats in [vec![0], vec![13, 13], (1..=65).collect()] {
+        let mut f = Fake {
+            formats,
+            ..Fake::good()
+        };
+        assert_eq!(run_copy(&mut f, target()), Err("COPY_SNAPSHOT_FAILED"));
+        assert_eq!((f.copies, f.unrestorable_notices), (0, 0));
     }
 }
 #[test]

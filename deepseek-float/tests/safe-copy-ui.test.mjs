@@ -383,6 +383,32 @@ test('pending more rejects duplicate dispatch and stale completion cannot unlock
  }finally{p.close();}
 });
 
+test('complex clipboard risk is disclosed and a non-restorable copy is never presented as restored',async()=>{
+ const p=page();try{
+  await tick();
+  const hint=p.d.querySelector('#safe-copy-hint').textContent;
+  assert.match(hint,/HTML.*RTF.*图片.*可能被覆盖.*无法恢复/);
+  p.w.__dsfSafeCopyStatus(nativeStatus({last_notice:'原剪贴板为复杂格式，未备份且未恢复，原内容可能已被覆盖'}));
+  const status=p.d.querySelector('#safe-copy-status');
+  assert.match(status.textContent,/未备份且未恢复/);
+  p.w.__dsfSafeCopyStatus(nativeStatus({last_error:'来源不可信',last_notice:'原内容可能已被覆盖'}));
+  assert.match(status.textContent,/上次回退失败：来源不可信.*原内容可能已被覆盖/);
+  p.w.__dsfSafeCopyStatus(nativeStatus());
+  assert.doesNotMatch(status.textContent,/未恢复|可能已被覆盖|上次回退失败/);
+ }finally{p.close();}
+});
+test('a late complex-copy warning survives the older response to turning fallback off',async()=>{
+ let finish;
+ const p=page(c=>c==='safe_copy_status'?Promise.resolve(granted()):c==='safe_copy_revoke'?new Promise(r=>finish=r):undefined);
+ try{
+  await tick();choose(p,false);
+  p.w.__dsfSafeCopyStatus(nativeStatus({last_notice:'原内容可能已被覆盖且无法恢复'}));
+  finish(nativeStatus());await tick();
+  assert.equal(fallback(p).checked,false);
+  assert.match(p.d.querySelector('#safe-copy-status').textContent,/可能已被覆盖且无法恢复/);
+ }finally{p.close();}
+});
+
 test('failed more IPC can be retried without reusing a consumed action',async()=>{
  const p=toolbarPage();try{
   p.w.console.error=()=>{};

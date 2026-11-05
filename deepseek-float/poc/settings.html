@@ -165,7 +165,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
             <label class="switch"><input type="checkbox" data-key="privileged" aria-label="智能划词增强" checked /><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
-            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板。默认关闭，需本机确认，仅本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
+            <div class="meta"><span class="t-label">自动复制回退</span><span class="t-hint" id="safe-copy-hint">智能划词无法读取时模拟复制，可能覆盖剪贴板。默认关闭，需本机确认，仅本次运行有效。</span><span class="t-hint" id="safe-copy-status" role="status"></span></div>
             <label class="switch"><input type="checkbox" id="safe-copy-enabled" aria-label="自动复制回退" aria-describedby="safe-copy-hint safe-copy-status" disabled /><span class="slider"></span></label>
           </div>
           <div class="toggle-row shortcut-row" id="safe-copy-shortcut-row" hidden>
@@ -890,6 +890,8 @@ input.url-box { width: 100%; box-sizing: border-box; }
       let safeCopyShortcut='ctrl-insert';
       let safeCopyMessage='';
       let safeCopyNativeMessage='';
+      let safeCopyRiskNotice='';
+      let safeCopyRiskRevision=0;
       let smartSelectionEnabled=true;
       // Keep an explicit local off choice fenced against delayed native snapshots.
       let smartSelectionChoice=null;
@@ -905,9 +907,10 @@ input.url-box { width: 100%; box-sizing: border-box; }
         safeCopyShortcutSelect.disabled=safeCopyToggle.disabled||!safeCopyToggle.checked;
         document.getElementById('safe-copy-shortcut-row').hidden=safeCopyShortcutSelect.hidden;
         document.getElementById('safe-copy-hint').textContent=safeCopyAvailable
-          ?'智能划词无法读取时，尝试模拟复制快捷键获取文本并恢复原剪贴板；每次只向可信前台目标发送一次所选快捷键，不会自动尝试另一种。默认关闭，需本机确认，仅本次运行有效。原剪贴板仅支持空内容、Unicode / ANSI / OEM 文本及区域格式；HTML、RTF、图片、未知格式或快照不完整时拒绝操作。窗口切换或来源不明时拒绝采纳；并发修改时跳过恢复。延迟渲染可能同步等待原应用，超时不能中断仍未返回的系统调用；不保证所有格式无损，不代表已经通过兼容验收。'
+          ?'智能划词无法读取时模拟复制，可能覆盖剪贴板；每次只向可信前台目标发送一次所选快捷键，不会自动尝试另一种。默认关闭，需本机确认，仅本次运行有效。原剪贴板为空或仅含 Unicode / ANSI / OEM 文本及区域格式时尽力保存和恢复；HTML、RTF、图片、文件及其他复杂格式经授权仍可尝试复制，但原内容可能被覆盖且无法恢复。访问失败、文本快照异常时仍拒绝操作。窗口切换或来源不明时拒绝采纳；并发修改时跳过恢复。延迟渲染可能同步等待原应用，超时不能中断仍未返回的系统调用；不保证所有格式无损，不代表已经通过兼容验收。'
           :'此构建未提供自动剪贴板回退。智能划词增强开启时仍可使用 UIA / 标准 Unicode Edit 读取；主动复制不受此开关影响。';
-        document.getElementById('safe-copy-status').textContent=safeCopyMessage||safeCopyNativeMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
+        const message=safeCopyMessage||safeCopyNativeMessage||(safeCopyPending?'正在等待本机确认或关闭回退…':!smartSelectionEnabled?'智能划词增强已关闭，自动复制回退不可用':safeCopyGranted?'自动复制回退已授权（本次运行）':'未启用自动模拟复制');
+        document.getElementById('safe-copy-status').textContent=[message,safeCopyRiskNotice].filter(Boolean).join('；');
       }
       function invalidateSafeCopy(){
         ++safeCopyRevision;
@@ -922,7 +925,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         if(!on){safeCopyGrantBlocked=true;safeCopyGranted=false;}
         renderSafeCopy();
       }
-      function applySafeCopyStatus(status){
+      function applySafeCopyStatus(status,riskRevision=safeCopyRiskRevision){
         const nativeGranted=!!(status&&status.available&&status.enabled&&status.mode==='compatibility'&&['ctrl-insert','ctrl-c'].includes(status.shortcut));
         if(safeCopyGranted&&!nativeGranted)safeCopyGrantBlocked=true;
         safeCopyAvailable=!!(status&&status.available);
@@ -936,9 +939,17 @@ input.url-box { width: 100%; box-sizing: border-box; }
         // Keep local consent/revocation/persistence failures separate so a push
         // cannot erase an unresolved operation error.
         safeCopyNativeMessage=status&&status.last_error?'上次回退失败：'+status.last_error:'';
+        if(status&&riskRevision===safeCopyRiskRevision)safeCopyRiskNotice=status.last_notice||'';
         renderSafeCopy();
       }
       window.__dsfSafeCopyStatus=(status)=>{
+        // A risk notice reports an already possible overwrite. Preserve it even
+        // while a revoke/consent IPC is pending; an older reply cannot erase it.
+        if(status&&status.last_notice){
+          ++safeCopyRiskRevision;
+          safeCopyRiskNotice=status.last_notice;
+          renderSafeCopy();
+        }
         // A native off notification is restrictive even while a consent dialog is open.
         if(status&&status.smart_enabled===false&&!smartSelectionSaving){
           ++smartSelectionRevision;
@@ -955,10 +966,11 @@ input.url-box { width: 100%; box-sizing: border-box; }
       };
       async function refreshSafeCopy(){
         const revision=safeCopyRevision;
+        const riskRevision=safeCopyRiskRevision;
         const read=++safeCopyReadRevision;
         try{
           const status=await tauri.core.invoke('safe_copy_status');
-          if(read===safeCopyReadRevision&&revision===safeCopyRevision&&!safeCopyPending&&!smartSelectionSaving)applySafeCopyStatus(status);
+          if(read===safeCopyReadRevision&&revision===safeCopyRevision&&!safeCopyPending&&!smartSelectionSaving)applySafeCopyStatus(status,riskRevision);
         }catch(error){
           if(read===safeCopyReadRevision&&revision===safeCopyRevision&&!safeCopyPending&&!smartSelectionSaving){
             applySafeCopyStatus(null);
@@ -972,6 +984,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
         if(!safeCopyAvailable||!smartSelectionEnabled||smartSelectionSaving||safeCopyPending){renderSafeCopy();return;}
         invalidateSafeCopy();
         const revision=safeCopyRevision;
+        const riskRevision=safeCopyRiskRevision;
         const request={revision};
         safeCopyPending=request;
         safeCopyShortcut=shortcut;
@@ -982,7 +995,7 @@ input.url-box { width: 100%; box-sizing: border-box; }
           if(revision===safeCopyRevision&&smartSelectionEnabled&&!smartSelectionSaving){
             const granted=!!(enable&&status&&status.available&&status.enabled&&status.smart_enabled===true&&status.mode==='compatibility'&&status.shortcut===shortcut);
             safeCopyGrantBlocked=!granted;
-            applySafeCopyStatus(status);
+            applySafeCopyStatus(status,riskRevision);
             if(enable&&status&&status.enabled&&!granted)throw new Error('授权状态与请求不一致，自动复制回退已关闭');
           }else if(enable&&status&&status.enabled){
             // An off/restore action invalidated this dialog; never accept its late result.
