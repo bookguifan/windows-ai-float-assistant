@@ -1,5 +1,5 @@
 //! Pure selection policy. No Win32 calls, clipboard access or persisted grants.
-pub const POLICY_VERSION: u32 = 2;
+pub const POLICY_VERSION: u32 = 3;
 pub const MAX_RANGES: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -327,6 +327,19 @@ pub fn formats_allowed(formats: &[u32]) -> bool {
                 .iter()
                 .enumerate()
                 .all(|(i, f)| !formats[..i].contains(f)))
+}
+/// False means unsupported formats, not a failed or incomplete snapshot.
+/// Invalid enumeration metadata remains a preflight error even with consent.
+pub fn snapshot_recoverable(formats: &[u32]) -> Result<bool, &'static str> {
+    if formats.len() > 64
+        || formats
+            .iter()
+            .enumerate()
+            .any(|(i, f)| *f == 0 || formats[..i].contains(f))
+    {
+        return Err("COPY_SNAPSHOT_FAILED");
+    }
+    Ok(formats_allowed(formats))
 }
 pub fn join_ranges(parts: &[String], max: usize) -> Result<String, &'static str> {
     if parts.len() > MAX_RANGES || max == 0 {

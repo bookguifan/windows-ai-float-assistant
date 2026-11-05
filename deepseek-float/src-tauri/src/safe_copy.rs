@@ -1,8 +1,7 @@
 //! Session-consented, one-shot clipboard fallback. The legacy capture_selection
 //! entry point stays locked off. Compatibility mode is explicitly consented.
-use crate::selection::{
-    formats_allowed, restore_allowed, Consent, Request, Stamp, Target, POLICY_VERSION,
-};
+use crate::copy_engine::PreparedSnapshot;
+use crate::selection::{restore_allowed, Consent, Request, Stamp, Target, POLICY_VERSION};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -64,6 +63,9 @@ impl CopyShortcut {
 }
 static SHORTCUT: Mutex<CopyShortcut> = Mutex::new(CopyShortcut::CtrlInsert);
 static LAST_ERROR: Mutex<Option<&'static str>> = Mutex::new(None);
+static LAST_NOTICE: Mutex<Option<&'static str>> = Mutex::new(None);
+const UNRESTORABLE_NOTICE: &str =
+    "原剪贴板为复杂格式，未备份且未恢复，原内容可能已被覆盖；请勿依赖原内容仍可找回";
 static TRANSACTION: Mutex<()> = Mutex::new(());
 static PROMPTING: AtomicBool = AtomicBool::new(false);
 #[derive(serde::Serialize)]
@@ -72,6 +74,7 @@ pub struct State {
     pub shortcut: CopyShortcut,
     pub mode: Mode,
     pub last_error: Option<&'static str>,
+    pub last_notice: Option<&'static str>,
     pub enabled: bool,
     pub available: bool,
     pub policy_version: u32,
@@ -90,6 +93,7 @@ pub fn state() -> State {
         shortcut,
         mode,
         last_error,
+        last_notice: *LAST_NOTICE.lock().unwrap_or_else(|p| p.into_inner()),
         enabled,
         available: crate::release_policy::safe_copy_available(),
         policy_version: POLICY_VERSION,
@@ -187,7 +191,10 @@ pub fn request_authorization(
     // Suspend the old grant while choosing a new shortcut or showing a new modal.
     let start_epoch = revoke_epoch();
     let hwnd = window.hwnd().map_err(|_| "设置窗口不可用")?;
-    let message: Vec<u16> = format!("自动复制回退会在智能划词失败时模拟复制快捷键，并尝试恢复原剪贴板。操作可能短暂修改 Windows 剪贴板；特殊格式、异步复制或其他程序并发修改时，可能无法完整恢复。请避免用于敏感内容。是否仅在本次运行中开启？\n\n本次仅发送一次 {}，不会自动尝试另一种快捷键。原剪贴板仅支持空内容及 Unicode/ANSI/OEM 文本和区域格式；HTML、RTF、图片等会在发送前拒绝。", shortcut.label()).encode_utf16().chain(Some(0)).collect();
+    let message: Vec<u16> = authorization_message(shortcut)
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     let answer = unsafe {
         MessageBoxW(
             Some(HWND(hwnd.0)),
@@ -299,11 +306,13 @@ unsafe fn stamp() -> Option<Stamp> {
         format_count,
     })
 }
+fn authorization_message(shortcut: CopyShortcut) -> String {
+    format!("自动复制回退会模拟复制快捷键获取选中文字。\n\n如果原剪贴板为空或是受支持的普通文本，程序会尽量保存并恢复。\n\n如果原剪贴板含 HTML、RTF、图片、文件或其他复杂格式，仍可能继续复制，但原内容可能被覆盖，且无法恢复。\n\n请确认剪贴板中没有必须保留的重要内容，并避免用于敏感内容。是否仅在本次运行中授权？\n\n本次仅发送一次 {}，不会自动尝试另一种快捷键。目标切换、来源不可信或访问失败仍会拒绝；其他程序并发修改时不会为恢复原内容而覆盖新写入。", shortcut.label())
+}
 struct Snapshot {
-    sequence: u32,
     blocks: Vec<(u32, Block)>,
 }
-unsafe fn snapshot() -> Result<Snapshot, &'static str> {
+unsafe fn snapshot() -> Result<(PreparedSnapshot<Snapshot>, u32), &'static str> {
     if !crate::release_policy::safe_copy_available() {
         return Err("COPY_BUILD_DISABLED");
     }
@@ -327,49 +336,53 @@ unsafe fn snapshot() -> Result<Snapshot, &'static str> {
             break;
         }
         formats.push(format);
-        if formats.len() > 4 {
-            return Err("COPY_FORMAT_UNSAFE");
+        if formats.len() > 64 {
+            return Err("COPY_SNAPSHOT_FAILED");
         }
         previous = format;
     }
-    if sequence == 0 || !formats_allowed(&formats) {
-        return Err("COPY_FORMAT_UNSAFE");
+    if sequence == 0 {
+        return Err("COPY_SNAPSHOT_UNSTABLE");
     }
-    let mut total = 0;
-    let mut blocks = Vec::new();
-    for format in formats {
-        let data = GetClipboardData(format).map_err(|_| "COPY_SNAPSHOT_FAILED")?;
-        let h = HGLOBAL(data.0);
-        let size = GlobalSize(h);
-        total += size;
-        if size == 0
-            || total > 1_048_576
-            || (format == 13 && size % 2 != 0)
-            || (format == 16 && size != 4)
-        {
-            return Err("COPY_FORMAT_UNSAFE");
+    // The shared decision never invokes this payload reader for complex formats.
+    let prepared = crate::copy_engine::prepare_snapshot(&formats, || {
+        let mut total = 0;
+        let mut blocks = Vec::new();
+        for &format in &formats {
+            let data = GetClipboardData(format).map_err(|_| "COPY_SNAPSHOT_FAILED")?;
+            let h = HGLOBAL(data.0);
+            let size = GlobalSize(h);
+            total += size;
+            if size == 0
+                || total > 1_048_576
+                || (format == 13 && size % 2 != 0)
+                || (format == 16 && size != 4)
+            {
+                return Err("COPY_SNAPSHOT_INVALID");
+            }
+            let ptr = GlobalLock(h);
+            if ptr.is_null() {
+                return Err("COPY_SNAPSHOT_FAILED");
+            }
+            let bytes = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+            let _ = GlobalUnlock(h);
+            // Validate termination; never promise a partial or lossy snapshot of text variants.
+            if (format == 13 && !bytes.chunks_exact(2).any(|u| u == [0, 0]))
+                || (matches!(format, 1 | 7) && !bytes.contains(&0))
+            {
+                return Err("COPY_SNAPSHOT_FAILED");
+            }
+            let copy = Block(GlobalAlloc(GMEM_MOVEABLE, size).map_err(|_| "COPY_SNAPSHOT_FAILED")?);
+            let p = GlobalLock(copy.0);
+            if p.is_null() {
+                return Err("COPY_SNAPSHOT_FAILED");
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, size);
+            let _ = GlobalUnlock(copy.0);
+            blocks.push((format, copy));
         }
-        let ptr = GlobalLock(h);
-        if ptr.is_null() {
-            return Err("COPY_SNAPSHOT_FAILED");
-        }
-        let bytes = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
-        let _ = GlobalUnlock(h);
-        // Validate termination; never promise a partial or lossy snapshot of text variants.
-        if (format == 13 && !bytes.chunks_exact(2).any(|u| u == [0, 0]))
-            || (matches!(format, 1 | 7) && !bytes.contains(&0))
-        {
-            return Err("COPY_SNAPSHOT_FAILED");
-        }
-        let copy = Block(GlobalAlloc(GMEM_MOVEABLE, size).map_err(|_| "COPY_SNAPSHOT_FAILED")?);
-        let p = GlobalLock(copy.0);
-        if p.is_null() {
-            return Err("COPY_SNAPSHOT_FAILED");
-        }
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, size);
-        let _ = GlobalUnlock(copy.0);
-        blocks.push((format, copy));
-    }
+        Ok(Snapshot { blocks })
+    })?;
     // Rendering/synthesis changing the sequence or owner invalidates the entire snapshot.
     if GetClipboardSequenceNumber() != sequence
         || GetClipboardOwner().ok() != owner
@@ -377,7 +390,7 @@ unsafe fn snapshot() -> Result<Snapshot, &'static str> {
     {
         return Err("COPY_SNAPSHOT_UNSTABLE");
     }
-    Ok(Snapshot { sequence, blocks })
+    Ok((prepared, sequence))
 }
 fn current(r: &Request, e: u64, p: &Process) -> bool {
     let mut code = 0;
@@ -460,7 +473,12 @@ unsafe fn copy_chord(shortcut: CopyShortcut, authorized: bool) -> crate::copy_en
     }
 }
 pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
-    let outcome = capture_inner(r, app);
+    let mut unrestorable_copy_started = false;
+    let outcome = capture_inner(r, app, &mut unrestorable_copy_started);
+    // Publish after the transaction, even when consent was revoked while waiting.
+    // Revocation must stop future input, not hide an already possible data loss.
+    *LAST_NOTICE.lock().unwrap_or_else(|p| p.into_inner()) =
+        unrestorable_copy_started.then_some(UNRESTORABLE_NOTICE);
     let reason = outcome.as_ref().err().map(|code| copy_failure_reason(code));
     *LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = reason;
     if let (Some(settings), Ok(status)) = (
@@ -470,12 +488,16 @@ pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
         let _ = settings.eval(format!("window.__dsfSafeCopyStatus?.({status});"));
     }
     crate::diag::log(&format!(
-        "selection status={} reason={} elapsed_ms={}",
+        "selection status={} reason={} restoration_notice={} elapsed_ms={}",
         outcome
             .as_ref()
             .map(|_| "COPY_SUCCESS")
             .unwrap_or_else(|e| e),
         reason.unwrap_or(""),
+        LAST_NOTICE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or(""),
         crate::selection_runtime::now_ms().saturating_sub(r.created_ms)
     ));
     outcome
@@ -483,17 +505,17 @@ pub fn capture(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
 fn copy_failure_reason(code: &str) -> &'static str {
     match code {
         "COPY_UNAUTHORIZED" => "尚未在设置页确认本次运行的剪贴板回退",
-        "COPY_FORMAT_UNSAFE" => "原剪贴板含 HTML、RTF、图片等不支持格式，或无法完整保存，未发送快捷键。确认原内容无需保留后，可在 Windows 记事本中重新复制纯文本再试；直接复制网页或 PDF 可能再次带入复杂格式",
+        "COPY_SNAPSHOT_INVALID" => "原剪贴板文本数据大小、结构或容量检查失败，未发送快捷键",
         "COPY_CLIPBOARD_BUSY" => "复制前无法取得剪贴板快照，未发送快捷键",
         "COPY_CAPTURE_BUSY" => "目标已触发剪贴板变化，但剪贴板持续被占用，无法确认来源",
-        "COPY_READ_BUSY" => "复制结果读取时剪贴板持续被占用，正在尝试安全恢复",
+        "COPY_READ_BUSY" => "复制结果读取时剪贴板持续被占用；仅在有完整快照且事务仍有效时尝试恢复",
         "COPY_RESTORE_BUSY" => "剪贴板持续被占用，无法完成原内容恢复",
         "COPY_TARGET_PROTECTED" => "目标属于受保护的控制台窗口",
         "COPY_PROTECTED_OR_UNVERIFIED_CONTROL" => "无法确认目标焦点或控件受保护，未发送快捷键",
         "COPY_TIMEOUT" => "未能及时验证目标应用的复制结果",
         "COPY_SNAPSHOT_UNSTABLE" => "剪贴板快照超过 100 毫秒检查时限或读取期间内容变化，未发送快捷键；该检查不能中断仍未返回的延迟渲染调用",
         "COPY_SNAPSHOT_FAILED" => "无法完整读取原剪贴板，未发送快捷键",
-        "COPY_READ_FAILED" => "无法读取目标应用的复制结果，正在尝试安全恢复",
+        "COPY_READ_FAILED" => "无法读取目标应用的复制结果；仅在有完整快照且事务仍有效时尝试恢复",
         "COPY_SELECTION_MISMATCH" => "复制结果与当前选区不一致，未采纳该文本",
         "COPY_SELECTION_CHANGED" => "读取期间选区发生变化，未采纳该文本",
         "COPY_RESTORE_SKIPPED" => "复制结果来源不明、未稳定或事务期间发生变化；为避免覆盖新内容已跳过恢复，剪贴板中可能仍有本次复制内容",
@@ -514,6 +536,7 @@ struct NativeIo<'a> {
     focus: Target,
     compatibility: bool,
     prepared_sequence: u32,
+    unrestorable_copy_started: &'a mut bool,
 }
 impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
     type Snapshot = Snapshot;
@@ -534,13 +557,15 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
     fn selection_proof(&mut self) -> Result<crate::copy_engine::SelectionProof, &'static str> {
         crate::native_copy_proof::capture(HWND(self.focus.hwnd as *mut _), || self.valid())
     }
-    fn prepare(&mut self) -> Result<(Snapshot, u32), &'static str> {
+    fn prepare(&mut self) -> Result<(PreparedSnapshot<Snapshot>, u32), &'static str> {
         unsafe {
-            let s = snapshot()?;
-            let sequence = s.sequence;
+            let (s, sequence) = snapshot()?;
             self.prepared_sequence = sequence;
             Ok((s, sequence))
         }
+    }
+    fn unrestorable_copy_started(&mut self) {
+        *self.unrestorable_copy_started = true;
     }
     fn sequence(&self) -> u32 {
         unsafe { GetClipboardSequenceNumber() }
@@ -679,6 +704,19 @@ impl crate::copy_engine::ClipboardIo for NativeIo<'_> {
                 return Err("COPY_SOURCE_UNVERIFIED");
             }
             Ok(text)
+        }
+    }
+    fn verify_unrestored(&mut self, expected: Stamp) -> Result<(), &'static str> {
+        unsafe {
+            let _lock = Clipboard::open_until(
+                None,
+                Instant::now() + Duration::from_millis(150),
+                "COPY_READ_BUSY",
+            )?;
+            if stamp() != Some(expected) {
+                return Err("COPY_SOURCE_UNVERIFIED");
+            }
+            Ok(())
         }
     }
     fn restore(&mut self, mut saved: Snapshot, expected: Stamp) -> Result<(), &'static str> {
@@ -852,7 +890,11 @@ fn native_focus(target: Target) -> Option<isize> {
         }
     }
 }
-fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
+fn capture_inner(
+    r: &Request,
+    app: &AppHandle,
+    unrestorable_copy_started: &mut bool,
+) -> Result<String, &'static str> {
     if !crate::release_policy::safe_copy_available() {
         return Err("COPY_BUILD_DISABLED");
     }
@@ -902,6 +944,7 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
                 focus,
                 compatibility,
                 prepared_sequence: 0,
+                unrestorable_copy_started,
             },
             r.target,
         )
@@ -911,6 +954,17 @@ fn capture_inner(r: &Request, app: &AppHandle) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_consent_discloses_unrecoverable_complex_data_for_either_shortcut() {
+        for shortcut in [CopyShortcut::CtrlInsert, CopyShortcut::CtrlC] {
+            let message = authorization_message(shortcut);
+            assert!(message.contains("HTML、RTF、图片、文件"));
+            assert!(message.contains("原内容可能被覆盖，且无法恢复"));
+            assert!(message.contains("本次运行中授权"));
+            assert!(message.contains(&format!("仅发送一次 {}", shortcut.label())));
+            assert!(message.contains("不会自动尝试另一种"));
+        }
+    }
     fn keys(inputs: &[INPUT]) -> Vec<(u16, u32)> {
         inputs
             .iter()

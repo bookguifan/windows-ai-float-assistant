@@ -13,6 +13,24 @@ pub enum SendStatus {
     Sent,
     Partial,
 }
+/// A complex clipboard is deliberately not partially backed up. This path is
+/// permitted only after the backend's current-run native risk authorization.
+pub enum PreparedSnapshot<T> {
+    Recoverable(T),
+    Unrecoverable,
+}
+/// Never partially read unsupported formats or turn a supported-text read error
+/// into permission to discard the original clipboard.
+pub fn prepare_snapshot<T>(
+    formats: &[u32],
+    read_supported: impl FnOnce() -> Result<T, &'static str>,
+) -> Result<PreparedSnapshot<T>, &'static str> {
+    if crate::selection::snapshot_recoverable(formats)? {
+        read_supported().map(PreparedSnapshot::Recoverable)
+    } else {
+        Ok(PreparedSnapshot::Unrecoverable)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WaitFailure {
     pub code: &'static str,
@@ -101,7 +119,9 @@ pub trait ClipboardIo {
     fn valid(&self) -> bool;
     /// Independently read the exact selection from the still-bound native control.
     fn selection_proof(&mut self) -> Result<SelectionProof, &'static str>;
-    fn prepare(&mut self) -> Result<(Self::Snapshot, u32), &'static str>;
+    fn prepare(&mut self) -> Result<(PreparedSnapshot<Self::Snapshot>, u32), &'static str>;
+    /// Called only after input may have reached the target, including partial input.
+    fn unrestorable_copy_started(&mut self) {}
     fn sequence(&self) -> u32;
     fn send_once(&mut self) -> SendStatus;
     fn wait(&mut self, before: u32) -> Result<Stamp, WaitFailure>;
@@ -117,18 +137,30 @@ pub trait ClipboardIo {
     ) -> Result<(), &'static str>;
     /// Must verify the stamp before AND after reading, under the clipboard lock.
     fn read(&mut self, expected: Stamp) -> Result<String, &'static str>;
+    /// Final read-only stamp check when no snapshot exists. No clipboard write.
+    fn verify_unrestored(&mut self, expected: Stamp) -> Result<(), &'static str>;
     /// Must compare + write under one clipboard lock; never restore a different stamp.
     fn restore(&mut self, snapshot: Self::Snapshot, expected: Stamp) -> Result<(), &'static str>;
 }
 fn restore_then_fail<I: ClipboardIo>(
     io: &mut I,
-    snapshot: I::Snapshot,
+    snapshot: PreparedSnapshot<I::Snapshot>,
     source: Stamp,
     reason: &'static str,
 ) -> Result<String, &'static str> {
-    match io.restore(snapshot, source) {
+    match restore_snapshot(io, snapshot, source) {
         Ok(()) => Err(reason),
         Err(restore_error) => Err(restore_error),
+    }
+}
+fn restore_snapshot<I: ClipboardIo>(
+    io: &mut I,
+    snapshot: PreparedSnapshot<I::Snapshot>,
+    source: Stamp,
+) -> Result<(), &'static str> {
+    match snapshot {
+        PreparedSnapshot::Recoverable(snapshot) => io.restore(snapshot, source),
+        PreparedSnapshot::Unrecoverable => io.verify_unrestored(source),
     }
 }
 pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'static str> {
@@ -157,15 +189,22 @@ pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'s
     if sent == SendStatus::Rejected {
         return Err("COPY_INPUT_FAILED");
     }
+    if matches!(snapshot, PreparedSnapshot::Unrecoverable) {
+        io.unrestorable_copy_started();
+    }
     let source = match io.wait(before) {
         Ok(source) => source,
         Err(failure) if failure.clipboard_changed => {
-            return match io.recover_after_wait_failure(
-                snapshot,
-                before,
-                target,
-                proof.as_ref().map_or(0, |p| p.control),
-            ) {
+            let recovery = match snapshot {
+                PreparedSnapshot::Recoverable(snapshot) => io.recover_after_wait_failure(
+                    snapshot,
+                    before,
+                    target,
+                    proof.as_ref().map_or(0, |p| p.control),
+                ),
+                PreparedSnapshot::Unrecoverable => Ok(()),
+            };
+            return match recovery {
                 Ok(()) => Err(failure.code),
                 Err(restore_error) => Err(restore_error),
             };
@@ -211,7 +250,7 @@ pub fn run_copy(io: &mut impl ClipboardIo, target: Target) -> Result<String, &'s
     if !io.valid() {
         return restore_then_fail(io, snapshot, source, "COPY_CONTEXT_CHANGED");
     }
-    io.restore(snapshot, source)?;
+    restore_snapshot(io, snapshot, source)?;
     if !io.valid() {
         return Err("COPY_CONTEXT_CHANGED");
     }

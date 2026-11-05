@@ -1,6 +1,25 @@
 #[path = "../src/release_policy.rs"]
 #[allow(dead_code)]
 mod release_policy;
+#[allow(dead_code)]
+#[path = "../src/selection.rs"]
+mod selection;
+
+#[test]
+fn release_complex_format_permission_is_separate_from_snapshot_errors_and_consent() {
+    assert_eq!(selection::snapshot_recoverable(&[13, 1, 7, 16]), Ok(true));
+    for formats in [&[13, 0xc000][..], &[13, 0xc001], &[2], &[15]] {
+        assert_eq!(selection::snapshot_recoverable(formats), Ok(false));
+        assert!(!release_policy::safe_copy_allowed(false, true, true));
+    }
+    assert_eq!(
+        selection::snapshot_recoverable(&[13, 13]),
+        Err("COPY_SNAPSHOT_FAILED")
+    );
+    let mut old_consent = selection::Consent::empty();
+    old_consent.grant(2);
+    assert!(!old_consent.allows());
+}
 
 #[test]
 fn release_build_exposes_only_the_guarded_copy_path() {
