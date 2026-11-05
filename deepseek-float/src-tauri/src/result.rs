@@ -27,7 +27,8 @@
 //!   5) 挂页面存活看门狗：`poc/result.html` 未就绪（dist 未重建 → 404）时自动隐藏，
 //!      不留下「永久挡住点击的透明死窗」（W-V8）；
 //!   6) 载荷截断 + 页内禁用 `innerHTML`（远端回答是**不可信文本**，只走 `textContent`）；
-//!   7) **卡片一旦打开就不再改位置**（用户可能已把它拖走）—— 后续推送只换内容/长高；
+//!   7) **同一会话内不再改位置**（用户可能已把它拖走）—— 后续推送只换内容/长高；
+//!      新会话 Fresh 重新跟随本次锚点定位；
 //!      唯一的例外是「长高到会顶出工作区底部」时上移，避免内容跑到屏幕外；
 //!   8) ★ R5：**用户手动关闭过的卡片不得被后续推送自动弹回**（[`hide`] 置位
 //!      [`RESULT_DISMISSED`]，只有 [`TurnMode::Fresh`] 才清位）—— 关掉又被弹回来是最恼人的
@@ -39,7 +40,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow};
+use tauri::{
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+};
 
 /// 结果卡窗 label（第 6 个常驻窗口）。
 pub const RESULT_LABEL: &str = "result";
@@ -539,7 +542,7 @@ pub fn open_favorites(app: &AppHandle) {
                     .filter(|(_, scale)| *scale > 0.0)
                     .map(|(size, scale)| size.height as f64 / scale)
                     .unwrap_or(CARD_MIN_H);
-                let (x, y, _, _) = placement(&app_c, &anchor, height);
+                let (x, y, _, _, _) = placement(&app_c, &anchor, height);
                 let _ = win.set_position(PhysicalPosition::new(x, y));
             }
             if let Err(error) = win.show() {
@@ -674,18 +677,9 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
         log("页内未回报实测高度（页面未就绪 / 超时）→ 退回常量估算");
     }
 
-    if opened {
-        // ---- 首次显示：定位 + 定尺寸 + show ----
-        let anchor = anchor.unwrap_or_else(|| {
-            let (cx, cy) = crate::popup::cursor_pos();
-            AnchorRect {
-                x: cx,
-                y: cy,
-                w: 0,
-                h: 0,
-            }
-        });
-        let (x, y, w, mut h) = placement(app, &anchor, want_h);
+    if let Some(anchor) = placement_anchor(opened, view.turn, anchor, crate::popup::cursor_pos) {
+        // 首次显示或新的划词会话：按当次锚点定位；流式增量和追问不走这里。
+        let (x, y, w, mut h, scale) = placement(app, &anchor, want_h);
         // 高度再被工作区**收窄**一次（矮屏上别让卡片比屏幕还高）。
         //
         // ★ R14 修复：这里原先是 `h = 工作区高` —— 一个**赋值**把 `placement` 算好的
@@ -695,43 +689,42 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
         //   占位卡与整个流式过程都顶着这个超高值 ⇒ 用户报的
         //   「结果卡片的数据未回流时候高度太高」。
         //   正确语义是**cap（取小）**，与 `apply_size` 中的同款收窄口径一致。
-        if let Ok(scale) = win.scale_factor() {
-            if scale > 0.0 {
-                if let Some((_, _, _, ah)) = work_area_at(app, x, y) {
-                    let cap = ((ah as f64 / scale - 24.0).max(CARD_MIN_H) * scale).round() as i32;
-                    h = h.min(cap);
-                }
+        if scale > 0.0 {
+            if let Some((_, _, _, ah)) = work_area_at(app, x, y) {
+                let cap = ((ah as f64 / scale - 24.0).max(CARD_MIN_H) * scale).round() as i32;
+                h = h.min(cap);
             }
         }
-        let logical_h = h as f64 / win.scale_factor().unwrap_or(1.0);
-        let _ = win.set_size(LogicalSize::new(CARD_W, logical_h));
+        let logical_h = h as f64 / scale;
+        // 先移动再应用目标屏幕的物理尺寸，避免沿用旧屏幕的 DPI。
         let _ = win.set_position(PhysicalPosition::new(x, y));
-        if let Err(e) = win.show() {
-            warn(&format!("show 失败: {e}"));
-            return;
+        let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
+        if opened {
+            if let Err(e) = win.show() {
+                warn(&format!("show 失败: {e}"));
+                return;
+            }
         }
         // ★ 刻意**不调用** `set_focus()`（R4 / W-V7）：卡片出现不得打断用户当前正在输入的窗口。
         //   本项目已记录「show() 后 set_focus() 触发 WebView2 abort（宿主 exit -1）」的坑。
         RESULT_VISIBLE.store(true, Ordering::SeqCst);
         let turns = SESSION.lock().map(|g| g.turns.len()).unwrap_or(0);
         log(&format!(
-            "已 show（{} · {turns} 轮 · {} 字符{} · 高 {logical_h:.0} · pos=({x},{y}) size={w}x{h} · streaming={} · complete={}）",
+            "已定位（{} · {turns} 轮 · {} 字符{} · 高 {logical_h:.0} · pos=({x},{y}) size={w}x{h} · streaming={} · complete={}）",
             view.source,
             view.text.chars().count(),
             if view.thinking.is_empty() { "" } else { " + 思考" },
             view.streaming,
             view.complete
         ));
-        arm_watchdog(app);
+        if opened {
+            arm_watchdog(app);
+        }
         return;
     }
 
-    // ---- 已可见：只在需要时改尺寸（流式中只长大；终态一次到位，可缩）----
-    //
-    // ★ R14：`Fresh`（新会话）是**硬复位** —— 旧轮次已被清空，此时若仍沿用「流式中只长大」，
-    //   卡片就会顶着上一问的高个子显示一张空卡（用户报「未回流时高度太高」的另一半成因）。
-    //   故 `Fresh` 一律允许收缩；`Update`（同一轮的流式增量）仍保持「只长大」，避免抖动。
-    let allow_shrink = !view.streaming || view.turn == TurnMode::Fresh;
+    // 同一会话已可见：流式中只长大，终态一次到位可缩；保持用户拖动后的位置。
+    let allow_shrink = !view.streaming;
     apply_size(app, &win, want_h, allow_shrink);
     log(&format!(
         "已更新（{} · 高 {want_h:.0} · 整份={full} · streaming={} · complete={}）",
@@ -767,10 +760,24 @@ fn measure(win: &WebviewWindow, js: String) -> Option<f64> {
     }
 }
 
-/// 首次显示时的定位（与工具条共用的 `place_near` 纯函数）。
-///
-/// 返回 `(x, y, w, h)` —— 全部**物理像素**。
-fn placement(app: &AppHandle, anchor: &AnchorRect, logical_h: f64) -> (i32, i32, i32, i32) {
+/// 新会话重新取锚点；同一会话的推送保留手动拖动后的位置。
+fn placement_anchor(
+    opened: bool,
+    turn: TurnMode,
+    anchor: Option<AnchorRect>,
+    cursor: impl FnOnce() -> (i32, i32),
+) -> Option<AnchorRect> {
+    if !opened && turn != TurnMode::Fresh {
+        return None;
+    }
+    Some(anchor.unwrap_or_else(|| {
+        let (x, y) = cursor();
+        AnchorRect { x, y, w: 0, h: 0 }
+    }))
+}
+
+/// 与工具条共用 `place_near`。返回 `(x, y, w, h, scale)`，坐标与尺寸为物理像素。
+fn placement(app: &AppHandle, anchor: &AnchorRect, logical_h: f64) -> (i32, i32, i32, i32, f64) {
     let monitor = app
         .monitor_from_point(anchor.x as f64, anchor.y as f64)
         .ok()
@@ -805,7 +812,7 @@ fn placement(app: &AppHandle, anchor: &AnchorRect, logical_h: f64) -> (i32, i32,
         // 取不到显示器信息：保持首选位置（不 clamp）。
         None => prefer,
     };
-    (x, y, w, h)
+    (x, y, w, h, scale)
 }
 
 /// 改卡片尺寸：`allow_shrink=false` 时只长大（流式推送的防抖口径）。
@@ -1141,6 +1148,79 @@ pub fn bind_request(app: &AppHandle, token: crate::workflow::Token) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_selection_reanchors_a_card_that_is_already_visible() {
+        let selection = AnchorRect {
+            x: -700,
+            y: 320,
+            w: 0,
+            h: 0,
+        };
+        assert_eq!(
+            placement_anchor(false, TurnMode::Fresh, Some(selection), || {
+                panic!("a new selection must use its recorded position, not the current cursor")
+            }),
+            Some(selection)
+        );
+    }
+
+    #[test]
+    fn streaming_and_follow_up_leave_a_dragged_card_in_place() {
+        let old_anchor = AnchorRect {
+            x: 300,
+            y: 200,
+            w: 0,
+            h: 0,
+        };
+        for turn in [TurnMode::Update, TurnMode::Follow] {
+            assert_eq!(
+                placement_anchor(false, turn, Some(old_anchor), || {
+                    panic!("streaming and follow-up must not read the moving cursor")
+                }),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn opening_without_a_selection_anchor_uses_the_cursor_once() {
+        assert_eq!(
+            placement_anchor(true, TurnMode::Fresh, None, || (800, 600)),
+            Some(AnchorRect {
+                x: 800,
+                y: 600,
+                w: 0,
+                h: 0
+            })
+        );
+    }
+
+    #[test]
+    fn new_selection_on_a_scaled_left_monitor_stays_inside_its_work_area() {
+        let anchor = placement_anchor(
+            false,
+            TurnMode::Fresh,
+            Some(AnchorRect {
+                x: -20,
+                y: 1000,
+                w: 0,
+                h: 0,
+            }),
+            || panic!("must not jump to the cursor on another monitor"),
+        )
+        .unwrap();
+        // Physical 600x390 card on a 150% monitor left of the primary display.
+        let position = crate::popup::place_near(
+            (anchor.x + 12, anchor.y + 12),
+            (anchor.x, anchor.y, anchor.w, anchor.h),
+            (600, 390),
+            (-1920, 0, 1920, 1040),
+            12,
+        );
+        assert_eq!(position, (-632, 598));
+    }
+
     #[test]
     fn switching_cancels_timed_out_and_failed_turns_but_keeps_completed_answers() {
         let mut session = Session {
