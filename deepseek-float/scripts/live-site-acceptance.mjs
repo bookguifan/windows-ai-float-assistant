@@ -1,5 +1,6 @@
 // Opt-in real-site tests. Uses the application's real injection/readback and result UI.
-// Start the release with isolated LOCALAPPDATA and CDP first; see docs/live-site-testing.md.
+// Use an explicitly authorized test instance and CDP; see ../../CONTRIBUTING.md#可选原生工具.
+// Changing LOCALAPPDATA alone does not guarantee Tauri/WebView2 data isolation.
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';

@@ -4,16 +4,16 @@
 
 [![Windows x64](https://img.shields.io/badge/Windows-x64-0078D4)](#系统要求)
 [![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Beta](https://img.shields.io/badge/Beta-v0.1.0--beta.1-orange)](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1)
+[![Beta](https://img.shields.io/badge/Beta-v0.1.0--beta.2-orange)](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2)
 [![CI](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bookguifan/windows-ai-float-assistant/actions/workflows/ci.yml)
 
-> 开发分支说明：本分支正在开发 `v0.1.0-beta.2`，尚未发布；下方下载与校验值仍对应 `v0.1.0-beta.1`。智能划词增强默认开启，依次尝试 UIA / 原生选区读取，不操作系统剪贴板。自动复制回退默认关闭，需在本地设置页确认本次运行风险；开启后可选 Ctrl+Insert（默认）或 Ctrl+C，每次只发送所选的一种，失败不自动补发另一种。关闭智能划词会同步撤销回退；重启后须重新授权。原剪贴板含不支持格式时拒绝操作，旧配置/备份不能授权，不承诺所有软件和格式均可恢复。开发代码允许保留已披露缺陷；Beta.2 尚未发布，当前验收标准和剩余事项以[发布准备](deepseek-float/docs/beta2-release-preparation.md)为准；见 [Known Issues 与合并边界](deepseek-float/docs/beta2-known-issues.md)。
+> v0.1.0-beta.2 已发布。智能划词增强默认开启，优先 UIA / 原生读取；自动复制回退默认关闭，开启或更换快捷键需要本次运行的原生风险确认。复杂格式剪贴板可能被覆盖且无法恢复；请先阅读[已知限制](deepseek-float/docs/beta2-known-issues.md)。
 
 ## 下载 Windows 版
 
-**[下载 v0.1.0-beta.1 · Windows x64 ZIP](https://github.com/bookguifan/windows-ai-float-assistant/releases/download/v0.1.0-beta.1/windows-ai-float-assistant-v0.1.0-beta.1-windows-x64.zip)**
+**[下载 v0.1.0-beta.2 · Windows x64 ZIP](https://github.com/bookguifan/windows-ai-float-assistant/releases/download/v0.1.0-beta.2/windows-ai-float-assistant-v0.1.0-beta.2-windows-x64.zip)**
 
-[查看 Release 说明与已知限制](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1) · [反馈普通使用问题](https://github.com/bookguifan/windows-ai-float-assistant/issues)
+[查看 Release 说明与已知限制](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2) · [反馈普通使用问题](https://github.com/bookguifan/windows-ai-float-assistant/issues)
 
 这是 **Beta 测试版本，不是稳定版**。EXE 未签名，Windows 可能显示来源或 SmartScreen 提示。请先核对下载来源与 SHA256，不建议关闭系统安全防护。
 
@@ -23,19 +23,19 @@
 Windows ZIP：
 
 ```text
-2EA93AA609C42A2291BF9995B38EBBCB5AB71F69455EF587D9A7CDF26F84C640
+B75304160B0D2EA01FF91FF57AA4777359111AD3919FC0AC13B092769ACB1D59
 ```
 
 包内 `deepseek-float.exe`：
 
 ```text
-A153BB431C31FE27F2C24EFD97615589F8D06CEB518775AA8BC77B9234342FFE
+26B046FDAB0C39A210F3AF8285CCDFC8470D16BB967A84D96ACE37EE7F4E7754
 ```
 
 在下载目录运行 PowerShell：
 
 ```powershell
-Get-FileHash .\windows-ai-float-assistant-v0.1.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\windows-ai-float-assistant-v0.1.0-beta.2-windows-x64.zip -Algorithm SHA256
 ```
 
 ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性，不能代替代码签名或发布者身份认证。
@@ -51,24 +51,24 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 | 截图提问 | 框选屏幕区域，尝试将图片贴入当前 AI 网页面板；需站点支持图片上传，不自动发送问题 |
 | AI 网页面板 | 使用所选第三方 AI 网站，在菜单中切换站点 |
 | 多轮追问 | 在结果卡继续提问，回答回流依赖当前站点的适配情况 |
-| 结果卡 | 在独立窗口查看回读到的回答 |
+| 结果卡 | 新划词定位到当前选区附近；流式更新和追问保持拖动位置 |
 | 收藏与 Markdown 导出 | 保存回答、搜索收藏、导出 Markdown，并打开导出目录 |
 | 配置及收藏备份恢复 | 导出备份，导入时预览并选择合并或覆盖恢复 |
 
 **AI 服务来自你选择的第三方网站**，本项目不提供模型服务，也不承诺所有网站、软件或 Windows 环境兼容。截图上传、消息发送和回答回读可能受网站版本、登录状态及网络影响。
 
-开发进度与预发布门禁见 [Beta.2.0 发布准备](deepseek-float/docs/beta2-release-preparation.md)；该页面不表示已有新发行包。
+开发、打包和验收入口见[发布与维护](deepseek-float/docs/beta2-release-preparation.md)。
 
 ## 快速上手
 
 1. 下载 ZIP，完整解压到本地目录，保留随包的许可证和对应源码材料。
 2. 运行 `deepseek-float.exe`。若提示缺少运行组件，按[系统要求](#系统要求)安装相应依赖。
 3. 左键点击悬浮球打开 AI 面板，选择站点并按网站要求登录。
-4. 右键悬浮球，打开“提示词与设置”。需要划词时，开启“提权划词”，再到支持 UIA 的程序中选中文本；出现工具条后选择操作。
+4. 右键悬浮球，打开“提示词与设置”。“智能划词增强”默认开启，在支持的程序中选中文本后通过工具条操作。UIA / 原生读取不可用时，可主动授权“自动复制回退”，根据目标选择 Ctrl+Insert（默认）或 Ctrl+C。
 5. 需要图片提问时，从菜单选择“截图提问”并框选，检查面板附件后再提问；也可从“收藏夹”查找或导出已保存的回答。
 6. 备份入口在设置页的“数据备份与恢复”；退出程序使用右键菜单中的“退出助手”。
 
-工具条中的**主动复制功能保留**。自动复制回退在本公开 Beta 构建中固定禁用，不能通过旧配置、备份恢复、界面开关或 IPC 重新开启。
+工具条中的**主动复制**是明确操作。自动复制回退默认关闭，授权仅本次运行有效，重启后须重新确认；旧配置和备份不能代替授权。纯文本尽力恢复，HTML/RTF/图片/文件等复杂内容不备份、不恢复，可能被覆盖且无法找回。
 
 ## 系统要求
 
@@ -79,10 +79,10 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 
 ## 已知限制
 
-- UIA 划词依赖目标程序提供 TextPattern；不支持的程序可能不出现工具条或即时原因提示。固定禁用的自动复制回退不会替代 UIA。
+- 自动划词依赖目标控件和复制快捷键支持；已验证本机记事本 NativeEdit、WPS Writer Ctrl+Insert 和 WPS PDF Ctrl+C，不能据此保证所有软件兼容。
 - 第三方 AI 网站可能调整页面或交互，影响输入、图片上传及回答回流。
-- 当前仅有有限的自动化与原生定向验证，**未宣称完整内部 Beta 验收通过**，也未宣称六站真实网站、截图/OCR 或全部 Windows 环境完成回归。
-- 发布 EXE **并非由公开根提交逐字节重新构建**。源码文档、仓库元数据和换行等来源差异已在 [Release Notes](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.1) 披露，不声称可重复构建字节一致性。
+- 本次冻结 Release 已完成核心功能、DeepSeek 合成问答、截图/OCR 和退出冒烟；其他 AI 站点、浏览器/编辑器兼容矩阵及多屏不同 DPI 未完整验证。
+- 本次发行从 Tag 对应 main 构建，公开下载与实测文件哈希一致；不承诺不同工具链或环境的逐字节可重复构建。
 - EXE 未签名；私密漏洞报告渠道尚未建立或完成验证，见[安全政策](SECURITY.md)。
 
 ## 本地开发与构建

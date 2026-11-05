@@ -1,12 +1,14 @@
 # Windows Native Clipboard Acceptance Plan
 
-Status: plan with the authorized PR #9 Dev results recorded below. Run clipboard actions only after separate, explicit authorization for the native copy fallback.
+> Current Beta.2 behavior: session consent allows complex-format fallback, with an explicit warning that the original complex clipboard is neither backed up nor restored. Plain-text preservation remains best-effort. The PR #9 results below describe the earlier rejection policy, not the released behavior; see [current known limits](beta2-known-issues.md) and [ordinary Release checklist](beta2-native-acceptance-plan.md). Historical outcomes are retained, not upgraded to PASS.
+
+This is a reusable test plan, not an outstanding Beta.2 release gate. Run clipboard actions only after separate, explicit authorization. Released validation scope is recorded in the current known limits.
 
 ## Safety Setup
 
-- Use a disposable Windows test account or isolated interactive session. Do not begin while the clipboard contains user or work data.
+- Use synthetic data and obtain explicit authorization. An existing Windows test account is optional; do not begin while the clipboard contains user or work data.
 - Before testing, deliberately replace the clipboard with a known recovery sentinel. This is the recovery target; the plan does not claim to serialize or restore arbitrary rich clipboard data.
-- Keep the test candidate, app data, logs, and fixture files in the existing isolated test root. Record the candidate SHA256 and the test-session start time.
+- Record the candidate SHA256, test-session start time, data paths and verified configuration backups. Ordinary Dev/Release may share formal configuration and WebView2 data; changing LOCALAPPDATA alone does not isolate them.
 - Leave the fallback disabled until the native settings confirmation is accepted. Run the Release candidate only against disposable synthetic text and a known clipboard sentinel.
 - Stop on an unexpected app-data write, a `COPY_RESTORE_FAILED` / `COPY_RESTORE_SKIPPED` diagnostic, or a mismatch after a failed copy. Do not claim arbitrary rich clipboard restoration is lossless.
 
@@ -14,7 +16,7 @@ The verifier at `scripts/windows-clipboard-acceptance.ps1` is read-only. Its def
 
 ## Delayed Rendering Limitation
 
-Windows can defer a clipboard format until a reader requests it; the system then sends `WM_RENDERFORMAT` to the clipboard owner. The current in-process `GetClipboardData` snapshot cannot reliably identify that state in advance, and its 100 ms elapsed-time check cannot interrupt a call that has not returned. A blocked owner can therefore stall the selection worker while the snapshot is incomplete. The code does not empty the clipboard until the full snapshot succeeds, but this is not a hard timeout or a guarantee against a stuck owner. Do not test against valuable clipboard contents or treat delayed rendering as a verified rejection. See [Microsoft's WM_RENDERFORMAT documentation](https://learn.microsoft.com/en-us/windows/win32/dataxchg/wm-renderformat).
+Windows can defer a clipboard format until a reader requests it; the system then sends `WM_RENDERFORMAT` to the clipboard owner. The current in-process `GetClipboardData` snapshot cannot reliably identify that state in advance, and its 100 ms elapsed-time check cannot interrupt a call that has not returned. A blocked owner can therefore stall the selection worker while the snapshot is incomplete. For supported plain-text formats, the code does not begin copy input until the full snapshot succeeds, but this is not a hard timeout or a guarantee against a stuck owner. Authorized complex-format fallback skips payload backup and does not promise restoration. Do not test against valuable clipboard contents or treat delayed rendering as a verified rejection. See [Microsoft's WM_RENDERFORMAT documentation](https://learn.microsoft.com/en-us/windows/win32/dataxchg/wm-renderformat).
 
 ## Test Data
 
@@ -62,43 +64,24 @@ powershell.exe -NoProfile -STA -File .\scripts\windows-clipboard-acceptance.ps1 
 
 ## Automatic Selection Fallback Acceptance
 
-Use the current PR #9 Tauri Dev build, with separately authorized synthetic clipboard data. These steps require maintenance assistance; automated/Mock passes are not native passes.
+Use the selected current Dev build or frozen ordinary Release, with separately authorized synthetic clipboard data. These steps require maintenance assistance; automated/Mock passes are not native passes.
 
 1. Confirm UIA success and standard Unicode Edit success each avoid `SendInput`.
 2. Verify the smart-selection master (default on), fallback (default off), native confirmation/cancel, and hidden shortcut selector until authorization succeeds. Turning off the master must revoke fallback, disable its switch and invalidate queued input. Restart must not retain consent or override an explicitly saved master preference.
 3. With only the known sentinel on the clipboard, test Notepad, WPS Writer, Chrome/Edge and VS Code; test Word/PDF readers if installed. Record UIA / NativeEdit / Clipboard separately. For fallback, manually choose Ctrl+Insert (default) or Ctrl+C; changing the shortcut requires new confirmation. Verify exact selected Unicode text, one chosen chord and restoration of the sentinel. Never automatically try the other chord; exclude console/terminal and sensitive targets.
-4. Test a prepared HTML/RTF/image/multiformat clipboard. The copy fallback must reject before input when any format is outside the exact snapshot whitelist; verify the clipboard formats remain unchanged. Do not claim this covers delayed rendering, which cannot be reliably preflighted or interrupted by the current API path.
+4. With explicit authorization that the synthetic HTML/RTF/image/multiformat sample may be lost, test one fallback. Verify selected text and the warning that complex data was not backed up or restored; do not count this as restoration PASS. Without consent, no shortcut may be sent. This differs from the historical PR #9 rejection policy. Do not claim coverage of delayed rendering, which cannot be reliably preflighted or interrupted by the current API path.
 5. Simulate clipboard contention, restoration failure and third-party writes with the existing deterministic fake backend. Sequence changes alone do not prove authorship; stable target/focus and associated writer evidence are required. Do not deliberately manufacture unsafe failures on the real desktop. Verify clear refusal and no second shortcut.
 6. Change foreground window during a selection and verify no shortcut is sent after identity validation fails. A verified in-flight clipboard result may be restored only if its exact transaction stamp is still current.
 7. Generic fallback may use a stable, related cross-process editing focus without standard Edit or pre-read text proof. Preserve the basic window relationship, password/sensitive-control exclusions and foreign-writer protection. A tested WPS Writer case does not establish PDF compatibility; record each chosen shortcut and actual restore result separately.
 8. Revoke the authorization and restart the app; the setting must be off. Legacy config and imported backups must not grant it.
 
-### PR #9 Dev Results — 2026-11-04
+### Historical PR #9 results
 
-Tested source: `6fa716ed138f0308fc2feb679ab40f6ac4c3047f`, using `pnpm tauri dev` in the existing flow checkout. The maintainer explicitly authorized both shortcuts against synthetic content and manually operated selection, settings and native confirmations. No ordinary Release EXE was launched or rebuilt for this acceptance.
-
-| Application | Read path | Shortcut input | Text correct | Clipboard preservation | Result |
-|---|---|---|---|---|---|
-| Windows Notepad | NativeEdit | None | Maintainer confirmed | Sentinel 003 hash, formats and sequence unchanged | PASS |
-| WPS Writer | Clipboard | Ctrl+Insert, request 297 | Maintainer confirmed | Sentinel 003 hash and formats restored | PASS |
-| WPS PDF, Ctrl+Insert | No completed capture | Mixed batch; individual input not attributed | No toolbar | Batch-end sentinel unchanged; individual result not established | FAIL |
-| WPS PDF, Ctrl+C | Clipboard | Ctrl+C, requests 616/706 | Maintainer confirmed | Sentinel 004 hash and formats restored | PASS |
-| Chrome / Edge | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
-| VS Code | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
-| Microsoft Word / other PDF readers | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
-
-- Native master/fallback dependency, risk-dialog cancel/accept, default Ctrl+Insert, and switching to Ctrl+C with native confirmation: PASS, confirmed by the maintainer.
-- Fallback off: PASS. WPS PDF produced no new toolbar; no shortcut input was logged, and sentinel 004 hash, formats and sequence remained unchanged.
-- Unsupported original HTML clipboard: PASS for rejection, not restoration. The dedicated sample retained `UnicodeText`, `Text`, `HTML Format` and sequence 5748; 18 requests reported `COPY_FORMAT_UNSAFE`, with no shortcut input. Its content was not read. Copying PDF or web rich text manually can therefore prevent later fallback until the original clipboard contains supported data; do not describe this as arbitrary rich-format support.
-- Restart consent expiry: PASS. After exiting an authorized run and restarting, the maintainer confirmed fallback off, shortcut controls hidden, and a fresh native prompt; cancel kept fallback off. The restarted run logged no shortcut input.
-- Configuration files were backed up outside the app-data directory and hashes verified before testing. Favorites and prompts remained byte-identical. Only `privileged_capture` and `hide_on_fullscreen` differed from the backup; the maintainer confirmed both manual changes. Formal WebView2 login data was used with consent; no account credentials, autostart or backup restoration were operated.
-- Earlier mixed trials included manual Ctrl+C and `COPY_RESTORE_SKIPPED`; their sentinel baseline was invalid, so they establish neither successful restoration nor definite automatic data loss. The later sentinel 004 run above had `COPY_SUCCESS` and matching restored data. Deliberate concurrency, delayed-rendering and restoration-failure injection were not performed on the desktop.
-
-The minimum Dev compatibility criteria passed for the tested paths. General application coverage and lossless complex-format restoration are not established. A brief ordinary Release smoke test from the final merged source remains necessary before publication.
+The original [PR #9 Dev results and rejection-policy evidence](https://github.com/bookguifan/windows-ai-float-assistant/blob/v0.1.0-beta.2/deepseek-float/docs/windows-clipboard-native-test-plan.md#pr-9-dev-results--2026-11-04) remain in the released Tag. Their FAIL / NOT TESTED entries are not upgraded by this cleanup. For the later ordinary Release and complex-format validation, see [current known limits](beta2-known-issues.md).
 
 ## A01 Native Acceptance
 
-Status: planned only; no EXE was started for A01 in this task. Use one separately authorized isolated app session and a local test page containing only synthetic selectable text.
+For a future regression, use one separately authorized app session and a local test page containing only synthetic selectable text. This checklist does not assert a new native run.
 
 1. Select a short known text range and confirm one toolbar appears with the matching preview.
 2. Open the toolbar menu, switch focus with Alt+Tab, and verify Alt+Tab itself does not force an immediate hide; the existing timer remains responsible for hiding it.
