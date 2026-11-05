@@ -13,7 +13,7 @@
 
 **[下载 v0.1.0-beta.2 · Windows x64 ZIP](https://github.com/bookguifan/windows-ai-float-assistant/releases/download/v0.1.0-beta.2/windows-ai-float-assistant-v0.1.0-beta.2-windows-x64.zip)**
 
-[查看 Release 说明与已知限制](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2) · [反馈普通使用问题](https://github.com/bookguifan/windows-ai-float-assistant/issues)
+[下载 SHA256SUMS](https://github.com/bookguifan/windows-ai-float-assistant/releases/download/v0.1.0-beta.2/SHA256SUMS) · [查看 Release 说明与已知限制](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2) · [反馈普通使用问题](https://github.com/bookguifan/windows-ai-float-assistant/issues)
 
 这是 **Beta 测试版本，不是稳定版**。EXE 未签名，Windows 可能显示来源或 SmartScreen 提示。请先核对下载来源与 SHA256，不建议关闭系统安全防护。
 
@@ -47,11 +47,14 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 | 功能 | 使用方式 |
 | --- | --- |
 | 桌面悬浮球 | 拖动调整位置，左键打开面板，右键进入功能菜单 |
-| UI Automation 划词 | 在支持的程序中读取选区，通过工具条复制或结合提示词提问 |
-| 截图提问 | 框选屏幕区域，尝试将图片贴入当前 AI 网页面板；需站点支持图片上传，不自动发送问题 |
+| 系统托盘 | 显示或隐藏球窗、打开菜单、正常退出助手 |
+| 智能划词增强 | 优先 UIA / NativeEdit 读取选区，通过工具条复制或结合提示词提问 |
+| 可选自动复制回退 | UIA / 原生读取失败时，经本次运行授权后尝试 Ctrl+Insert（默认）或 Ctrl+C；每次只发送所选一种 |
 | AI 网页面板 | 使用所选第三方 AI 网站，在菜单中切换站点 |
-| 多轮追问 | 在结果卡继续提问，回答回流依赖当前站点的适配情况 |
-| 结果卡 | 新划词定位到当前选区附近；流式更新和追问保持拖动位置 |
+| 划词结果卡与追问 | 新结果卡跟随本次划词位置；可拖动，流式更新和继续追问保持拖动位置 |
+| 截图提问 | 框选区域并将图片贴入支持上传的 AI 面板，由用户输入问题后发送 |
+| 截图识字 / 自动 OCR | 从菜单进入识字模式，附件上传确认后自动发送识字请求并回读结果卡 |
+| 独立截图快捷键 | 设置中分别录制“截图提问”和“截图识字”；识字键默认未设置，冲突时保留原键 |
 | 收藏与 Markdown 导出 | 保存回答、搜索收藏、导出 Markdown，并打开导出目录 |
 | 配置及收藏备份恢复 | 导出备份，导入时预览并选择合并或覆盖恢复 |
 
@@ -65,10 +68,12 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 2. 运行 `deepseek-float.exe`。若提示缺少运行组件，按[系统要求](#系统要求)安装相应依赖。
 3. 左键点击悬浮球打开 AI 面板，选择站点并按网站要求登录。
 4. 右键悬浮球，打开“提示词与设置”。“智能划词增强”默认开启，在支持的程序中选中文本后通过工具条操作。UIA / 原生读取不可用时，可主动授权“自动复制回退”，根据目标选择 Ctrl+Insert（默认）或 Ctrl+C。
-5. 需要图片提问时，从菜单选择“截图提问”并框选，检查面板附件后再提问；也可从“收藏夹”查找或导出已保存的回答。
+5. 从菜单选择“截图提问”框选后自行输入问题；“截图识字”会在附件上传确认后自动发送识字请求。两者可在设置中分别录制快捷键，识字键默认未设置；也可从“收藏夹”查找或导出已保存的回答。
 6. 备份入口在设置页的“数据备份与恢复”；退出程序使用右键菜单中的“退出助手”。
 
 工具条中的**主动复制**是明确操作。自动复制回退默认关闭，授权仅本次运行有效，重启后须重新确认；旧配置和备份不能代替授权。纯文本尽力恢复，HTML/RTF/图片/文件等复杂内容不备份、不恢复，可能被覆盖且无法找回。
+
+没有工具条时，先检查智能划词开关及目标是否可选中文字；回退失败时查看设置页原因，必要时手动选择另一快捷键，或手动复制文字到面板。截图未确认上传时先检查附件和错误提示，避免重复发送。
 
 ## 系统要求
 
@@ -80,6 +85,7 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 ## 已知限制
 
 - 自动划词依赖目标控件和复制快捷键支持；已验证本机记事本 NativeEdit、WPS Writer Ctrl+Insert 和 WPS PDF Ctrl+C，不能据此保证所有软件兼容。
+- [Issue #2：偶发启动异常退出](https://github.com/bookguifan/windows-ai-float-assistant/issues/2)继续开放，根因未彻底定位；本次验收通过不代表已经根治。
 - 第三方 AI 网站可能调整页面或交互，影响输入、图片上传及回答回流。
 - 本次冻结 Release 已完成核心功能、DeepSeek 合成问答、截图/OCR 和退出冒烟；其他 AI 站点、浏览器/编辑器兼容矩阵及多屏不同 DPI 未完整验证。
 - 本次发行从 Tag 对应 main 构建，公开下载与实测文件哈希一致；不承诺不同工具链或环境的逐字节可重复构建。
@@ -97,6 +103,8 @@ pnpm tauri dev
 ```
 
 `pnpm dev` 只启动前端；运行完整桌面应用使用 `pnpm tauri dev`。测试另一实例前先退出当前程序，避免单实例互斥唤醒旧实例。
+
+前端单测用 `pnpm test:unit`，浏览器回归用 `pnpm test:js`，Rust 测试用 `pnpm test:rs`；先执行 `pnpm build`，聚合检查用 `pnpm check`。首次 Playwright 安装、工具链和按改动选择测试的说明见[贡献指南](CONTRIBUTING.md#本地开发与测试)。
 
 本地绿色版构建：
 

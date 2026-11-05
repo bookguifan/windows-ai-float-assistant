@@ -9,6 +9,7 @@
 - 受支持文本尽力快照和恢复；复杂格式经明确风险授权后可复制，但不备份、不恢复，可能被覆盖。保留目标、来源及并发写入保护。
 - 新结果卡跟随本次划词位置，流式更新和追问保持拖动后的位置，并保留边缘避让。
 - 修复球窗 Ready/显隐、工具条及设置交互、DeepSeek 附件检测和自动 OCR；截图提问与 OCR 可分别设置快捷键。
+- 加强主动复制失败后的尽力恢复和备份输入校验；恢复不承诺对任意 Windows 剪贴板格式原子无损。
 - 沿用一个 Windows CI、一套绿色版构建入口及必要许可证/对应源码。
 
 [发行说明和附件](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2) · [已知限制](deepseek-float/docs/beta2-known-issues.md)。

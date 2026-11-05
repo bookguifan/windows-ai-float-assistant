@@ -25,7 +25,14 @@
 使用 Node.js **24.22.1**、pnpm **9.15.9** 和已验证的 Rust **1.98.1**；Tauri 2 沿用锁文件。
 不要求 Docker、VM、独立 Dev/Test/Release 环境或新版本管理器。
 
-在 deepseek-float/ 下：
+先克隆仓库并进入应用目录（完整桌面启动用下表的 Tauri Dev 命令）：
+
+```powershell
+git clone https://github.com/bookguifan/windows-ai-float-assistant.git
+cd windows-ai-float-assistant\deepseek-float
+```
+
+在 `deepseek-float/` 下：
 
 | 命令 | 用途 |
 | --- | --- |
