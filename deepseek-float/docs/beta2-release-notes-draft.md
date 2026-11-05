@@ -1,6 +1,6 @@
 # Windows AI 悬浮助手 v0.1.0-beta.2
 
-Beta 预发布说明。应用内部版本为 0.1.0。
+Beta 预发布说明。应用内部版本为 0.1.0。本文件保留现有名称供 `scripts/build-release.mjs` 组装包内说明；已发布内容及校验值以 [GitHub Pre-release](https://github.com/bookguifan/windows-ai-float-assistant/releases/tag/v0.1.0-beta.2) 为准，不随文档清理替换已发布附件。
 
 ## 变更
 
@@ -23,7 +23,7 @@ Issue #2（启动后偶发异常退出）继续开放：https://github.com/bookg
 
 WPS PDF 在本次兼容性测试中需手动选择 Ctrl+C，Ctrl+Insert 未取得有效选区；不能据此保证所有 PDF 或桌面应用均受支持。
 
-结果卡定位已完成本机 Dev 验证；多屏不同 DPI 尚未完成实机兼容验证。最终普通 Release 的验收结果另行确认，不以 Dev 通过代替。
+已发布的冻结普通 Release 已完成人工辅助验收：记事本 NativeEdit、WPS Writer Ctrl+Insert、WPS PDF Ctrl+C、纯文本恢复、授权后 HTML/图片复制及不恢复提示、结果卡定位/拖动/追问、自动 OCR、截图提问与正常退出。仅代表已测试的本机场景；多屏不同 DPI 尚未实机验证。复杂格式首轮有一次复制结果读取失败，独立干净样本复测通过，未宣称偶发现象已修复。后续构建仍须独立验收，不能沿用旧候选结论。
 
 通过系统托盘菜单“退出助手”正常退出。智能划词增强可在设置中开关；需要兼容回退时，开启自动复制并确认风险，根据目标应用选择 Ctrl+Insert 或 Ctrl+C。不支持的软件可先手动复制，再通过面板输入问题。遇到问题请在仓库 Issues 提供系统和应用版本、复现步骤及脱敏截图，勿附账号凭据或私人剪贴板内容。
 

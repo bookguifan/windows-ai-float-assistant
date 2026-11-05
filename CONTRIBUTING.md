@@ -1,6 +1,6 @@
 # 贡献指南
 
-欢迎为 Windows AI Float Assistant 提交普通问题反馈、功能建议和 PR。项目已公开，当前版本为 **v0.1.0-beta.1（Pre-release）**；测试版本的兼容性和体验仍有改进空间。
+欢迎为 Windows AI Float Assistant 提交普通问题反馈、功能建议和 PR。项目已公开，当前版本为 **v0.1.0-beta.2（Pre-release）**；测试版本的兼容性和体验仍有改进空间。
 
 ## Bug 反馈
 
@@ -25,7 +25,14 @@
 使用 Node.js **24.22.1**、pnpm **9.15.9** 和已验证的 Rust **1.98.1**；Tauri 2 沿用锁文件。
 不要求 Docker、VM、独立 Dev/Test/Release 环境或新版本管理器。
 
-在 deepseek-float/ 下：
+先克隆仓库并进入应用目录（完整桌面启动用下表的 Tauri Dev 命令）：
+
+```powershell
+git clone https://github.com/bookguifan/windows-ai-float-assistant.git
+cd windows-ai-float-assistant\deepseek-float
+```
+
+在 `deepseek-float/` 下：
 
 | 命令 | 用途 |
 | --- | --- |
@@ -68,13 +75,23 @@ Corepack 读取已有 packageManager 固定 pnpm 9.15.9；发布入口继续验�
 未经授权不启动 EXE、操作真实剪贴板、覆盖正式配置或执行真实备份恢复。
 无法保证用户数据安全的操作先跳过并说明原因；自动化通过不代替原生验收。
 
+### 可选原生工具
+
+普通验收优先使用上方简洁清单和现有日志，不要求额外诊断平台。脚本不会作为 CI 的桌面步骤自动运行：
+
+- `scripts/windows-clipboard-acceptance.ps1`：默认 Plan 不读取剪贴板；实际读取使用专用数据及明确授权。
+- `scripts/run-beta2-native-acceptance.ps1` 与 `Test-Beta2NativeLauncher.ps1`：成对保留的可选隔离启动/Ready/退出诊断及自检，不是普通发布门槛。
+- `scripts/live-site-acceptance.mjs`、`live-ocr-acceptance.mjs`：显式选择站点/合成图片后才做真实网站检查。Dev/普通 Release 可能共用正式登录目录；单独改 `LOCALAPPDATA` 不保证隔离。
+- `scripts/e2e-workflows.mjs` 和 `Get-FixtureWindow.ps1`：真实应用工作流与合成截图回归，须使用专用实例。
+- `e2e-menu.mjs`、`e2e-first-batch.mjs`、`Test-MenuNative.ps1` 有旧菜单尺寸/日志断言；`e2e-shell.mjs` 仍含按映像名强杀。保留其独特回归能力，本轮不运行、不宣称适用于当前版本；直接使用前须定向维护，不能对正式实例执行。
+
 ## PR 提交要求
 
 - 保持改动范围清晰，说明具体问题、最终行为、修改原因及验证结果。
 - 大规模重构、依赖升级或功能变化先讨论，避免混入无关格式化和构建产物。
 - 保留冻结依赖和锁文件；发布构建继续使用 `custom-protocol`，本地构建说明见 [README](README.md)。
 - 不移除发送不确定时禁止自动重发、会话隔离、Markdown 净化及备份恢复保护。
-- 公开 Beta 的自动复制回退固定禁用，不要在无单独风险评审的情况下恢复危险路径。
+- 保留 UIA / 原生读取优先、默认关闭且仅当前运行授权的自动复制、每次单一快捷键、敏感目标和第三方并发写入保护；复杂格式不备份/不恢复须明确警告。
 - UI 改动应提供真实、脱敏的效果说明；普通问题可附小型合成复现。
 
 ## 数据与许可证
