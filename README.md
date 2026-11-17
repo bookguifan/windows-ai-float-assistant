@@ -95,6 +95,8 @@ ZIP 内也提供文件校验清单。普通 SHA256 用于核对文件一致性�
 
 开发使用 Windows、MSVC C++ 构建工具与 Windows SDK。本机使用 Node.js `24.22.1`（既有 `^24.15.0` 校验保留），pnpm 固定为 `9.15.9`；已有本地构建使用 Rust `1.98.1`，更低版本的完整依赖兼容性尚未单独验证。
 
+安装及脚本启用严格 Node 版本检查。若 pnpm 报告的 Node 与终端不同，按[贡献指南的会话初始化步骤](CONTRIBUTING.md#pnpm-调用旧-node-时)使用正确 Node 和 Corepack，并先执行 `node scripts/build-release.mjs --check-toolchain-only`。
+
 ```powershell
 git clone https://github.com/bookguifan/windows-ai-float-assistant.git
 cd windows-ai-float-assistant\deepseek-float

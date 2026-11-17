@@ -46,6 +46,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: deepseek-float/pnpm-lock.yaml
 
+      - name: Verify Node and pnpm runtimes before installation
+        run: node scripts/build-release.mjs --check-toolchain-only
+
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
