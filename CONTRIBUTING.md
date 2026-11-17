@@ -52,9 +52,10 @@ PR 后由一个 Windows GitHub CI 完整验证，包括 fmt、Clippy 和独立�
 ### pnpm 调用旧 Node 时
 
 Node 的支持范围仍为 `^24.15.0`，本地及 CI 验证基线为 **24.22.1**；pnpm 由
-`packageManager` 固定为 **9.15.9**。`.npmrc` 开启 `engine-strict`，不满足要求时安装及
-脚本立即失败。独立 pnpm EXE 可能内嵌旧 Node，即使 `pnpm exec node` 正确也不能说明
-pnpm 自身的运行时合格；最终运行下面的发布预检。
+`packageManager` 固定为 **9.15.9**。`.npmrc` 开启 `engine-strict`，pnpm 检测到引擎版本
+不满足要求时拒绝安装及运行脚本。独立 pnpm EXE 可能内嵌旧 Node，但 pnpm 9.15.9 的
+engine 校验可能读取 PATH 中的 Node；`pnpm exec node` 和发布预检都不能证明 EXE 内嵌
+Node 的版本。遇到此类问题使用下面的 Node + Corepack 入口，再运行发布预检。
 
 在 `deepseek-float/` 下，使用已安装的正确 Node 和 Corepack，只为当前 PowerShell 会话
 生成入口。先把两处示例路径改为本机实际路径；首次 `corepack install` 需要访问包源，

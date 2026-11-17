@@ -78,9 +78,9 @@ assertPnpmRuntime({
   expectedNodeVersion: process.version,
   platform: process.platform,
 });
-// `pnpm exec node` only checks PATH resolution. A standalone pnpm can still
-// bundle an unsupported Node; engine-strict checks that runtime on `pnpm run`.
-// Reuse the dependency-free version check so CI can preflight before install.
+// Check lifecycle execution as well as PATH resolution before installing.
+// engine-strict does not prove a standalone pnpm EXE's embedded Node version.
+// Reuse the dependency-free version check; use Node-bound Corepack for development.
 captureOutput(pm, ["run", "check:version"]);
 console.log(`✓ Release toolchain: Node ${process.version}; pnpm ${actualPnpmVersion}; pnpm Node ${pnpmNodeVersion}`);
 

@@ -61,9 +61,9 @@ test('release rejects a pnpm process that uses a different Node runtime', () => 
 });
 
 // Exercise the real release entry without installing dependencies or compiling Rust.
-// Only the external package-manager boundary is replaced: exec can resolve the
-// supported Node even when pnpm's own bundled runtime rejects lifecycle scripts.
-function releasePreflight(t, badPnpmEngine) {
+// Only the external package-manager boundary is replaced. This tests propagation
+// of lifecycle failures, not detection of a standalone pnpm EXE's embedded Node.
+function releasePreflight(t, rejectLifecycle) {
   const project = fileURLToPath(new URL('../', import.meta.url));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'float-toolchain-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -85,8 +85,8 @@ function releasePreflight(t, badPnpmEngine) {
     else if (command === 'exec node -p process.execPath') console.log(process.execPath);
     else if (command === 'exec node -p process.version') console.log(process.version);
     else if (command === 'run check:version') {
-      if (${badPnpmEngine}) {
-        console.error('ERR_PNPM_UNSUPPORTED_ENGINE: bundled Node v20.11.1');
+      if (${rejectLifecycle}) {
+        console.error('ERR_PNPM_UNSUPPORTED_ENGINE: configured Node v20.11.1');
         process.exit(1);
       }
       console.log('version check passed');
@@ -108,7 +108,7 @@ function releasePreflight(t, badPnpmEngine) {
   return { ...result, calls };
 }
 
-test('release preflight rejects an old pnpm engine even when pnpm exec resolves the correct Node',
+test('release preflight stops on lifecycle engine rejection after pnpm exec checks pass',
   { skip: process.platform !== 'win32' }, (t) => {
     const result = releasePreflight(t, true);
     assert.notEqual(result.status, 0, 'pnpm lifecycle failure must stop the release preflight');
