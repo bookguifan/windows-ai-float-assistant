@@ -51,24 +51,55 @@ PR 后由一个 Windows GitHub CI 完整验证，包括 fmt、Clippy 和独立�
 
 ### pnpm 调用旧 Node 时
 
-先检查 `node --version`、`pnpm --version`、`pnpm exec node -p process.version`。
-使用已安装的正确 Node 和 Corepack，不修改全局 PATH。若 pnpm 是携带旧 Node 的独立可执行文件，
-可只在当前 PowerShell 会话生成 Corepack 入口（把两处路径换成自己已有的安装路径）：
+Node 的支持范围仍为 `^24.15.0`，本地及 CI 验证基线为 **24.22.1**；pnpm 由
+`packageManager` 固定为 **9.15.9**。`.npmrc` 开启 `engine-strict`，pnpm 检测到引擎版本
+不满足要求时拒绝安装及运行脚本。独立 pnpm EXE 可能内嵌旧 Node，但 pnpm 9.15.9 的
+engine 校验可能读取 PATH 中的 Node；`pnpm exec node` 和发布预检都不能证明 EXE 内嵌
+Node 的版本。遇到此类问题使用下面的 Node + Corepack 入口，再运行发布预检。
+
+在 `deepseek-float/` 下，使用已安装的正确 Node 和 Corepack，只为当前 PowerShell 会话
+生成入口。先把两处示例路径改为本机实际路径；首次 `corepack install` 需要访问包源，
+后续复用 Corepack 缓存。下载或入口生成失败时立即停止，不继续构建：
 
 ```powershell
-$nodeExe = 'C:\path\to\node-24.22.1\node.exe'
-$corepackJs = 'C:\path\to\node_modules\corepack\dist\corepack.js'
-$pnpmShim = Join-Path $env:TEMP 'float-pnpm-session'
-New-Item -ItemType Directory -Force -Path $pnpmShim | Out-Null
-& $nodeExe $corepackJs enable pnpm --install-directory $pnpmShim
-$env:Path = $pnpmShim + ';' + (Split-Path $nodeExe) + ';' + $env:Path
-pnpm --version
-pnpm exec node -p process.version
-node scripts/build-release.mjs --check-toolchain-only
+& {
+  $ErrorActionPreference = 'Stop'
+  $nodeExe = 'C:\path\to\node-24.22.1\node.exe'
+  $corepackJs = 'C:\path\to\node_modules\corepack\dist\corepack.js'
+  if (-not (Test-Path -LiteralPath 'scripts/build-release.mjs' -PathType Leaf)) {
+    throw '请先进入 deepseek-float/ 目录。'
+  }
+  foreach ($toolPath in @($nodeExe, $corepackJs)) {
+    if (-not (Test-Path -LiteralPath $toolPath -PathType Leaf)) {
+      throw "工具路径不存在：$toolPath"
+    }
+  }
+  & $nodeExe $corepackJs install
+  if ($LASTEXITCODE -ne 0) { throw 'Corepack 准备固定 pnpm 失败。' }
+  $pnpmShim = Join-Path $env:TEMP ('float-pnpm-session-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $pnpmShim | Out-Null
+  & $nodeExe $corepackJs enable pnpm --install-directory $pnpmShim
+  if ($LASTEXITCODE -ne 0) { throw 'Corepack 入口生成失败。' }
+  $previousPath = $env:Path
+  try {
+    $env:Path = $pnpmShim + ';' + (Split-Path $nodeExe) + ';' + $previousPath
+    & $nodeExe scripts/build-release.mjs --check-toolchain-only
+    if ($LASTEXITCODE -ne 0) { throw '工具链预检失败，已恢复原 PATH。' }
+  } catch {
+    $env:Path = $previousPath
+    throw
+  }
+}
 ```
 
-Corepack 读取已有 packageManager 固定 pnpm 9.15.9；发布入口继续验证 pnpm 子进程和入口 Node 一致。
-关闭终端即可丢弃 PATH 调整。没有增加持久环境配置文件。
+成功后在同一会话使用 `pnpm dev`、`pnpm tauri dev`、测试和 `pnpm release`；真实入口也会
+被 cmd.exe 和嵌套 pnpm 继承，不能仅以 PowerShell 函数替代。预检同时验证入口 Node、
+pnpm 版本、`pnpm exec node` 的路径和版本，以及 `pnpm run check:version` 的 engine 校验。
+`pnpm check` 的子检查统一由 pnpm 调用，避免系统 npm.cmd 绑定另一套旧 Node。
+
+关闭终端即可丢弃 PATH 调整。长期使用独立安装的开发 Node 和 Corepack，记录实际版本；
+Codex 缓存中的 Node 仅作为临时选择，不把机器专属路径写入仓库。升级基线时一起更新 CI、
+本指南和 README，并完成冻结安装、构建、检查、单元测试与 Playwright 回归。
 
 原生验收使用[普通 Release 清单](deepseek-float/docs/beta2-native-acceptance-plan.md)，
 一次会话记录 PASS/FAIL/NOT TESTED；不要求重复跑隔离诊断版。

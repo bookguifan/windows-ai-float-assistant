@@ -78,6 +78,10 @@ assertPnpmRuntime({
   expectedNodeVersion: process.version,
   platform: process.platform,
 });
+// Check lifecycle execution as well as PATH resolution before installing.
+// engine-strict does not prove a standalone pnpm EXE's embedded Node version.
+// Reuse the dependency-free version check; use Node-bound Corepack for development.
+captureOutput(pm, ["run", "check:version"]);
 console.log(`✓ Release toolchain: Node ${process.version}; pnpm ${actualPnpmVersion}; pnpm Node ${pnpmNodeVersion}`);
 
 if (process.argv.includes("--check-toolchain-only")) {
