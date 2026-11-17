@@ -213,6 +213,9 @@ pub fn popup_action(
     })?;
     crate::diag::log("[selection-action] IPC accepted");
     crate::selection_trace::event("ipc-action", Some(ticket), "received");
+    if preset == "favorite-selection" {
+        return crate::popup::favorite_selection(&app, ticket);
+    }
     crate::popup::on_action(&app, &preset, ticket);
     Ok(())
 }
@@ -552,6 +555,20 @@ pub fn result_drag_start(app: AppHandle) {
 #[tauri::command]
 pub fn result_resize(app: AppHandle, height: f64) {
     crate::result::resize(&app, height);
+}
+
+#[tauri::command]
+pub fn favorites_set_view(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    active: bool,
+    expanded: bool,
+) -> Result<(), String> {
+    let url = window.url().map_err(|_| "收藏窗口地址不可用")?;
+    if !crate::selection::local_document_page(window.label(), &url, "result") {
+        return Err("只能从本地收藏窗口调整阅读尺寸".into());
+    }
+    crate::result::favorites_set_view(&app, active, expanded)
 }
 
 /// 结果卡：开新会话（右上角「开新会话」图标）—— 清空卡片会话，并让面板开启 DeepSeek 新对话。

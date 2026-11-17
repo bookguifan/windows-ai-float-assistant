@@ -278,6 +278,31 @@ function toolbarPage(){
  for(const script of dom.window.document.querySelectorAll('script'))dom.window.eval(script.textContent);
  return {w:dom.window,d:dom.window.document,calls,close:()=>dom.window.close()};
 }
+test('selection favorite uses the installed ticket once and acknowledges persistence',async()=>{
+ const p=toolbarPage();try{
+  p.w.__dsfResetFired('fav-unsupported');
+  p.w.__dsfResetFired('501');
+  const favorite=p.d.querySelector('[data-preset="favorite-selection"]');
+  assert.ok(favorite,'toolbar exposes direct raw selection favorite');
+  favorite.click();favorite.click();await tick();
+  assert.deepEqual(p.calls.filter(c=>c.command==='popup_action').map(c=>JSON.parse(JSON.stringify(c.args))),
+   [{preset:'favorite-selection',selectionTicket:'501'}]);
+  assert.match(p.d.getElementById('favorite-status').textContent,/已收藏/);
+  p.w.__dsfResetFired('502');
+  assert.equal(p.d.getElementById('favorite-status').textContent,'');
+ }finally{p.close();}
+});
+test('selection favorite failure is visible and a late completion cannot label a new selection',async()=>{
+ const p=toolbarPage();try{
+  p.w.__TAURI_INTERNALS__.invoke=()=>Promise.reject('选区已失效，请重新划词');
+  p.w.__dsfResetFired('510');p.d.querySelector('[data-preset="favorite-selection"]').click();await tick();
+  assert.match(p.d.getElementById('favorite-status').textContent,/失效/);
+  let resolve;p.w.__TAURI_INTERNALS__.invoke=()=>new Promise(r=>resolve=r);
+  p.w.__dsfResetFired('511');p.d.querySelector('[data-preset="favorite-selection"]').click();
+  p.w.__dsfResetFired('512');resolve();await tick();
+  assert.equal(p.d.getElementById('favorite-status').textContent,'');
+ }finally{p.close();}
+});
 test('toolbar action carries the displayed session ticket and repeated clicks fire once',()=>{
  const p=toolbarPage();try{const copy=p.d.querySelector('[data-preset="copy"]');copy.click();assert.equal(p.calls.length,0);p.w.__dsfResetFired('42');copy.click();copy.click();assert.equal(p.calls.length,1);assert.deepEqual(JSON.parse(JSON.stringify(p.calls[0].args)),{preset:'copy',selectionTicket:'42'});p.w.__dsfResetFired('43');copy.click();assert.equal(p.calls[1].args.selectionTicket,'43');}finally{p.close();}
 });
@@ -450,9 +475,9 @@ test('rapid selection refresh replaces toolbar and overflow before dispatching t
    assert.equal(p.d.querySelector('#bar'),bar);assert.equal(p.d.querySelector('#more-box'),more);
    assert.equal(p.d.querySelectorAll('.bar').length,1);
    assert.deepEqual([...bar.querySelectorAll('button')].map(b=>b.dataset.preset),
-    ['copy',...prompts.slice(0,4).map(p=>p.id),'open-more']);
+    ['copy','favorite-selection',...prompts.slice(0,3).map(p=>p.id),'open-more']);
    assert.deepEqual([...more.querySelectorAll('button')].map(b=>b.dataset.preset),
-    [...prompts.slice(4).map(p=>p.id),'open-settings']);
+    [...prompts.slice(3).map(p=>p.id),'open-settings']);
    assert.equal(p.d.body.classList.contains('menu-mode'),false);
    assert.equal(more.classList.contains('visible'),false);
    p.w.__dsfShowMore();

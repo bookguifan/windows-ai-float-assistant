@@ -32,9 +32,9 @@ use windows::Win32::{
 };
 
 pub const POPUP_LABEL: &str = "popup";
-/// 首行最多常驻的提示词数量（**复制 + ≤4 项提示词 = 共 5 个按钮**）；
-/// 第 5 项起并入「⋮ 更多」浮层。顺序 = 设置里 prompts.json 的列表顺序（用户可排序）。
-const INLINE_MAX: usize = 4;
+/// 首行常驻复制、收藏和最多三项提示词，其余并入「⋮ 更多」浮层。
+/// 顺序 = 设置里 prompts.json 的列表顺序（用户可排序）。
+const INLINE_MAX: usize = 3;
 /// 「⋮ 更多」浮层：每行逻辑高度（行按钮 30 + 间距 2）。
 const FLY_ROW_H: f64 = 32.0;
 /// 浮层单屏最多显示行数（超出则容器内纵向滚动，避免高度失控顶出屏幕）。
@@ -353,11 +353,11 @@ const BAR_PAD: f64 = 8.0;
 const BTN_GAP: f64 = 2.0;
 const WIDTH_MARGIN: f64 = 8.0;
 
-/// 工具条总宽：复制 + **首行内置提示词** + ⋯。自定义并入「⋮ 更多」浮层，不参与宽度估算，
+/// 工具条总宽：复制 + 收藏 + **首行提示词** + ⋯。溢出项并入「⋮ 更多」浮层，不参与宽度估算，
 /// 因此首行宽度稳定（不会随自定义数量增长）。clamp 到 [MIN_W, MAX_W]。
 fn toolbar_width(labels: impl Iterator<Item = String>) -> f64 {
-    let mut w = BAR_PAD + COPY_PX;
-    let mut n = 1.0; // copy 按钮
+    let mut w = BAR_PAD + COPY_PX + button_px("收藏");
+    let mut n = 2.0; // copy + favorite
     for label in labels {
         w += button_px(&label);
         n += 1.0;
@@ -536,7 +536,7 @@ pub fn show_at_cursor(app: &AppHandle) {
     crate::diag::log(&format!(
         "popup 已 show（宽 {} 逻辑像素，首行 {} 个按钮，位于 ({x},{y}) scale={scale}）",
         logical_w,
-        visible.len().min(INLINE_MAX) + 2
+        visible.len().min(INLINE_MAX) + 3
     ));
     arm_auto_close(app, POPUP_TIMEOUT_MS);
 }
@@ -925,15 +925,33 @@ fn selection_with_policy(
     }
 }
 
-/// 工具条上按钮被点击（`popup-action` 事件）的统一入口。
-///
-/// preset_name 的合法取值（与 `poc/popup.html` 的 `data-preset` 一一对应）：
-///   - `copy`：特殊动作，写回剪贴板；
-///   - `open-settings`：打开设置窗口；
-///   - 其余：统一提示词列表里的 id（内置 explain/translate/summarize/ask 与自定义 custom_*），
-///     查 prompts 后 compose_custom + 注入面板。
-///
-/// 硬约束：绝不发送空内容。
+/// 收藏只消费现有已校验选区，不执行复制或 AI 请求。
+pub fn favorite_selection(app: &AppHandle, ticket: u64) -> Result<(), String> {
+    let show_generation = SHOW_GEN.load(Ordering::SeqCst);
+    let session = take_pending_action(ticket, true)
+        .and_then(|a| {
+            a.into_session(
+                crate::selection_runtime::generation(),
+                crate::selection_runtime::now_ms(),
+            )
+        })
+        .ok_or("选区已失效，请重新划词后收藏")?;
+    crate::favorites::save_selection(session.raw, "划词".into())?;
+    crate::result::refresh_favorites(app);
+    // Reuse the existing dismiss timer; a replacement selection advances SHOW_GEN.
+    if let Ok(sender) = AUTO_CLOSE_TX.lock() {
+        if let Some(sender) = sender.as_ref() {
+            let _ = sender.send(ArmMsg {
+                generation: show_generation,
+                deadline: Instant::now() + Duration::from_millis(850),
+                ticket: Some(ticket),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// 工具条动作：复制、菜单或提示词；收藏由 IPC 分派至 favorite_selection。
 pub fn on_action(app: &AppHandle, preset_name: &str, ticket: u64) {
     if preset_name == "close-more" {
         if take_pending_action(ticket, false).is_some() {

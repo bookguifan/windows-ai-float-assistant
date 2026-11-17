@@ -366,6 +366,113 @@ static RESULT_DISMISSED: AtomicBool = AtomicBool::new(false);
 /// 是竞态来源（R4）。让每个渲染线程在真正 render 前先持这把锁，把并发渲染串行成队列。
 static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Default)]
+struct FavoritesView {
+    active: bool,
+    expanded: bool,
+    // Physical geometry preserves the conversation's dragged position and monitor scale.
+    conversation: Option<(i32, i32, u32, u32)>,
+}
+static FAVORITES_VIEW: Mutex<FavoritesView> = Mutex::new(FavoritesView {
+    active: false,
+    expanded: false,
+    conversation: None,
+});
+
+fn reading_geometry(
+    position: (i32, i32),
+    logical_size: (f64, f64),
+    scale: f64,
+    area: (i32, i32, i32, i32),
+) -> (i32, i32, u32, u32) {
+    let (ax, ay, aw, ah) = area;
+    let w = ((logical_size.0 * scale).round() as i32).clamp(1, aw.max(1));
+    let h = ((logical_size.1 * scale).round() as i32).clamp(1, ah.max(1));
+    (
+        position.0.clamp(ax, ax + aw.max(w) - w),
+        position.1.clamp(ay, ay + ah.max(h) - h),
+        w as u32,
+        h as u32,
+    )
+}
+
+fn set_reading_geometry(
+    app: &AppHandle,
+    win: &WebviewWindow,
+    size: (f64, f64),
+) -> Result<(), String> {
+    let pos = win.outer_position().map_err(|e| e.to_string())?;
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    if scale <= 0.0 {
+        return Err("无法确定收藏窗口缩放比例".into());
+    }
+    let area = work_area_at(app, pos.x, pos.y).ok_or("无法确定收藏窗口所在屏幕")?;
+    let (x, y, w, h) = reading_geometry((pos.x, pos.y), size, scale, area);
+    win.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    win.set_size(PhysicalSize::new(w, h))
+        .map_err(|e| e.to_string())
+}
+
+/// Reuses the result window without enabling undecorated native resize handles.
+pub fn favorites_set_view(app: &AppHandle, active: bool, expanded: bool) -> Result<(), String> {
+    // Window getters marshal to the event loop. Never let a worker hold the view
+    // mutex while the UI thread waits for it in an IPC command.
+    let handle = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(favorites_set_view_on_main(&handle, active, expanded));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|_| "收藏窗口调整未完成".to_string())?
+}
+
+fn favorites_set_view_on_main(app: &AppHandle, active: bool, expanded: bool) -> Result<(), String> {
+    let win = app
+        .get_webview_window(RESULT_LABEL)
+        .ok_or("收藏窗口尚未创建")?;
+    let mut state = FAVORITES_VIEW.lock().unwrap_or_else(|p| p.into_inner());
+    if active {
+        let saved = if !state.active {
+            let pos = win.outer_position().map_err(|e| e.to_string())?;
+            let size = win.inner_size().map_err(|e| e.to_string())?;
+            Some((pos.x, pos.y, size.width, size.height))
+        } else {
+            state.conversation
+        };
+        set_reading_geometry(
+            app,
+            &win,
+            if expanded {
+                (760.0, 680.0)
+            } else {
+                (CARD_W, CARD_MAX_H)
+            },
+        )?;
+        state.conversation = saved;
+        state.active = true;
+        state.expanded = expanded;
+    } else if state.active {
+        if let Some((x, y, w, h)) = state.conversation {
+            let scale = app
+                .monitor_from_point(x as f64, y as f64)
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+                .unwrap_or(1.0);
+            let area = work_area_at(app, x, y).ok_or("无法恢复会话窗口所在屏幕")?;
+            let (x, y, w, h) =
+                reading_geometry((x, y), (w as f64 / scale, h as f64 / scale), scale, area);
+            win.set_position(PhysicalPosition::new(x, y))
+                .map_err(|e| e.to_string())?;
+            win.set_size(PhysicalSize::new(w, h))
+                .map_err(|e| e.to_string())?;
+        }
+        *state = FavoritesView::default();
+    }
+    Ok(())
+}
+
 fn log(msg: &str) {
     crate::diag::log(&format!("result: {msg}"));
 }
@@ -639,6 +746,9 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
     }
     if view.turn == TurnMode::Fresh {
         RESULT_DISMISSED.store(false, Ordering::SeqCst);
+        if let Err(e) = favorites_set_view(app, false, false) {
+            warn(&format!("恢复会话尺寸失败: {e}"));
+        }
     }
 
     // 整份还是增量：只有**轮次语义不是 Update** 时才整份重发。
@@ -658,8 +768,13 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
             (g.last_payload(), "__dsfResultStream")
         };
         if full {
+            let reset = if view.turn == TurnMode::Fresh {
+                "if(window.__dsfResultReset)window.__dsfResultReset();"
+            } else {
+                ""
+            };
             format!(
-                "(function(){{if(window.__dsfResultReset)window.__dsfResultReset();return window.{render_fn}?window.{render_fn}({payload}):0;}})()"
+                "(function(){{{reset}return window.{render_fn}?window.{render_fn}({payload}):0;}})()"
             )
         } else {
             format!("(window.{render_fn}?window.{render_fn}({payload}):0)")
@@ -677,6 +792,32 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
         log("页内未回报实测高度（页面未就绪 / 超时）→ 退回常量估算");
     }
 
+    let handle = app.clone();
+    let view = view.clone();
+    let _ = app.run_on_main_thread(move || {
+        // Check and mutate geometry in one event-loop task, after any favorites IPC.
+        if !crate::workflow::active(token)
+            || RESULT_DISMISSED.load(Ordering::SeqCst)
+            || FAVORITES_VIEW
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .active
+        {
+            return;
+        }
+        apply_render_geometry(&handle, &win, &view, anchor, want_h, opened, full);
+    });
+}
+
+fn apply_render_geometry(
+    app: &AppHandle,
+    win: &WebviewWindow,
+    view: &CardView,
+    anchor: Option<AnchorRect>,
+    want_h: f64,
+    opened: bool,
+    full: bool,
+) {
     if let Some(anchor) = placement_anchor(opened, view.turn, anchor, crate::popup::cursor_pos) {
         // 首次显示或新的划词会话：按当次锚点定位；流式增量和追问不走这里。
         let (x, y, w, mut h, scale) = placement(app, &anchor, want_h);
@@ -725,7 +866,7 @@ fn render(app: &AppHandle, view: &CardView, anchor: Option<AnchorRect>) {
 
     // 同一会话已可见：流式中只长大，终态一次到位可缩；保持用户拖动后的位置。
     let allow_shrink = !view.streaming;
-    apply_size(app, &win, want_h, allow_shrink);
+    apply_size(app, win, want_h, allow_shrink);
     log(&format!(
         "已更新（{} · 高 {want_h:.0} · 整份={full} · streaming={} · complete={}）",
         if full { "整份会话" } else { "末轮增量" },
@@ -864,6 +1005,13 @@ fn apply_size(app: &AppHandle, win: &WebviewWindow, want_h: f64, allow_shrink: b
 ///
 /// 与 [`apply_size`] 共用一个出口 ⇒ 工作区收窄与溢出自上移的行为完全一致。
 pub fn resize(app: &AppHandle, height: f64) {
+    if FAVORITES_VIEW
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .active
+    {
+        return;
+    }
     let Some(win) = app.get_webview_window(RESULT_LABEL) else {
         return;
     };
@@ -1008,6 +1156,7 @@ pub fn ask(app: &AppHandle, text: String) {
 /// 保留当前WebView及cookie；导航屏障解除前不允许向旧文档填入新问题。
 /// 卡片保持显示空态，错误返回到按钮旁的状态文案。
 pub fn new_session(app: &AppHandle) -> Result<(), String> {
+    favorites_set_view(app, false, false)?;
     // 先作废旧任务；清空时禁止排队渲染旧取消卡。
     crate::workflow::cancel_for_new_session(app);
     let token = crate::workflow::current();
@@ -1556,6 +1705,7 @@ pub fn favorite_save(
     let mut answers = checked_answers(&s, revision, &[turn], false)?;
     let (question, answer_markdown) = answers.remove(0);
     let item = crate::favorites::Favorite {
+        kind: crate::favorites::FavoriteKind::Answer,
         id: 0,
         title: s.title.clone(),
         source: s.source.clone(),
@@ -1595,6 +1745,21 @@ pub fn export_answers(
 #[cfg(test)]
 mod export_tests {
     use super::*;
+    #[test]
+    fn reading_geometry_clamps_both_axes_on_small_scaled_and_negative_monitors() {
+        assert_eq!(
+            reading_geometry((1750, 950), (760.0, 680.0), 1.0, (0, 0, 1920, 1040)),
+            (1160, 360, 760, 680)
+        );
+        assert_eq!(
+            reading_geometry((-20, 900), (760.0, 680.0), 1.5, (-1280, 0, 1280, 1024)),
+            (-1140, 4, 1140, 1020)
+        );
+        assert_eq!(
+            reading_geometry((0, 0), (760.0, 680.0), 2.0, (0, 0, 1000, 600)),
+            (0, 0, 1000, 600)
+        );
+    }
     fn snapshot(index: usize) -> AnswerSnapshot {
         AnswerSnapshot {
             index,

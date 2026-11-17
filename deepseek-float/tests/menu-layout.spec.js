@@ -1,6 +1,17 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const html=readFileSync(new URL('../poc/menu.html',import.meta.url),'utf8');
+test('selection toolbar keeps copy, favorite and more reachable with long prompt labels',async({page})=>{
+ await page.setViewportSize({width:460,height:34});
+ await page.setContent(readFileSync(new URL('../poc/popup.html',import.meta.url),'utf8').replace('<head>','<head><script>window.__TAURI_INTERNALS__={invoke:()=>Promise.resolve()};</script>'));
+ await page.evaluate(()=>window.__dsfSetPrompts(Array.from({length:6},(_,i)=>({id:'prompt-'+i,label:'很长的自定义提示词'.repeat(3)}))));
+ for(const action of ['copy','favorite-selection','open-more']){
+  const box=await page.locator('.bar > button[data-preset="'+action+'"]').boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(460);
+  expect(box.y+box.height).toBeLessThanOrEqual(34);
+ }
+ await expect(page.locator('#prompts button')).toHaveCount(3);
+});
 async function setup(page){
  await page.setViewportSize({width:200,height:200});
  await page.route('**/*',route=>route.abort());

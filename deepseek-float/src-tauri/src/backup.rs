@@ -4,6 +4,7 @@
 //! prompt, and favorites stores; it does not include the WebView profile or the application data
 //! directory as a whole.
 
+use crate::favorites::MAX_FAVORITES;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -18,16 +19,12 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 const FORMAT: &str = "deepseek-float-backup";
-const VERSION: u32 = 1;
+// V2 records carry an explicit kind; V1 records without it remain Answer favorites.
+const VERSION: u32 = 2;
 const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
 const MAX_PROMPTS: usize = 4 + crate::prompts::MAX_CUSTOM;
 const MAX_SITES: usize = 20;
-const MAX_FAVORITES: usize = 5_000;
 const MAX_ID_CHARS: usize = 128;
-const MAX_TITLE_CHARS: usize = 200;
-const MAX_QUESTION_CHARS: usize = 100_000;
-const MAX_ANSWER_CHARS: usize = 500_000;
-const MAX_SOURCE_CHARS: usize = 512;
 const JOURNAL_DIR: &str = ".backup-restore-journal";
 const JOURNAL_VERSION: u8 = 1;
 const STORE_FILES: [&str; 3] = ["config.json", "prompts.json", "favorites.json"];
@@ -299,6 +296,7 @@ fn decode_backup(bytes: &[u8]) -> Result<BackupFile, String> {
         "favorites",
         &[
             "id",
+            "kind",
             "title",
             "question",
             "answer_markdown",
@@ -306,6 +304,16 @@ fn decode_backup(bytes: &[u8]) -> Result<BackupFile, String> {
             "created_at",
         ],
     )?;
+    if raw.get("version").and_then(serde_json::Value::as_u64) == Some(u64::from(VERSION)) {
+        if let Some(items) = raw_data
+            .get("favorites")
+            .and_then(serde_json::Value::as_array)
+        {
+            if items.iter().any(|item| item.get("kind").is_none()) {
+                return Err("当前版本的备份收藏缺少 kind 字段".into());
+            }
+        }
+    }
     let mut backup: BackupFile =
         serde_json::from_value(raw).map_err(|e| format!("备份文件损坏或字段类型不匹配：{e}"))?;
     if backup.format != FORMAT {
@@ -317,7 +325,7 @@ fn decode_backup(bytes: &[u8]) -> Result<BackupFile, String> {
             backup.version, VERSION
         ));
     }
-    if backup.version != VERSION {
+    if backup.version != 1 && backup.version != VERSION {
         return Err(format!("不支持备份版本 {}", backup.version));
     }
     if !valid_iso8601(&backup.created_at) {
@@ -456,14 +464,7 @@ fn validate_data(mut data: BackupData) -> Result<BackupData, String> {
         if item.id == 0 || !favorite_ids.insert(item.id) {
             return Err(format!("收藏 ID 无效或重复：{}", item.id));
         }
-        if item.title.chars().count() > MAX_TITLE_CHARS
-            || item.question.chars().count() > MAX_QUESTION_CHARS
-            || item.answer_markdown.is_empty()
-            || item.answer_markdown.chars().count() > MAX_ANSWER_CHARS
-            || item.source.chars().count() > MAX_SOURCE_CHARS
-        {
-            return Err(format!("收藏 {} 的字段超过允许长度或答案为空", item.id));
-        }
+        crate::favorites::validate_fields(item)?;
         if contains_credential_assignment(&item.title)
             || contains_credential_assignment(&item.question)
             || contains_credential_assignment(&item.answer_markdown)
@@ -798,7 +799,9 @@ fn merge_plan(local: &DataSnapshot, backup: &BackupData) -> RestorePlan {
             continue;
         }
         if favorites.iter().any(|f| {
-            f.question == imported.question && f.answer_markdown == imported.answer_markdown
+            f.kind == imported.kind
+                && f.question == imported.question
+                && f.answer_markdown == imported.answer_markdown
         }) {
             conflicts.push(format!(
                 "收藏「{}」的问题与回答已存在，合并时保留本机收藏",
@@ -1470,6 +1473,7 @@ mod tests {
             settings: PortableSettings { hide_on_fullscreen: true, privileged_capture: true, clipboard_fallback_enabled: Some(false), hotkey: Some("Ctrl+Alt+1".into()) },
             favorites: vec![crate::favorites::Favorite {
                 id: 42,
+                kind: crate::favorites::FavoriteKind::Answer,
                 title: "Markdown 收藏".into(),
                 question: "问题\n第二行".into(),
                 answer_markdown: "| 列 |\n| --- |\n| 值 |\n\n````rust\n  fn main() {\n    println!(\"你好\");\n  }\n````".into(),
@@ -1606,6 +1610,7 @@ mod tests {
     fn version_one_without_new_optional_settings_fields_remains_compatible() {
         let mut value: serde_json::Value =
             serde_json::from_slice(&serialize(sample_data())).unwrap();
+        value["version"] = 1.into();
         value["data"]
             .as_object_mut()
             .unwrap()
@@ -1617,6 +1622,140 @@ mod tests {
         let decoded = decode_backup(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(decoded.data.current_site, None);
         assert_eq!(decoded.data.settings.hotkey, default_hotkey());
+    }
+
+    #[test]
+    fn legacy_v1_without_favorite_kind_imports_as_answer() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&serialize(sample_data())).unwrap();
+        value["version"] = 1.into();
+        value["data"]["favorites"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        let decoded = decode_backup(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            decoded.data.favorites[0].kind,
+            crate::favorites::FavoriteKind::Answer
+        );
+        assert_eq!(
+            decoded.data.favorites[0].answer_markdown,
+            sample_data().favorites[0].answer_markdown
+        );
+    }
+
+    #[test]
+    fn current_version_requires_explicit_favorite_kind() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&serialize(sample_data())).unwrap();
+        value["data"]["favorites"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        assert!(decode_backup(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn selection_backup_roundtrips_exactly_through_both_restore_modes() {
+        let mut snapshot = sample_snapshot();
+        let mut item = sample_data().favorites.remove(0);
+        item.kind = crate::favorites::FavoriteKind::Selection;
+        item.question.clear();
+        item.answer_markdown = "  <div>raw</div>\r\n\t```\n# text\n```\n ".into();
+        snapshot.favorites = vec![item.clone()];
+        let (bytes, _) = encode_backup(&snapshot).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["data"]["favorites"][0]["kind"], "selection");
+        let decoded = decode_backup(&bytes).unwrap();
+        assert_eq!(decoded.data.favorites, vec![item.clone()]);
+        for mode in [RestoreMode::Merge, RestoreMode::Overwrite] {
+            let plan = plan_restore(&sample_snapshot(), &decoded.data, mode);
+            assert_eq!(plan.favorites, vec![item.clone()]);
+            let updates = updates_for(&plan).unwrap();
+            let (_, stored) = updates
+                .iter()
+                .find(|(name, _)| *name == "favorites.json")
+                .unwrap();
+            let restored: Vec<crate::favorites::Favorite> = serde_json::from_slice(stored).unwrap();
+            assert_eq!(restored, vec![item.clone()]);
+        }
+    }
+
+    #[test]
+    fn backup_refuses_unknown_or_invalid_favorite_kinds_and_versions() {
+        let base: serde_json::Value = serde_json::from_slice(&serialize(sample_data())).unwrap();
+        for kind in [
+            serde_json::json!("future"),
+            serde_json::json!("Selection"),
+            serde_json::Value::Null,
+            serde_json::json!(1),
+        ] {
+            let mut value = base.clone();
+            value["data"]["favorites"][0]["kind"] = kind;
+            assert!(decode_backup(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+        for version in [0, VERSION + 1] {
+            let mut value = base.clone();
+            value["version"] = version.into();
+            assert!(decode_backup(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn backup_merge_deduplicates_within_kind_but_preserves_cross_kind_content() {
+        let mut local = sample_snapshot();
+        let mut data = sample_data();
+        data.favorites[0].question.clear();
+        let mut answer = data.favorites[0].clone();
+        answer.id = 100;
+        local.favorites = vec![answer];
+        assert_eq!(
+            plan_restore(&local, &data, RestoreMode::Merge)
+                .favorites
+                .len(),
+            1
+        );
+        data.favorites[0].kind = crate::favorites::FavoriteKind::Selection;
+        let plan = plan_restore(&local, &data, RestoreMode::Merge);
+        assert_eq!(plan.favorites.len(), 2);
+        assert_eq!(plan.counts.favorites, 1);
+        local.favorites.push(data.favorites[0].clone());
+        data.favorites[0].id = 101;
+        let plan = plan_restore(&local, &data, RestoreMode::Merge);
+        assert_eq!(plan.favorites.len(), 2);
+        assert_eq!(plan.counts.favorites, 0);
+    }
+
+    #[test]
+    fn backup_favorite_limits_accept_boundaries_and_reject_overflow() {
+        let mut data = sample_data();
+        data.favorites[0].title = "字".repeat(200);
+        data.favorites[0].question = "问".repeat(100_000);
+        data.favorites[0].answer_markdown = "答".repeat(500_000);
+        data.favorites[0].source = "源".repeat(512);
+        assert!(decode_backup(&serialize(data.clone())).is_ok());
+        for field in ["title", "question", "answer_markdown", "source"] {
+            let mut oversized = data.clone();
+            let item = &mut oversized.favorites[0];
+            match field {
+                "title" => item.title.push('字'),
+                "question" => item.question.push('问'),
+                "answer_markdown" => item.answer_markdown.push('答'),
+                "source" => item.source.push('源'),
+                _ => unreachable!(),
+            }
+            assert!(decode_backup(&serialize(oversized)).is_err(), "{field}");
+        }
+        let mut data = sample_data();
+        let item = data.favorites[0].clone();
+        data.favorites = (1..=5_000)
+            .map(|id| crate::favorites::Favorite { id, ..item.clone() })
+            .collect();
+        assert!(validate_data(data.clone()).is_ok());
+        data.favorites
+            .push(crate::favorites::Favorite { id: 5_001, ..item });
+        assert!(validate_data(data).is_err());
     }
 
     #[test]
@@ -1767,6 +1906,7 @@ mod tests {
         });
         local.favorites.push(crate::favorites::Favorite {
             id: 42,
+            kind: crate::favorites::FavoriteKind::Answer,
             title: "本机收藏".into(),
             question: "本机问题".into(),
             answer_markdown: "本机答案".into(),
