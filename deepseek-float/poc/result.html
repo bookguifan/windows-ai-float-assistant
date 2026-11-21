@@ -1923,30 +1923,47 @@
           const form = el('form', 'favorites-create'); form.id = 'favorites-create-form'; form.hidden = true; form.setAttribute('aria-label', '手动新增收藏');
           const titleLabel = el('label'); titleLabel.textContent = '标题（选填，留空时取正文首行）';
           const titleInput = el('input'); titleInput.id = 'favorites-create-title'; titleInput.type = 'text'; titleInput.maxLength = 200; titleInput.autocomplete = 'off'; titleLabel.appendChild(titleInput);
-          const contentLabel = el('label'); contentLabel.textContent = '内容（必填，按原文保存）';
+          const contentLabel = el('label');
+          const contentHint = el('span'); contentHint.textContent = '内容（必填，支持 Markdown）'; contentLabel.appendChild(contentHint);
           const contentInput = el('textarea'); contentInput.id = 'favorites-create-content'; contentInput.rows = 6; contentInput.maxLength = 500000; contentLabel.appendChild(contentInput);
           const error = el('p', 'favorites-create-error'); error.id = 'favorites-create-error'; error.setAttribute('role', 'alert');
           const actions = el('div', 'acts favorite-actions');
           const save = actionButton('保存'); save.id = 'favorites-create-save'; save.type = 'submit';
           const cancel = actionButton('取消'); cancel.id = 'favorites-create-cancel';
           actions.appendChild(save); actions.appendChild(cancel);
-          form.appendChild(titleLabel); form.appendChild(contentLabel); form.appendChild(error); form.appendChild(actions); view.appendChild(form);
+          const formHeading = el('strong'); formHeading.textContent = '手动新增收藏';
+          form.appendChild(formHeading); form.appendChild(titleLabel); form.appendChild(contentLabel); form.appendChild(error); form.appendChild(actions); view.appendChild(form);
           let saving = false;
+          let editing = null;
           function closeCreate() {
-            form.hidden = true; form.reset(); error.textContent = ''; add.setAttribute('aria-expanded', 'false'); pushHeight();
+            form.hidden = true; form.reset(); editing = null; error.textContent = ''; add.setAttribute('aria-expanded', 'false'); pushHeight();
           }
-          add.addEventListener('click', function () {
+          openFavoriteEditor = function (item) {
             if (saving) return;
-            form.hidden = false; add.setAttribute('aria-expanded', 'true'); pushHeight(); titleInput.focus();
-          });
+            if (!form.hidden) {
+              if ((editing && item && editing.id === item.id) || (!editing && !item)) { titleInput.focus(); return; }
+              if (titleInput.value !== (editing ? editing.title : '') || contentInput.value !== (editing ? editing.answer_markdown : '')) {
+                error.textContent = '请先保存或取消当前草稿，再编辑其他收藏或手动新增'; titleInput.focus(); return;
+              }
+            }
+            editing = item ? Object.assign({}, item) : null;
+            titleInput.value = item ? item.title : ''; contentInput.value = item ? item.answer_markdown : '';
+            formHeading.textContent = item ? '编辑收藏' : '手动新增收藏'; form.setAttribute('aria-label', formHeading.textContent);
+            contentHint.textContent = item && favoriteKind(item) === 'selection' ? '内容（必填，按划词原文保存）' : '内容（必填，支持 Markdown）';
+            error.textContent = ''; form.hidden = false; add.setAttribute('aria-expanded', String(!item)); pushHeight(); titleInput.focus();
+          };
+          add.addEventListener('click', function () { openFavoriteEditor(null); });
           cancel.addEventListener('click', function () { if (!saving) { closeCreate(); add.focus(); } });
           form.addEventListener('submit', async function (event) {
             event.preventDefault(); if (saving) return;
             if (!contentInput.value.trim()) { error.textContent = '内容不能为空'; contentInput.focus(); pushHeight(); return; }
-            saving = true; error.textContent = '';
+            saving = true; favoriteEditorBusy = true; error.textContent = '';
             [save, cancel, add, titleInput, contentInput].forEach(function (control) { control.disabled = true; });
+            document.querySelectorAll('[data-favorite-edit], [data-favorite-delete]').forEach(function (control) { control.disabled = true; });
             try {
-              const item = await tauri.core.invoke('favorites_create', { title: titleInput.value, content: contentInput.value });
+              const args = { title: titleInput.value, content: contentInput.value };
+              if (editing) args.expected = editing;
+              const item = await tauri.core.invoke(editing ? 'favorites_update' : 'favorites_create', args);
               const entries = document.getElementById('favorites-items');
               const refreshPending = entries.getAttribute('aria-busy') === 'true';
               ++libraryGeneration; entries.removeAttribute('aria-busy');
@@ -1957,7 +1974,11 @@
                 if (refreshPending) refreshFavoriteItemsFromDisk();
               }
             } catch (failure) { error.textContent = '保存失败：' + String(failure); pushHeight(); }
-            finally { saving = false; [save, cancel, add, titleInput, contentInput].forEach(function (control) { control.disabled = false; }); }
+            finally {
+              saving = false; favoriteEditorBusy = false;
+              [save, cancel, add, titleInput, contentInput].forEach(function (control) { control.disabled = false; });
+              if (libraryOpen) renderFavoriteItems();
+            }
           });
           const entries = el('div'); entries.id = 'favorites-items'; view.appendChild(entries);
           search.addEventListener('input', function () { confirmingFavorite = null; renderFavoriteItems(); });
@@ -1965,13 +1986,15 @@
           clear.addEventListener('click', function () { search.value = ''; renderFavoriteItems(); search.focus(); });
         }
         let favoriteItems = [];
+        let openFavoriteEditor = null;
+        let favoriteEditorBusy = false;
         const deletingFavorites = new Set();
         const expandedFavorites = new Set();
         let confirmingFavorite = null;
         function favoriteKind(item) { return item.kind === 'manual' ? 'manual' : item.kind === 'selection' ? 'selection' : 'answer'; }
         function favoriteSummary(item) {
           const text = String(item.answer_markdown || '');
-          if (favoriteKind(item) !== 'answer') return text;
+          if (favoriteKind(item) === 'selection') return text;
           const preview = el('div'); renderMarkdown(preview, text);
           // Keep block boundaries in the plain-text preview without exposing Markdown nodes.
           preview.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,pre,tr,blockquote').forEach(function (node) { node.appendChild(document.createTextNode('\n')); });
@@ -2013,7 +2036,7 @@
               content.textContent = ''; expand.textContent = expanded ? '收起全文' : '展开全文'; expand.setAttribute('aria-expanded', String(expanded));
               if (expanded) {
                 const answer = el('div', 'md favorite-answer');
-                if (favoriteKind(item) !== 'answer') { answer.classList.add('favorite-selection'); answer.textContent = item.answer_markdown || ''; }
+                if (favoriteKind(item) === 'selection') { answer.classList.add('favorite-selection'); answer.textContent = item.answer_markdown || ''; }
                 else renderMarkdown(answer, item.answer_markdown);
                 content.appendChild(answer);
               } else {
@@ -2028,13 +2051,16 @@
             renderContent();
             const cp = actionButton('复制', 'favorite-copy'); cp.addEventListener('click', function () { saveAction(cp, 'result_copy', { text: item.answer_markdown }, '已复制'); });
             const exp = actionButton('导出', 'favorite-export'); exp.addEventListener('click', function () { saveAction(exp, 'favorites_export', {id:item.id}, '已导出', true); });
+            const edit = actionButton('编辑', 'favorite-edit');
+            edit.disabled = favoriteEditorBusy || deletingFavorites.has(item.id);
+            edit.addEventListener('click', function () { if (!edit.disabled) openFavoriteEditor(item); });
             const del = actionButton('删除', 'favorite-delete'); del.addEventListener('click', function () {
               if (del.disabled || deletingFavorites.has(item.id)) return;
               confirmingFavorite = item.id; renderFavoriteItems();
               entries.querySelector('[data-favorite-confirm-delete]')?.focus({ preventScroll: true });
             });
             function deleteFavorite() {
-              if (deletingFavorites.has(item.id)) return;
+              if (deletingFavorites.has(item.id) || favoriteEditorBusy) return;
               deletingFavorites.add(item.id); confirmingFavorite = null; renderFavoriteItems();
               let request; try { request = tauri.core.invoke('favorites_delete', {id:item.id}); } catch (e) { request = Promise.reject(e); }
               Promise.resolve(request).then(function () {
@@ -2046,8 +2072,8 @@
               })
                 .catch(function (e) { saveMessage(String(e)); }).finally(function () { deletingFavorites.delete(item.id); if (libraryOpen) renderFavoriteItems(); });
             }
-            del.disabled = deletingFavorites.has(item.id);
-            acts.appendChild(expand); acts.appendChild(cp); acts.appendChild(exp); acts.appendChild(del); entry.appendChild(acts);
+            del.disabled = deletingFavorites.has(item.id) || favoriteEditorBusy;
+            acts.appendChild(expand); acts.appendChild(cp); acts.appendChild(exp); acts.appendChild(edit); acts.appendChild(del); entry.appendChild(acts);
             if (confirmingFavorite === item.id) {
               const confirmation = el('div', 'favorite-delete-confirmation'); confirmation.setAttribute('role', 'group'); confirmation.setAttribute('aria-label', '确认删除收藏');
               const warning = el('span'); warning.textContent = '确定删除这条收藏？';

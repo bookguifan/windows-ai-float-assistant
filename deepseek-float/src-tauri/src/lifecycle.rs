@@ -448,6 +448,7 @@ pub fn run() {
             crate::ipc::result_export,
             crate::ipc::favorites_list,
             crate::ipc::favorites_create,
+            crate::ipc::favorites_update,
             crate::ipc::favorites_set_view,
             crate::ipc::favorites_delete,
             crate::ipc::favorites_export,

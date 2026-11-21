@@ -8,7 +8,7 @@ async function setup(page){
  await page.evaluate(()=>__dsfResultSet({revision:7,title:'很长的结果标题'.repeat(12),turns:[{quote:'问题',text:'<p>已完成的回答</p>',complete:true,streaming:false,sendState:'complete'}]}));
 }
 
-test('manual favorite form fits narrow cards and saves literal text without AI or clipboard actions',async({page})=>{
+test('manual favorite form fits narrow cards and safely renders Markdown without AI or clipboard actions',async({page})=>{
  await setup(page);
  await page.evaluate(()=>{
   const base=window.__TAURI_INTERNALS__.invoke;
@@ -35,9 +35,41 @@ test('manual favorite form fits narrow cards and saves literal text without AI o
  await expect(page.locator('[data-favorite-id="41"]')).toContainText('手动保存的标题');
  await page.locator('#favorites-type').selectOption('manual');
  await page.locator('[data-favorite-expand]').click();
- await expect(page.locator('.favorite-answer')).toHaveText('  <img src=x onerror="alert(1)">\n**完整原文**  ');
+ await expect(page.locator('.favorite-answer strong')).toHaveText('完整原文');
+ expect(await page.evaluate(()=>__calls.find(c=>c.command==='favorites_create').args.content)).toBe('  <img src=x onerror="alert(1)">\n**完整原文**  ');
  await expect(page.locator('.favorite-answer img')).toHaveCount(0);
  expect(await page.evaluate(()=>__calls.some(c=>/result_copy|result_ask/.test(c.command)))).toBe(false);
+});
+
+test('favorites edit existing Markdown in place and cancel retains the saved version',async({page})=>{
+ await setup(page);
+ await page.evaluate(()=>{
+  const base=window.__TAURI_INTERNALS__.invoke;
+  window.__favoriteItems=[{id:51,kind:'manual',title:'手动笔记',question:'',answer_markdown:'# 原始笔记\n\n**重点**',source:'手动新增',created_at:1}];
+  window.__TAURI_INTERNALS__.invoke=(command,args)=>{
+   if(command!=='favorites_update')return base(command,args);
+   __calls.push({command,args});
+   const item={...window.__favoriteItems[0],title:args.title,answer_markdown:args.content};window.__favoriteItems=[item];return Promise.resolve(item);
+  };
+ });
+ await page.locator('#btnFavorites').click();await page.locator('[data-favorite-expand]').click();
+ await expect(page.locator('.favorite-answer h1')).toHaveText('原始笔记');
+ await page.locator('[data-favorite-edit]').click();
+ await expect(page.locator('#favorites-create-form')).toHaveAttribute('aria-label','编辑收藏');
+ await expect(page.locator('#favorites-create-content')).toHaveValue('# 原始笔记\n\n**重点**');
+ await page.locator('#favorites-create-title').fill('更新标题');await page.locator('#favorites-create-content').fill('# 更新笔记\n\n- 保留项目\n\n```js\nlet x = 1;\n```');
+ for(const width of [320,400]){
+  await page.setViewportSize({width,height:680});
+  const bounds=await page.locator('#favorites-create-content').boundingBox();expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(width);
+ }
+ await page.locator('#favorites-create-save').click();await expect(page.locator('#favorites-create-form')).toBeHidden();
+ await expect(page.locator('.favorite-item')).toHaveCount(1);await expect(page.locator('.favorite-title')).toHaveText('更新标题');
+ await expect(page.locator('.favorite-answer h1')).toHaveText('更新笔记');await expect(page.locator('.favorite-answer li')).toHaveText('保留项目');
+ await expect(page.locator('.favorite-answer code')).toHaveText('let x = 1;');
+ await page.locator('[data-favorite-edit]').click();await page.locator('#favorites-create-content').fill('不保存');await page.locator('#favorites-create-cancel').click();
+ await expect(page.locator('.favorite-answer h1')).toHaveText('更新笔记');
+ expect(await page.evaluate(()=>__calls.filter(c=>c.command==='favorites_update').length)).toBe(1);
+ expect(await page.evaluate(()=>__calls.some(c=>c.command==='favorites_create'))).toBe(false);
 });
 
 test('manual favorite save failure keeps the draft editable and cancel never persists it',async({page})=>{

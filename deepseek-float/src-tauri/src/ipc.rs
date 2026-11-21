@@ -770,6 +770,19 @@ pub fn favorites_delete(id: u64) -> Result<(), String> {
     crate::favorites::delete(id)
 }
 #[tauri::command]
+pub fn favorites_update(
+    window: tauri::WebviewWindow,
+    expected: crate::favorites::Favorite,
+    title: String,
+    content: String,
+) -> Result<crate::favorites::Favorite, String> {
+    let url = window.url().map_err(|_| "收藏窗口地址不可用")?;
+    if !crate::selection::local_document_page(window.label(), &url, "result") {
+        return Err("只能从本地收藏窗口编辑收藏".into());
+    }
+    crate::favorites::update(expected, title, content)
+}
+#[tauri::command]
 pub fn favorites_export(id: u64) -> Result<String, String> {
     crate::favorites::export_favorite(id)
 }

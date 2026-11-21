@@ -1,4 +1,41 @@
 import test from 'node:test';
+test('manual favorites render safe Markdown while copy keeps source and selection stays literal',async()=>{
+ const md='# 手动笔记\n\n**重点**\n\n- 项目\n\n| A |\n| --- |\n| B |\n\n```js\nlet x = 1;\n```\n\n[危险](javascript:alert(1))\n<img src=x onerror="alert(1)">';
+ const p=page(c=>Promise.resolve(c==='favorites_list'?[
+  {id:1,kind:'manual',title:'手动',question:'',answer_markdown:md,source:'手动新增',created_at:2},
+  {id:2,kind:'selection',title:'划词',question:'',answer_markdown:'# 原文\n**不渲染**',source:'划词',created_at:1}
+ ]:'ok'));
+ try{
+  p.w.__dsfFavoritesOpen();await tick();
+  const entry=p.d.querySelector('[data-favorite-id="1"]');entry.querySelector('[data-favorite-expand]').click();
+  assert.equal(entry.querySelector('h1')?.textContent,'手动笔记');assert.equal(entry.querySelector('strong:not(.favorite-title)')?.textContent,'重点');
+  assert.equal(entry.querySelector('li')?.textContent,'项目');assert.equal(entry.querySelector('th')?.textContent,'A');assert.equal(entry.querySelector('code')?.textContent,'let x = 1;');
+  assert.equal(entry.querySelector('img,script,a[href^="javascript:"]'),null);
+  entry.querySelector('[data-favorite-copy]').click();await tick();assert.equal(p.calls.find(c=>c.c==='result_copy').a.text,md);
+  const selection=p.d.querySelector('[data-favorite-id="2"]');selection.querySelector('[data-favorite-expand]').click();assert.equal(selection.querySelector('.favorite-answer').textContent,'# 原文\n**不渲染**');
+ }finally{p.close();}
+});
+
+test('favorite editing cancels without writing, retains failed drafts and updates the same entry',async()=>{
+ const original={id:12,kind:'manual',title:'旧标题',question:'',answer_markdown:'# 旧正文',source:'手动新增',created_at:1};
+ let current=original,finish,fail=true;
+ const p=page((c,a)=>c==='favorites_list'?Promise.resolve([current]):c==='favorites_update'?new Promise((resolve,reject)=>{finish=()=>{if(fail)reject('收藏已被修改');else{current={...current,title:a.title,answer_markdown:a.content};resolve(current)}}}):Promise.resolve());
+ try{
+  p.w.__dsfFavoritesOpen();await tick();
+  let edit=p.d.querySelector('[data-favorite-edit]');assert.ok(edit,'edit entry is available');edit.click();
+  const title=p.d.getElementById('favorites-create-title'),body=p.d.getElementById('favorites-create-content'),form=p.d.getElementById('favorites-create-form');
+  assert.equal(title.value,'旧标题');assert.equal(body.value,'# 旧正文');
+  title.value='不保存';p.d.getElementById('favorites-create-cancel').click();assert.equal(p.calls.some(c=>c.c==='favorites_update'),false);
+  edit.click();title.value='新标题';body.value='# 新正文\n\n**更新**';
+  p.d.getElementById('favorites-add').click();assert.equal(title.value,'新标题');
+  const submit=()=>form.dispatchEvent(new p.w.Event('submit',{cancelable:true}));submit();submit();assert.equal(p.calls.filter(c=>c.c==='favorites_update').length,1);
+  finish();await tick();assert.equal(form.hidden,false);assert.equal(body.value,'# 新正文\n\n**更新**');assert.match(p.d.getElementById('favorites-create-error').textContent,/收藏已被修改/);
+  assert.deepEqual(JSON.parse(JSON.stringify(p.calls.find(c=>c.c==='favorites_update').a.expected)),original);
+  fail=false;submit();finish();await tick();assert.equal(form.hidden,true);assert.equal(p.d.querySelectorAll('.favorite-item').length,1);
+  assert.equal(p.d.querySelector('[data-favorite-id="12"] .favorite-title').textContent,'新标题');assert.equal(current.created_at,1);
+  assert.equal(p.calls.some(c=>c.c==='favorites_create'),false);
+ }finally{p.close();}
+});
 test('manual favorites cancel without saving and retain input on failure before a successful retry',async()=>{
  let fail=true,finish;const items=[];
  const p=page((c,a)=>c==='favorites_list'?Promise.resolve(items.slice()):c==='favorites_create'?new Promise((resolve,reject)=>{finish=()=>{if(fail)reject('磁盘写入失败');else{const item={id:22,kind:'manual',title:a.title,question:'',answer_markdown:a.content,source:'手动新增',created_at:2};items.push(item);resolve(item)}}}):Promise.resolve());
@@ -20,7 +57,7 @@ test('manual favorites cancel without saving and retain input on failure before 
   fail=false;submit();finish();await tick();
   assert.equal(form.hidden,true);assert.equal(body.value,'');assert.equal(p.d.querySelectorAll('[data-favorite-id="22"]').length,1);
   assert.match(p.d.querySelector('.favorite-meta').textContent,/手动新增/);
-  p.d.querySelector('[data-favorite-expand]').click();assert.equal(p.d.querySelector('.favorite-answer').textContent,'  <b>原文</b>\n第二行  ');assert.equal(p.d.querySelector('.favorite-answer b'),null);
+  p.d.querySelector('[data-favorite-expand]').click();assert.equal(p.d.querySelector('.favorite-answer').textContent,'<b>原文</b> 第二行');assert.equal(p.d.querySelector('.favorite-answer b'),null);
   assert.deepEqual(p.calls.filter(c=>c.c==='favorites_create').map(c=>({title:c.a.title,content:c.a.content})),[{title:'手动标题',content:'  <b>原文</b>\n第二行  '},{title:'手动标题',content:'  <b>原文</b>\n第二行  '}]);
   assert.equal(p.calls.some(c=>/result_copy|result_ask|popup_action/.test(c.c)),false);
  }finally{p.close();}
@@ -39,6 +76,23 @@ test('manual save preserves active filters and cannot be overwritten by a stale 
   p.w.__dsfFavoritesRefresh();p.d.getElementById('favorites-create-form').dispatchEvent(new p.w.Event('submit',{cancelable:true}));
   finishSave(added);await tick();finishRead([]);await tick();
   assert.equal(p.d.querySelectorAll('[data-favorite-id="30"]').length,1);assert.equal(search.value,'完整');assert.equal(type.value,'manual');
+ }finally{p.close();}
+});
+
+test('editing preserves filters and expanded state when an older list refresh arrives after save',async()=>{
+ const original={id:32,kind:'manual',title:'保留标题',question:'',answer_markdown:'旧正文',source:'手动新增',created_at:3};
+ const updated={...original,answer_markdown:'# 更新正文'};let reads=0,finishRead;
+ const p=page(c=>c==='favorites_list'?++reads===1?Promise.resolve([original]):reads===2?new Promise(r=>finishRead=r):Promise.resolve([updated]):c==='favorites_update'?Promise.resolve(updated):Promise.resolve());
+ try{
+  p.w.__dsfFavoritesOpen();await tick();
+  const search=p.d.getElementById('favorites-search'),type=p.d.getElementById('favorites-type');search.value='保留';search.dispatchEvent(new p.w.Event('input'));type.value='manual';type.dispatchEvent(new p.w.Event('change'));
+  p.d.querySelector('[data-favorite-expand]').click();p.d.querySelector('[data-favorite-edit]').click();
+  p.d.getElementById('favorites-create-content').value='# 更新正文';p.w.__dsfFavoritesRefresh();
+  p.d.getElementById('favorites-create-form').dispatchEvent(new p.w.Event('submit',{cancelable:true}));await tick();finishRead([original]);await tick();
+  assert.equal(search.value,'保留');assert.equal(type.value,'manual');assert.equal(p.d.querySelectorAll('.favorite-item').length,1);
+  assert.equal(p.d.querySelector('.favorite-answer h1')?.textContent,'更新正文');
+  p.d.querySelector('[data-favorite-edit]').click();p.d.getElementById('favorites-create-content').value='尚未保存的草稿';
+  p.w.__dsfFavoritesRefresh();await tick();assert.equal(p.d.getElementById('favorites-create-content').value,'尚未保存的草稿');
  }finally{p.close();}
 });
 test('deletion completion refetches a newer pending refresh instead of losing new favorites',async()=>{

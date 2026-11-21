@@ -152,6 +152,29 @@ fn delete_at(path: &Path, id: u64) -> Result<(), String> {
     items.retain(|f| f.id != id);
     write_at(path, &items)
 }
+fn update_at(
+    path: &Path,
+    expected: &Favorite,
+    title: String,
+    content: String,
+) -> Result<Favorite, String> {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut items = load_at(path)?;
+    let current = items
+        .iter_mut()
+        .find(|item| item.id == expected.id)
+        .ok_or("收藏不存在或已删除，请取消编辑后刷新列表")?;
+    if current != expected {
+        return Err("收藏已被修改，请保留草稿并取消编辑后重新打开".into());
+    }
+    let fields = manual(title, content)?;
+    current.title = fields.title;
+    current.answer_markdown = fields.answer_markdown;
+    validate_fields(current)?;
+    let updated = current.clone();
+    write_at(path, &items)?;
+    Ok(updated)
+}
 pub fn list() -> Result<Vec<Favorite>, String> {
     let _data = crate::data_store::read_guard();
     list_under_data_lock()
@@ -203,6 +226,12 @@ fn manual(title: String, content: String) -> Result<Favorite, String> {
 pub fn create_manual(title: String, content: String) -> Result<Favorite, String> {
     save(manual(title, content)?)
 }
+pub fn update(expected: Favorite, title: String, content: String) -> Result<Favorite, String> {
+    let _data = crate::data_store::write_guard();
+    let saved = update_at(&store()?, &expected, title, content)?;
+    crate::data_store::mark_changed();
+    Ok(saved)
+}
 pub fn delete(id: u64) -> Result<(), String> {
     let _data = crate::data_store::write_guard();
     delete_at(&store()?, id)?;
@@ -233,7 +262,8 @@ fn favorite_markdown(item: &Favorite) -> String {
             &item.source,
             &[(item.question.clone(), item.answer_markdown.clone())],
         ),
-        FavoriteKind::Selection | FavoriteKind::Manual => {
+        FavoriteKind::Manual => item.answer_markdown.clone(),
+        FavoriteKind::Selection => {
             // Keep untrusted text (including its title) out of Markdown/HTML syntax.
             // A fence longer than every raw backtick run cannot be closed by the selection.
             let longest_run = item
@@ -350,10 +380,7 @@ mod tests {
         let selected = save_at(&path, selection(raw.into(), "划词".into())).unwrap();
         assert_ne!(first.id, selected.id);
         assert_eq!(load_at(&path).unwrap().len(), 2);
-        assert_eq!(
-            favorite_markdown(&first),
-            "````text\n\n  <b>首行</b>\n```\n完整原文  \n````\n"
-        );
+        assert_eq!(favorite_markdown(&first), raw);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -369,6 +396,44 @@ mod tests {
         assert!(manual("标题".into(), " \n\t".into()).is_err());
         assert!(manual("字".repeat(201), "正文".into()).is_err());
         assert!(manual(String::new(), "字".repeat(500_001)).is_err());
+    }
+    #[test]
+    fn editing_updates_in_place_preserves_metadata_and_rejects_stale_or_deleted_entries() {
+        let dir = temp();
+        let path = dir.join("favorites.json");
+        for kind in [
+            FavoriteKind::Manual,
+            FavoriteKind::Selection,
+            FavoriteKind::Answer,
+        ] {
+            let original = save_at(&path, Favorite { kind, ..favorite() }).unwrap();
+            let updated = update_at(
+                &path,
+                &original,
+                " 新标题 ".into(),
+                "# 新正文\n  原文  ".into(),
+            )
+            .unwrap();
+            let mut expected = original.clone();
+            expected.title = "新标题".into();
+            expected.answer_markdown = "# 新正文\n  原文  ".into();
+            assert_eq!(updated, expected);
+            let before = fs::read(&path).unwrap();
+            assert!(update_at(&path, &original, "过期编辑".into(), "不应覆盖".into()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+            for (title, content) in [
+                ("标题".into(), " \t\n".into()),
+                ("字".repeat(201), "正文".into()),
+                ("标题".into(), "字".repeat(500_001)),
+            ] {
+                assert!(update_at(&path, &updated, title, content).is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            delete_at(&path, updated.id).unwrap();
+            assert!(update_at(&path, &updated, "不应重建".into(), "正文".into()).is_err());
+            assert!(load_at(&path).unwrap().is_empty());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn roundtrip_duplicate_delete() {
