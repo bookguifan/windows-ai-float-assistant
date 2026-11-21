@@ -113,6 +113,7 @@
         min-width: 0;
       }
       #more-box .sep { height: 1px; background: rgba(43, 92, 255, 0.15); margin: 3px 6px; flex: 0 0 auto; }
+      #favorite-status:not(:empty) { position: absolute; inset: 2px 3px; z-index: 10; padding: 6px 10px; background: #fff; border-radius: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -124,6 +125,11 @@
         </svg>
         <span>复制</span>
       </button>
+      <button type="button" data-preset="favorite-selection" aria-label="收藏划词原文" title="直接收藏选中文字，不发送 AI 请求">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z"></path></svg>
+        <span>收藏</span>
+      </button>
+      <span id="favorite-status" role="status" aria-live="polite"></span>
       <span id="prompts"></span>
       <button type="button" data-preset="open-more" aria-label="更多提示词">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -192,9 +198,9 @@
         });
       }
 
-      // 首行常驻：复制 + 前 ≤4 项提示词（共 5 个按钮），第 5 项起并入「⋮ 更多」浮层。
+      // 首行常驻：复制、收藏和前三项提示词，其余进入更多菜单。
       // （Rust 已按设置里的列表顺序传入，内置/自定义由用户排序决定先后。）
-      const INLINE_MAX = 4;
+      const INLINE_MAX = 3;
 
       // 由 Rust 侧 show_at_cursor 推入统一提示词列表（已排序：内置优先、再自定义）。
       // 渲染：前 INLINE_MAX 项 → 首行；其余 → 「⋮ 更多」浮层。
@@ -252,7 +258,12 @@
       // 在原生窗口显示前同步安装当前选区票据，并复位一次性动作锁。
       let selectionTicket = null;
       let actionEpoch = 0;
-      window.__dsfResetFired = (ticket) => { actionEpoch++; fired = false; selectionTicket = ticket == null ? null : String(ticket); };
+      function favoriteStatus(text) {
+        const status = document.getElementById('favorite-status');
+        status.textContent = text;
+        status.title = text;
+      }
+      window.__dsfResetFired = (ticket) => { actionEpoch++; fired = false; selectionTicket = ticket == null ? null : String(ticket); favoriteStatus(''); };
       window.__dsfPrepareSelection = (ticket, prompts) => {
         window.__dsfSetPrompts(prompts);
         window.__dsfResetFired(ticket);
@@ -285,13 +296,14 @@
         try {
           traceClick('dispatch', preset, ticket);
           tauri.core.invoke("popup_action", { preset, selectionTicket: ticket }).then(
-            () => { traceClick('resolved', preset, ticket); if (menuAction) unlock(); },
-            (e) => { traceClick('rejected', preset, ticket); if (menuAction) unlock(); console.error("[popup] popup_action:", e); }
+            () => { traceClick('resolved', preset, ticket); if (menuAction) unlock(); if (preset === 'favorite-selection' && actionEpoch === epoch) favoriteStatus('已收藏'); },
+            (e) => { traceClick('rejected', preset, ticket); if (menuAction) unlock(); if (preset === 'favorite-selection' && actionEpoch === epoch) favoriteStatus('收藏失败：' + String(e)); console.error("[popup] popup_action:", e); }
           );
           // 菜单完成后立即接受下一项，尚未完成时拒绝重复派发；旧 IPC 不解锁新票据。
           if (!menuAction) setTimeout(unlock, 400); // 兜底解锁
         } catch (e) {
           console.error("[popup] invoke popup_action failed:", e);
+          if (preset === 'favorite-selection') favoriteStatus('收藏失败：' + String(e));
           fired = false;
         }
       }
