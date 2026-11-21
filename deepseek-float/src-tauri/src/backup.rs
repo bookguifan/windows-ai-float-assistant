@@ -1703,6 +1703,30 @@ mod tests {
     }
 
     #[test]
+    fn manual_favorites_roundtrip_in_both_restore_modes() {
+        let mut snapshot = sample_snapshot();
+        let mut item = sample_data().favorites.remove(0);
+        item.kind = crate::favorites::FavoriteKind::Manual;
+        item.source = "手动新增".into();
+        item.question.clear();
+        item.answer_markdown = "  <b>原文</b>\n第二行  ".into();
+        snapshot.favorites = vec![item.clone()];
+        let (bytes, _) = encode_backup(&snapshot).unwrap();
+        let decoded = decode_backup(&bytes).unwrap();
+        for mode in [RestoreMode::Merge, RestoreMode::Overwrite] {
+            let plan = plan_restore(&sample_snapshot(), &decoded.data, mode);
+            assert_eq!(plan.favorites, vec![item.clone()]);
+            let updates = updates_for(&plan).unwrap();
+            let (_, stored) = updates
+                .iter()
+                .find(|(name, _)| *name == "favorites.json")
+                .unwrap();
+            let restored: Vec<crate::favorites::Favorite> = serde_json::from_slice(stored).unwrap();
+            assert_eq!(restored, vec![item.clone()]);
+        }
+    }
+
+    #[test]
     fn backup_merge_deduplicates_within_kind_but_preserves_cross_kind_content() {
         let mut local = sample_snapshot();
         let mut data = sample_data();

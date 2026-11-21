@@ -754,6 +754,18 @@ pub fn favorites_list() -> Result<Vec<crate::favorites::Favorite>, String> {
     crate::favorites::list()
 }
 #[tauri::command]
+pub fn favorites_create(
+    window: tauri::WebviewWindow,
+    title: String,
+    content: String,
+) -> Result<crate::favorites::Favorite, String> {
+    let url = window.url().map_err(|_| "收藏窗口地址不可用")?;
+    if !crate::selection::local_document_page(window.label(), &url, "result") {
+        return Err("只能从本地收藏窗口手动新增".into());
+    }
+    crate::favorites::create_manual(title, content)
+}
+#[tauri::command]
 pub fn favorites_delete(id: u64) -> Result<(), String> {
     crate::favorites::delete(id)
 }

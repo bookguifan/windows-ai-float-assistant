@@ -33,6 +33,7 @@ pub enum FavoriteKind {
     #[default]
     Answer,
     Selection,
+    Manual,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Favorite {
@@ -187,6 +188,21 @@ fn selection(text: String, source: String) -> Favorite {
 pub fn save_selection(text: String, source: String) -> Result<Favorite, String> {
     save(selection(text, source))
 }
+fn manual(title: String, content: String) -> Result<Favorite, String> {
+    if content.trim().is_empty() {
+        return Err("内容不能为空".into());
+    }
+    let mut item = selection(content, "手动新增".into());
+    item.kind = FavoriteKind::Manual;
+    if !title.trim().is_empty() {
+        item.title = title.trim().into();
+    }
+    validate_fields(&item)?;
+    Ok(item)
+}
+pub fn create_manual(title: String, content: String) -> Result<Favorite, String> {
+    save(manual(title, content)?)
+}
 pub fn delete(id: u64) -> Result<(), String> {
     let _data = crate::data_store::write_guard();
     delete_at(&store()?, id)?;
@@ -217,7 +233,7 @@ fn favorite_markdown(item: &Favorite) -> String {
             &item.source,
             &[(item.question.clone(), item.answer_markdown.clone())],
         ),
-        FavoriteKind::Selection => {
+        FavoriteKind::Selection | FavoriteKind::Manual => {
             // Keep untrusted text (including its title) out of Markdown/HTML syntax.
             // A fence longer than every raw backtick run cannot be closed by the selection.
             let longest_run = item
@@ -316,6 +332,43 @@ mod tests {
             source: "来源".into(),
             created_at: 0,
         }
+    }
+    #[test]
+    fn manual_entries_preserve_content_derive_title_and_roundtrip_without_colliding_with_selection()
+    {
+        let dir = temp();
+        let path = dir.join("favorites.json");
+        let raw = "\n  <b>首行</b>\n```\n完整原文  ";
+        let item = manual(" \t".into(), raw.into()).unwrap();
+        assert_eq!(item.kind, FavoriteKind::Manual);
+        assert_eq!(item.title, "<b>首行</b>");
+        assert_eq!(item.source, "手动新增");
+        assert!(item.question.is_empty());
+        assert_eq!(item.answer_markdown, raw);
+        let first = save_at(&path, item.clone()).unwrap();
+        assert_eq!(save_at(&path, item).unwrap().id, first.id);
+        let selected = save_at(&path, selection(raw.into(), "划词".into())).unwrap();
+        assert_ne!(first.id, selected.id);
+        assert_eq!(load_at(&path).unwrap().len(), 2);
+        assert_eq!(
+            favorite_markdown(&first),
+            "````text\n\n  <b>首行</b>\n```\n完整原文  \n````\n"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn manual_validation_rejects_blank_or_oversized_input_and_keeps_explicit_titles() {
+        assert_eq!(
+            manual(" 自定标题 ".into(), " 正文 ".into()).unwrap().title,
+            "自定标题"
+        );
+        assert_eq!(
+            manual(String::new(), "字".repeat(80)).unwrap().title,
+            "字".repeat(48)
+        );
+        assert!(manual("标题".into(), " \n\t".into()).is_err());
+        assert!(manual("字".repeat(201), "正文".into()).is_err());
+        assert!(manual(String::new(), "字".repeat(500_001)).is_err());
     }
     #[test]
     fn roundtrip_duplicate_delete() {

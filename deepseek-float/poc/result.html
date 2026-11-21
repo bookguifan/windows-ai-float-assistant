@@ -610,6 +610,13 @@
       .favorites-view-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .favorites-view-row strong { font-size: 13px; }
       .favorites-view-row button { min-width: 64px; min-height: 28px; }
+      .favorites-view-actions { display: flex; gap: 6px; }
+      .favorites-create:not([hidden]) { display: flex; flex-direction: column; gap: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #d6dce5; border-radius: 9px; background: #f8fafc; }
+      .favorites-create label { display: flex; flex-direction: column; gap: 5px; color: #4c596c; font-size: 12px; }
+      .favorites-create input, .favorites-create textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #263445; font: inherit; line-height: 1.5; }
+      .favorites-create textarea { min-height: 120px; resize: vertical; }
+      .favorites-create input:focus-visible, .favorites-create textarea:focus-visible { outline: 2px solid rgba(43, 92, 255, 0.65); outline-offset: 1px; }
+      .favorites-create-error { margin: 0; color: #9b3434; font-size: 12px; overflow-wrap: anywhere; }
       .favorites-type { min-width: 0; max-width: 100%; min-height: 30px; border: 1px solid #d6dce5; border-radius: 7px; background: #fff; color: #4c596c; font: inherit; font-size: 11.5px; }
       .favorites-search-row {
         display: flex;
@@ -1885,7 +1892,10 @@
               if (libraryOpen && libraryViewRevision === revision) saveMessage('收藏窗口调整失败：' + String(error));
             } finally { enlarge.disabled = false; }
           });
-          viewRow.appendChild(label); viewRow.appendChild(enlarge); tools.appendChild(viewRow);
+          const add = actionButton('手动新增'); add.id = 'favorites-add'; add.className = 'favorites-clear-search';
+          add.setAttribute('aria-expanded', 'false'); add.setAttribute('aria-controls', 'favorites-create-form');
+          const viewActions = el('div', 'favorites-view-actions'); viewActions.appendChild(add); viewActions.appendChild(enlarge);
+          viewRow.appendChild(label); viewRow.appendChild(viewActions); tools.appendChild(viewRow);
           const searchRow = el('div', 'favorites-search-row');
           const searchControl = el('label', 'favorites-search-control');
           searchControl.htmlFor = 'favorites-search';
@@ -1905,11 +1915,50 @@
           const metaRow = el('div', 'favorites-meta-row');
           const count = el('span', 'favorites-count'); count.id = 'favorites-count'; count.setAttribute('role','status');
           const type = el('select', 'favorites-type'); type.id = 'favorites-type'; type.setAttribute('aria-label', '收藏类型');
-          [['all', '全部类型'], ['answer', '模型回答'], ['selection', '划词原文']].forEach(function (choice) {
+          [['all', '全部类型'], ['answer', '模型回答'], ['selection', '划词原文'], ['manual', '手动新增']].forEach(function (choice) {
             const option = el('option'); option.value = choice[0]; option.textContent = choice[1]; type.appendChild(option);
           });
           metaRow.appendChild(count); metaRow.appendChild(type);
           tools.appendChild(searchRow); tools.appendChild(metaRow); view.appendChild(tools);
+          const form = el('form', 'favorites-create'); form.id = 'favorites-create-form'; form.hidden = true; form.setAttribute('aria-label', '手动新增收藏');
+          const titleLabel = el('label'); titleLabel.textContent = '标题（选填，留空时取正文首行）';
+          const titleInput = el('input'); titleInput.id = 'favorites-create-title'; titleInput.type = 'text'; titleInput.maxLength = 200; titleInput.autocomplete = 'off'; titleLabel.appendChild(titleInput);
+          const contentLabel = el('label'); contentLabel.textContent = '内容（必填，按原文保存）';
+          const contentInput = el('textarea'); contentInput.id = 'favorites-create-content'; contentInput.rows = 6; contentInput.maxLength = 500000; contentLabel.appendChild(contentInput);
+          const error = el('p', 'favorites-create-error'); error.id = 'favorites-create-error'; error.setAttribute('role', 'alert');
+          const actions = el('div', 'acts favorite-actions');
+          const save = actionButton('保存'); save.id = 'favorites-create-save'; save.type = 'submit';
+          const cancel = actionButton('取消'); cancel.id = 'favorites-create-cancel';
+          actions.appendChild(save); actions.appendChild(cancel);
+          form.appendChild(titleLabel); form.appendChild(contentLabel); form.appendChild(error); form.appendChild(actions); view.appendChild(form);
+          let saving = false;
+          function closeCreate() {
+            form.hidden = true; form.reset(); error.textContent = ''; add.setAttribute('aria-expanded', 'false'); pushHeight();
+          }
+          add.addEventListener('click', function () {
+            if (saving) return;
+            form.hidden = false; add.setAttribute('aria-expanded', 'true'); pushHeight(); titleInput.focus();
+          });
+          cancel.addEventListener('click', function () { if (!saving) { closeCreate(); add.focus(); } });
+          form.addEventListener('submit', async function (event) {
+            event.preventDefault(); if (saving) return;
+            if (!contentInput.value.trim()) { error.textContent = '内容不能为空'; contentInput.focus(); pushHeight(); return; }
+            saving = true; error.textContent = '';
+            [save, cancel, add, titleInput, contentInput].forEach(function (control) { control.disabled = true; });
+            try {
+              const item = await tauri.core.invoke('favorites_create', { title: titleInput.value, content: contentInput.value });
+              const entries = document.getElementById('favorites-items');
+              const refreshPending = entries.getAttribute('aria-busy') === 'true';
+              ++libraryGeneration; entries.removeAttribute('aria-busy');
+              favoriteItems = favoriteItems.filter(function (current) { return current.id !== item.id; }); favoriteItems.push(item);
+              closeCreate();
+              if (libraryOpen) {
+                renderFavoriteItems(); saveMessage('已保存收藏；如列表未显示，请检查搜索和类型筛选');
+                if (refreshPending) refreshFavoriteItemsFromDisk();
+              }
+            } catch (failure) { error.textContent = '保存失败：' + String(failure); pushHeight(); }
+            finally { saving = false; [save, cancel, add, titleInput, contentInput].forEach(function (control) { control.disabled = false; }); }
+          });
           const entries = el('div'); entries.id = 'favorites-items'; view.appendChild(entries);
           search.addEventListener('input', function () { confirmingFavorite = null; renderFavoriteItems(); });
           type.addEventListener('change', function () { confirmingFavorite = null; renderFavoriteItems(); });
@@ -1919,10 +1968,10 @@
         const deletingFavorites = new Set();
         const expandedFavorites = new Set();
         let confirmingFavorite = null;
-        function favoriteKind(item) { return item.kind === 'selection' ? 'selection' : 'answer'; }
+        function favoriteKind(item) { return item.kind === 'manual' ? 'manual' : item.kind === 'selection' ? 'selection' : 'answer'; }
         function favoriteSummary(item) {
           const text = String(item.answer_markdown || '');
-          if (favoriteKind(item) === 'selection') return text;
+          if (favoriteKind(item) !== 'answer') return text;
           const preview = el('div'); renderMarkdown(preview, text);
           // Keep block boundaries in the plain-text preview without exposing Markdown nodes.
           preview.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,pre,tr,blockquote').forEach(function (node) { node.appendChild(document.createTextNode('\n')); });
@@ -1940,7 +1989,7 @@
           document.getElementById('favorites-count').textContent = items.length + ' / ' + favoriteItems.length + ' 条';
           if (!items.length) {
             entries.classList.add('favorites-empty');
-            entries.textContent = favoriteItems.length ? '没有匹配的收藏，请更换关键词或清空搜索。' : '暂无收藏。可在回答下方点击收藏。';
+            entries.textContent = favoriteItems.length ? '没有匹配的收藏，请更换关键词或清空搜索。' : '暂无收藏。可手动新增、收藏划词原文或模型回答。';
             pushHeight(); elThread.scrollTop = keep; return;
           }
           entries.classList.remove('favorites-empty');
@@ -1950,7 +1999,7 @@
             const heading = el('div', 'favorite-heading');
             const title = el('strong', 'favorite-title'); title.textContent = item.title || '收藏'; title.title = item.title || '收藏'; heading.appendChild(title);
             const meta = el('div', 'favorite-meta');
-            meta.textContent = (favoriteKind(item) === 'selection' ? '划词原文' : '模型回答') + ' · 来源：' + (item.source || '未记录') + ' · ' + new Date(item.created_at * 1000).toLocaleString(); heading.appendChild(meta); entry.appendChild(heading);
+            meta.textContent = ({ selection: '划词原文', manual: '手动新增', answer: '模型回答' }[favoriteKind(item)]) + ' · 来源：' + (item.source || '未记录') + ' · ' + new Date(item.created_at * 1000).toLocaleString(); heading.appendChild(meta); entry.appendChild(heading);
             if (item.question) {
               const question = el('div', 'favorite-question');
               const questionLabel = el('span', 'favorite-question-label'); questionLabel.textContent = '问题';
@@ -1964,7 +2013,7 @@
               content.textContent = ''; expand.textContent = expanded ? '收起全文' : '展开全文'; expand.setAttribute('aria-expanded', String(expanded));
               if (expanded) {
                 const answer = el('div', 'md favorite-answer');
-                if (favoriteKind(item) === 'selection') { answer.classList.add('favorite-selection'); answer.textContent = item.answer_markdown || ''; }
+                if (favoriteKind(item) !== 'answer') { answer.classList.add('favorite-selection'); answer.textContent = item.answer_markdown || ''; }
                 else renderMarkdown(answer, item.answer_markdown);
                 content.appendChild(answer);
               } else {

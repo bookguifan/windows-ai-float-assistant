@@ -1,4 +1,46 @@
 import test from 'node:test';
+test('manual favorites cancel without saving and retain input on failure before a successful retry',async()=>{
+ let fail=true,finish;const items=[];
+ const p=page((c,a)=>c==='favorites_list'?Promise.resolve(items.slice()):c==='favorites_create'?new Promise((resolve,reject)=>{finish=()=>{if(fail)reject('磁盘写入失败');else{const item={id:22,kind:'manual',title:a.title,question:'',answer_markdown:a.content,source:'手动新增',created_at:2};items.push(item);resolve(item)}}}):Promise.resolve());
+ try{
+  p.w.__dsfFavoritesOpen();await tick();
+  const add=p.d.getElementById('favorites-add');assert.ok(add,'manual add entry is available');add.click();
+  const form=p.d.getElementById('favorites-create-form'),title=p.d.getElementById('favorites-create-title'),body=p.d.getElementById('favorites-create-content');
+  title.value='草稿';body.value='不应保存';p.d.getElementById('favorites-create-cancel').click();
+  assert.equal(form.hidden,true);assert.equal(p.calls.filter(c=>c.c==='favorites_create').length,0);
+  add.click();assert.equal(body.value,'');
+  body.value=' \n\t';form.dispatchEvent(new p.w.Event('submit',{cancelable:true}));await tick();
+  assert.equal(p.calls.filter(c=>c.c==='favorites_create').length,0);
+  title.value='手动标题';body.value='  <b>原文</b>\n第二行  ';
+  const submit=()=>form.dispatchEvent(new p.w.Event('submit',{cancelable:true}));submit();submit();
+  assert.equal(p.calls.filter(c=>c.c==='favorites_create').length,1);
+  assert.equal(p.d.getElementById('favorites-create-save').disabled,true);finish();await tick();
+  assert.equal(form.hidden,false);assert.equal(body.value,'  <b>原文</b>\n第二行  ');assert.equal(title.value,'手动标题');
+  assert.match(p.d.getElementById('favorites-create-error').textContent,/磁盘写入失败/);
+  fail=false;submit();finish();await tick();
+  assert.equal(form.hidden,true);assert.equal(body.value,'');assert.equal(p.d.querySelectorAll('[data-favorite-id="22"]').length,1);
+  assert.match(p.d.querySelector('.favorite-meta').textContent,/手动新增/);
+  p.d.querySelector('[data-favorite-expand]').click();assert.equal(p.d.querySelector('.favorite-answer').textContent,'  <b>原文</b>\n第二行  ');assert.equal(p.d.querySelector('.favorite-answer b'),null);
+  assert.deepEqual(p.calls.filter(c=>c.c==='favorites_create').map(c=>({title:c.a.title,content:c.a.content})),[{title:'手动标题',content:'  <b>原文</b>\n第二行  '},{title:'手动标题',content:'  <b>原文</b>\n第二行  '}]);
+  assert.equal(p.calls.some(c=>/result_copy|result_ask|popup_action/.test(c.c)),false);
+ }finally{p.close();}
+});
+
+test('manual save preserves active filters and cannot be overwritten by a stale list refresh',async()=>{
+ let finishRead,finishSave,reads=0;
+ const added={id:30,kind:'manual',title:'新条目',question:'',answer_markdown:'完整原文',source:'手动新增',created_at:3};
+ const p=page(c=>c==='favorites_list'?++reads===1?Promise.resolve([]):reads===2?new Promise(r=>finishRead=r):Promise.resolve([added]):c==='favorites_create'?new Promise(r=>finishSave=r):Promise.resolve());
+ try{
+  p.w.__dsfFavoritesOpen();await tick();
+  const type=p.d.getElementById('favorites-type');assert.ok(Array.from(type.options).some(o=>o.value==='manual'));
+  type.value='manual';type.dispatchEvent(new p.w.Event('change'));
+  const search=p.d.getElementById('favorites-search');search.value='完整';search.dispatchEvent(new p.w.Event('input'));
+  p.d.getElementById('favorites-add').click();p.d.getElementById('favorites-create-content').value='完整原文';
+  p.w.__dsfFavoritesRefresh();p.d.getElementById('favorites-create-form').dispatchEvent(new p.w.Event('submit',{cancelable:true}));
+  finishSave(added);await tick();finishRead([]);await tick();
+  assert.equal(p.d.querySelectorAll('[data-favorite-id="30"]').length,1);assert.equal(search.value,'完整');assert.equal(type.value,'manual');
+ }finally{p.close();}
+});
 test('deletion completion refetches a newer pending refresh instead of losing new favorites',async()=>{
  const old={id:1,title:'旧收藏',answer_markdown:'旧',created_at:1};
  const added={id:2,title:'新收藏',answer_markdown:'新',created_at:2};

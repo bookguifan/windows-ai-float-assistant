@@ -7,6 +7,53 @@ async function setup(page){
  await page.setContent(html.replace('<head>','<head><script>window.__calls=[];window.__longFavorite=false;window.__failExport=false;window.__TAURI_INTERNALS__={invoke:(command,args)=>{__calls.push({command,args});if(command==="favorites_list")return Promise.resolve(window.__favoriteItems || (window.__longFavorite?[{id:2,title:"超长收藏标题".repeat(12),question:"超长问题".repeat(40),answer_markdown:"```text\\n"+"verylongunbrokencode".repeat(18)+"\\n```",source:"本地夹具",created_at:1}]:[{id:1,title:"本地收藏",question:"问题",answer_markdown:"收藏答案",source:"本地夹具",created_at:1}]));if(command==="result_export")return window.__failExport?Promise.reject("磁盘写入失败"):Promise.resolve("D:/"+"很长的导出目录/".repeat(20)+"结果.md");return Promise.resolve()}};</script>'));
  await page.evaluate(()=>__dsfResultSet({revision:7,title:'很长的结果标题'.repeat(12),turns:[{quote:'问题',text:'<p>已完成的回答</p>',complete:true,streaming:false,sendState:'complete'}]}));
 }
+
+test('manual favorite form fits narrow cards and saves literal text without AI or clipboard actions',async({page})=>{
+ await setup(page);
+ await page.evaluate(()=>{
+  const base=window.__TAURI_INTERNALS__.invoke;
+  window.__favoriteItems=[];
+  window.__TAURI_INTERNALS__.invoke=(command,args)=>{
+   if(command!=='favorites_create')return base(command,args);
+   __calls.push({command,args});
+   const item={id:41,kind:'manual',title:args.title||'首行',question:'',answer_markdown:args.content,source:'手动新增',created_at:2};
+   window.__favoriteItems.push(item);return Promise.resolve(item);
+  };
+ });
+ await page.locator('#btnFavorites').click();
+ await page.locator('#favorites-add').click();
+ for(const width of [320,400,760]){
+  await page.setViewportSize({width,height:680});
+  for(const selector of ['#favorites-add','#favorites-enlarge','#favorites-create-title','#favorites-create-content','#favorites-create-save','#favorites-create-cancel']){
+   const bounds=await page.locator(selector).boundingBox();expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(width);
+  }
+ }
+ await page.locator('#favorites-create-title').fill('手动保存的标题');
+ await page.locator('#favorites-create-content').fill('  <img src=x onerror="alert(1)">\n**完整原文**  ');
+ await page.locator('#favorites-create-save').click();
+ await expect(page.locator('#favorites-create-form')).toBeHidden();
+ await expect(page.locator('[data-favorite-id="41"]')).toContainText('手动保存的标题');
+ await page.locator('#favorites-type').selectOption('manual');
+ await page.locator('[data-favorite-expand]').click();
+ await expect(page.locator('.favorite-answer')).toHaveText('  <img src=x onerror="alert(1)">\n**完整原文**  ');
+ await expect(page.locator('.favorite-answer img')).toHaveCount(0);
+ expect(await page.evaluate(()=>__calls.some(c=>/result_copy|result_ask/.test(c.command)))).toBe(false);
+});
+
+test('manual favorite save failure keeps the draft editable and cancel never persists it',async({page})=>{
+ await setup(page);
+ await page.evaluate(()=>{
+  const base=window.__TAURI_INTERNALS__.invoke;
+  window.__TAURI_INTERNALS__.invoke=(command,args)=>{if(command!=='favorites_create')return base(command,args);__calls.push({command,args});return Promise.reject('保存目录不可写');};
+ });
+ await page.locator('#btnFavorites').click();await page.locator('#favorites-add').click();
+ await page.locator('#favorites-create-content').fill('待保存原文');await page.locator('#favorites-create-save').click();
+ await expect(page.locator('#favorites-create-error')).toContainText('保存目录不可写');
+ await expect(page.locator('#favorites-create-content')).toHaveValue('待保存原文');await expect(page.locator('#favorites-create-save')).toBeEnabled();
+ await page.locator('#favorites-create-cancel').click();await page.locator('#favorites-add').click();
+ await expect(page.locator('#favorites-create-content')).toHaveValue('');
+ expect(await page.evaluate(()=>__calls.filter(c=>c.command==='favorites_create').length)).toBe(1);
+});
 test('result actions remain clickable within 400px card',async({page})=>{
  await setup(page);
  const boxes=await page.locator('.winbtns button').evaluateAll(nodes=>nodes.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,right:b.right,width:b.width}}));
